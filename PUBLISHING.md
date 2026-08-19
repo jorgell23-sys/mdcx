@@ -77,3 +77,27 @@ This is why the rehearsal on TestPyPI is worth the extra ten minutes.
 The README installation table becomes true as written. Then the MCP Registry
 becomes possible, which is what puts the server in the catalogue that Claude,
 ChatGPT and the other clients consult.
+
+## Step 5: the MCP Registry
+
+Once the package is on PyPI, the server can be listed in the official registry at
+`registry.modelcontextprotocol.io`, which is the catalogue MCP clients consult to
+discover available servers.
+
+The registry stores metadata only, which is why PyPI comes first. Ownership is
+verified by looking for a marker inside the package description: this repository
+carries `<!-- mcp-name: io.github.jorgell23-sys/mdcx -->` at the top of the
+README, and `server.json` declares the same name. Both must match, and the marker
+must already be in the published version: adding it later would require a new
+release.
+
+Publishing uses the official CLI:
+
+    mcp-publisher login github
+    mcp-publisher publish
+
+The `io.github.jorgell23-sys/*` namespace is granted by authenticating with that
+GitHub account, so no separate ownership claim is needed.
+
+The registry is in preview: breaking changes or data resets may occur before
+general availability.

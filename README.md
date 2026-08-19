@@ -1,5 +1,7 @@
 # mdcx
 
+<!-- mcp-name: io.github.jorgell23-sys/mdcx -->
+
 Convert a document collection to verified Markdown, package it into a single
 encrypted file, and make it queryable by agents through the Model Context
 Protocol.

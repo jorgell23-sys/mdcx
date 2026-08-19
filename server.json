@@ -1,0 +1,44 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.jorgell23-sys/mdcx",
+  "title": "Document corpus",
+  "description": "Query a converted and verified document collection. Returns the passages that answer a question, each with its source document and portable path, so sources can be cited rather than recalled.",
+  "version": "1.0.0",
+  "repository": {
+    "url": "https://github.com/jorgell23-sys/mdcx",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mdcx",
+      "version": "1.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "named",
+          "name": "-m",
+          "value": "mdcx.mcp_server",
+          "isRequired": true,
+          "description": "Module that starts the server"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "MDCX_FILE",
+          "description": "Absolute path to the .mdcx package to query",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "MDCX_KEY",
+          "description": "Key that decrypts the package",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
