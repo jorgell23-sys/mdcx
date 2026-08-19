@@ -15,10 +15,20 @@ keywords = ["markdown", "document-conversion", "retrieval", "mcp", "provenance",
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: Legal Industry",
+    "Intended Audience :: Science/Research",
     "Topic :: Text Processing :: Markup :: Markdown",
+    "Topic :: Text Processing :: Indexing",
     "Topic :: Office/Business",
+    "Topic :: Scientific/Engineering :: Information Analysis",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Typing :: Typed",
 ]
 
 # Querying a package requires almost nothing: SQLite and LZMA are in the standard
@@ -55,7 +65,12 @@ mdcx-search = "mdcx.search:main"
 
 [project.urls]
 Homepage = "https://github.com/jorgell23-sys/mdcx"
+Repository = "https://github.com/jorgell23-sys/mdcx"
 Issues = "https://github.com/jorgell23-sys/mdcx/issues"
+Changelog = "https://github.com/jorgell23-sys/mdcx/releases"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mdcx"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/mdcx", "tests", "README.md", "LICENSE", "NOTICE", "CITATION.cff"]
