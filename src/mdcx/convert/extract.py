@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Extraccion de texto de referencia ("ground truth") independiente del motor de conversion.
+"""Reference text extraction from source documents.
 
-La idea: el conversor principal (Docling) produce Markdown estructurado, pero puede
-perder contenido en tablas complejas, cajetines de planos o celdas ocultas. Para poder
-afirmar "sin perdida de informacion" hace falta una segunda lectura, hecha con una
-libreria distinta y lo mas cruda posible, contra la cual comparar. Eso es este modulo.
+Provides the text a document actually exposes, read with a library
+independent from the engine that performed the conversion, so that fidelity
+is measured against an external reference rather than against itself.
 """
 from __future__ import annotations
 
@@ -27,19 +26,16 @@ from pathlib import Path
 def _pdf_text(path: Path) -> tuple[str, dict]:
     from . import pdf as _pdf
 
-    doc = _pdf.leer_documento(path)
+    doc = _pdf.open_document(path)
     parts: list[str] = []
     pages_without_text = 0
     images = 0
     try:
         for page in doc:
-            # Texto plano en el orden que declara el propio PDF. En los cajetines de
-            # planos aparece igual aunque no forme parrafos, que es lo que se quiere de
-            # una referencia: lo que el archivo contiene, sin interpretar.
-            txt = _pdf.texto_de_pagina(page)
+            txt = _pdf.page_text(page)
             if len(txt.strip()) < 20:
                 pages_without_text += 1
-            images += _pdf.contar_imagenes(page)
+            images += _pdf.count_images(page)
             parts.append(txt)
         meta = {
             "pages": len(doc),
@@ -63,7 +59,7 @@ def _docx_text(path: Path) -> tuple[str, dict]:
         for row in table.rows:
             for cell in row.cells:
                 parts.append(cell.text)
-    # Encabezados y pies suelen contener codigo de documento y revision: no perderlos.
+    # Encabezados y pies suelen contener codigo de document y revision: no perderlos.
     for section in d.sections:
         for container in (section.header, section.footer):
             for p in container.paragraphs:
@@ -131,11 +127,11 @@ _EXTRACTORS = {
 
 
 def reference_text(path: Path, kind: str) -> tuple[str, dict]:
-    """Devuelve (texto_crudo, metadatos) del original. Nunca lanza: informa el error."""
+    """Return (raw_text, metadata) from the original. Never raises: errors are reported."""
     fn = _EXTRACTORS.get(kind)
     if fn is None:
-        return "", {"error": f"sin extractor de referencia para kind={kind}"}
+        return "", {"error": f"no reference extractor for kind={kind}"}
     try:
         return fn(path)
-    except Exception as exc:  # noqa: BLE001 - el fallo se reporta, no interrumpe el lote
+    except Exception as exc:  # noqa: BLE001 - the failure is reported, not raised
         return "", {"error": f"{type(exc).__name__}: {exc}"}

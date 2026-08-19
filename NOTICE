@@ -1,26 +1,25 @@
 mdcx
 Copyright 2026 Jorge Ellena G.
 
-Este producto incluye software desarrollado por Jorge Ellena G.
+This product includes software developed by Jorge Ellena G.
 
-Quien redistribuya este software, con o sin modificaciones, debe conservar este
-aviso, tal como exige la seccion 4 de la licencia Apache 2.0.
+Anyone redistributing this software, with or without modification, must retain this
+notice, as required by section 4 of the Apache 2.0 licence.
 
-COMO SE ESCRIBIO
+HOW IT WAS WRITTEN
 
-Concebido y dirigido por Jorge Ellena G.; programado con la asistencia de Claude
-(Anthropic). Cada decision de diseno de este paquete -que motor de conversion usar, que
-licencia permite cual, como puntuar una busqueda, que optimizaciones aceptar y cuales
-descartar- se tomo contra mediciones sobre un expediente real, y esas mediciones estan
-anotadas en el codigo junto a la decision que justifican.
+Conceived and directed by Jorge Ellena G.; programmed with the assistance of Claude
+(Anthropic). Every design decision in this package was made against measurements over a
+real document collection, and those measurements are recorded alongside the decisions
+they justify.
 
-La titularidad del copyright corresponde a Jorge Ellena G. La asistencia de una herramienta
-no crea coautoria legal, del mismo modo que no la crea un compilador o un editor; se declara
-aqui porque es cierto y porque conviene saber como se hizo lo que uno adopta.
+Copyright is held by Jorge Ellena G. Assistance from a tool does not create legal
+co-authorship, any more than a compiler or an editor does; it is declared here because it
+is accurate and because it is worth knowing how something one adopts was made.
 
-DEPENDENCIAS
+DEPENDENCIES
 
-El paquete se apoya en las siguientes bibliotecas, cada una bajo su propia licencia:
+The package relies on the following libraries, each under its own licence:
 
   Docling y docling-core (IBM)          MIT
   pypdfium2                             BSD-3-Clause / Apache-2.0
@@ -29,6 +28,6 @@ El paquete se apoya en las siguientes bibliotecas, cada una bajo su propia licen
   cryptography                          Apache-2.0 / BSD-3-Clause
   mcp (Model Context Protocol SDK)      MIT
 
-Se evito deliberadamente PyMuPDF, cuya licencia AGPL-3.0 obligaria a publicar bajo
-AGPL cualquier programa que lo use, incluido el que solo lo ofrezca como servicio
-en red. pypdfium2 cubre las mismas necesidades sin esa condicion.
+PyMuPDF was deliberately avoided: its AGPL-3.0 licence would require any program using
+it to be published under AGPL, including one offered only as a network service.
+pypdfium2 covers the same needs without that condition.

@@ -1,121 +1,211 @@
 # mdcx
 
-Convierte un expediente documental completo a Markdown comprobado, lo empaqueta en un solo
-archivo cifrado, y lo deja consultable por agentes a traves del Model Context Protocol.
+Convert a document collection to verified Markdown, package it into a single
+encrypted file, and make it queryable by agents through the Model Context
+Protocol.
 
-## El problema
+## The problem
 
-Un agente que debe responder sobre un expediente tiene dos caminos. Puede recibir los
-documentos enteros en su contexto, que es caro y ademas topa con el limite de la ventana. O
-puede preguntar a algo que ya sepa donde esta cada cosa.
+An agent answering questions about a document collection has two options. It can
+receive the documents in its context window, which is expensive and bounded by
+the window size. Or it can query a component that already knows where each item
+is.
 
-Medido sobre un expediente real de 99 documentos y 180 MB:
+Measuring one specific query — where the minimum pipe diameter to be modelled in
+3D is stated — over a real collection of 99 documents and 180 MB, using the
+cl100k_base tokenizer:
 
-| | Tokens de modelo | Tokens locales |
+| | Model tokens | Local tokens |
 |---|---|---|
-| Leer los originales | **2.265.488** | 2.265.327 |
-| Consultar el paquete | **435** | 2.688.861 |
+| Reading the originals | **2,265,488** | 2,265,327 |
+| Querying the package | **435** | 2,688,861 |
 
-El trabajo no desaparece: se mueve del contexto, que se factura y es finito, a la CPU, que
-no cuesta. Al modelo solo llega el pasaje que responde.
+The 435 comprise 20 for the question, 274 for the retrieved passage and 141 for
+the answer.
 
-## Las tres piezas
+The first row costs the entire collection for a concrete reason: a PDF cannot be
+searched, it is a binary, and without prior conversion there is no way to know
+which of the 99 documents holds the answer. They all have to be extracted and
+read.
 
-**Convertir.** Cada documento pasa a Markdown y se comprueba contra el texto que el original
-expone de verdad, leido con una libreria independiente del motor que convirtio. Lo que el
-motor estructurado no incluye se anexa literal en vez de darse por perdido. Sobre el
-expediente de prueba: 99,948 % de cobertura, y 100 % en los documentos con texto.
+This is one measurement, not an average: the saving depends on how much text an
+answer requires. What does not vary is the shape of the change. The work does not
+disappear, it moves from the context window — which is billed and finite — to the
+CPU, which is not. That is why the local column rises rather than falls.
 
-**Empaquetar.** El corpus, su indice de busqueda y la procedencia de cada pasaje caben en un
-`.mdcx`: un archivo cifrado con AES-256-GCM cuya cabecera se puede leer sin la clave, de
-modo que se puede comprobar quien lo emitio y si esta integro antes de decidir abrirlo. De
-8,7 MB de Markdown a 3,9 MB en un solo archivo.
+## The three stages
 
-**Consultar.** Una pregunta devuelve los pasajes que la responden con su fuente exacta. En
-las 20 consultas reales del expediente, el documento correcto aparece entre los cinco
-primeros resultados en 19 de 20, y entre los diez primeros en 20 de 20.
+**Conversion.** Each document is converted to Markdown and checked against the
+text the original actually exposes, read with a library independent from the
+engine that performed the conversion. Content the structured engine omits is
+appended verbatim rather than reported as lost.
 
-## Instalacion
+Over the collection used during development — 99 documents, 1,144,553 reference
+words — 594 words were not recovered, a global coverage of 99.948%. Of the 184
+documents exposing text, 116 came out at exactly 100% and none below 99.5%. The
+remaining four are scanned drawings containing no text at all in the file: they
+were read by optical character recognition and are marked as unverifiable,
+because no text original exists to measure them against.
+
+**Packaging.** The corpus, its search index and the provenance of every passage
+fit into a single `.mdcx` file, encrypted with AES-256-GCM, whose header can be
+read without the key. From 8.8 MB of Markdown to 3.9 MB in one file.
+
+**Retrieval.** A query returns the passages that answer it with their exact
+source. Over the 20 real queries used for tuning, the correct document appears
+within the top five results in 19 cases and within the top ten in all 20.
+
+## Installation
+
+The package separates querying from conversion, because they have very different
+requirements.
+
+| Command | Installs | Size |
+|---|---|---|
+| `pip install mdcx` | query and read `.mdcx` packages | ~10 MB |
+| `pip install "mdcx[mcp]"` | the above plus the MCP server | ~50 MB |
+| `pip install "mdcx[convert]"` | document conversion (Docling, PyTorch) | ~1.4 GB |
+| `pip install "mdcx[all]"` | everything, including OCR | ~1.5 GB |
+
+Conversion is what pulls in the heavy dependencies. Someone who receives an
+`.mdcx` file and only needs to query it installs neither Docling nor PyTorch.
+
+## Converting a collection
 
 ```
-pip install mdcx            # convertir y consultar
-pip install "mdcx[mcp]"     # ademas, el servidor para agentes
-pip install "mdcx[ocr]"     # ademas, reconocimiento optico para escaneados
+pip install "mdcx[convert]"
+mdcx-convert --input ./Documents --output ./Documents_md
 ```
 
-## Uso
+The output mirrors the input directory structure, adds a global index, and
+records for each file the coverage achieved against its original.
 
-Convertir una carpeta, replicando su estructura:
-
-```
-mdcx-convertir --input ./Expediente --output ./Expediente_md
-```
-
-Empaquetar y consultar:
+## Packaging and querying
 
 ```
-mdcx empaquetar --output ./Expediente_md --destino corpus.mdcx --clave "..."
+mdcx pack --output ./Documents_md --target corpus.mdcx --key "..."
 mdcx info corpus.mdcx
-mdcx buscar corpus.mdcx "donde se indica el diametro minimo a modelar" --clave "..."
-mdcx exportar corpus.mdcx --destino ./recuperado --clave "..."
+mdcx search corpus.mdcx "where is the minimum diameter stated" --key "..."
+mdcx export corpus.mdcx --target ./restored --key "..."
 ```
 
-`exportar` esta por diseno: un formato del que no se puede salir es una trampa, por bien
-intencionado que sea.
+`info` reads the header without the key, so the issuer and the integrity of a
+file can be checked before opening it. `export` rebuilds the original folder: a
+format that cannot be left is a trap, however well intended.
 
-## Como servidor MCP
+## Using it as an MCP server
+
+The server requires Python and this package. It does not require the conversion
+stack, so the footprint is about 50 MB.
 
 ```json
 {
   "mcpServers": {
     "mdcx": {
       "command": "python",
-      "args": ["-m", "mdcx.servidor_mcp"],
+      "args": ["-m", "mdcx.mcp_server"],
       "env": {
-        "MDCX_ARCHIVO": "/ruta/al/corpus.mdcx",
-        "MDCX_CLAVE": "la-clave-del-paquete"
+        "MDCX_FILE": "/path/to/corpus.mdcx",
+        "MDCX_KEY": "package-key"
       }
     }
   }
 }
 ```
 
-Expone tres herramientas: `buscar` devuelve los pasajes que responden a una pregunta con su
-procedencia; `informacion` describe que contiene el corpus y con que fidelidad se convirtio;
-`documento` entrega un documento entero cuando los pasajes no bastan.
+Alternatively, with [uv](https://docs.astral.sh/uv/) the server runs without a
+prior installation, which is the usual arrangement for Python MCP servers:
 
-## Sobre las rutas
+```json
+{
+  "mcpServers": {
+    "mdcx": {
+      "command": "uvx",
+      "args": ["--from", "mdcx[mcp]", "python", "-m", "mdcx.mcp_server"],
+      "env": {
+        "MDCX_FILE": "/path/to/corpus.mdcx",
+        "MDCX_KEY": "package-key"
+      }
+    }
+  }
+}
+```
 
-Ninguna salida contiene rutas absolutas. Cada documento se identifica por un *pseudopath*
-que empieza por `@/` y se resuelve contra la carpeta o el paquete que lo contiene, de modo
-que el corpus sigue siendo valido esté donde esté: disco local, red o nube.
+Three tools are exposed. `search` returns the passages answering a question, each
+with its source document and portable path. `info` describes the corpus and the
+fidelity of its conversion. `document` returns a full document when passages are
+not enough.
 
-## Sobre el cifrado
+The server verifies the package before it starts listening, so a wrong path or
+key is reported immediately rather than on the first query.
 
-El paquete cifra en reposo y descifra en memoria al abrirlo; nada se escribe en claro en el
-disco. Eso protege un archivo que circula. No es lo mismo que buscar sobre datos cifrados
-sin descifrarlos nunca, que es un campo distinto, con ataques de fuga documentados y
-sobrecostes de segundos por consulta.
+## Tests
 
-La clave se deriva con scrypt, que hace lento probar claves: unos 8 intentos por segundo y
-32 MB de memoria cada uno, lo que impide paralelizar en tarjeta grafica. Aun asi, **la
-fortaleza real la decide la frase de paso**: una contrasena de diccionario cae en un dia.
+```
+pip install pytest
+python -m pytest tests/ -v
+```
 
-## Autoria
+The suite covers hostile inputs: empty and corrupted files, names in other
+alphabets, malformed queries including SQL injection attempts, truncated and
+tampered packages, and compaction against content loss.
 
-Concebido y dirigido por **Jorge Ellena G.**, programado con la asistencia de Claude
-(Anthropic).
+## Paths
 
-Cada decision de este paquete se tomo contra mediciones sobre un expediente real, no por
-costumbre: que motor de conversion usar, que licencia permite cual, como puntuar una
-busqueda, que optimizaciones aceptar y cuales descartar. Varias se descartaron precisamente
-por medirlas -reducir los candidatos de busqueda parecia acelerar diez veces y en realidad
-hacia caer el acierto de 19 a 17 sobre 20-, y esas mediciones estan anotadas en el codigo
-junto a la decision que justifican.
+No output contains absolute paths. Every document is identified by a pseudopath
+beginning with `@/`, resolved against the folder or package containing it, so a
+corpus remains valid wherever it is stored: local disk, network share or cloud.
 
-## Licencia
+## Signing
 
-Apache 2.0. Se puede usar, modificar y vender, conservando el aviso de autoria.
+A package can be signed so that its issuer can be proven rather than merely
+declared. The signature covers the digest of the encrypted body, so it attests
+both origin and content, and is verified without the encryption key.
 
-Se evito deliberadamente PyMuPDF, cuya licencia AGPL obligaria a publicar bajo AGPL
-cualquier programa que lo use, incluido el que solo lo ofrezca como servicio en red.
+```
+mdcx keygen
+mdcx pack --output ./Documents_md --target corpus.mdcx --key "..." \
+          --issuer "Acme Ltd" --signing-key <private-key>
+mdcx verify corpus.mdcx --public-key <public-key>
+```
+
+
+Verification also requires the body to be intact: a signature covering only the
+recorded digest would otherwise accept a package whose contents had been replaced
+while its header was left untouched.
+
+The issuer field alone is free text and proves nothing. Only a signature does.
+
+## Encryption
+
+The package encrypts at rest and decrypts in memory when opened; nothing is
+written to disk in clear. This protects a file in transit. It is not the same as
+searching over encrypted data without ever decrypting it, which is a separate
+field with documented leakage attacks and per-query costs measured in seconds.
+
+The key is derived with scrypt, which makes guessing slow: about 8 attempts per
+second, each requiring 32 MB of memory, which prevents parallelisation on a GPU.
+Even so, **the real strength is the passphrase**: a dictionary password falls in
+a day.
+
+## Authorship
+
+Conceived and directed by **Jorge Ellena G.**, programmed with the assistance of
+Claude (Anthropic).
+
+Every decision in this package was made against measurements rather than
+convention: which conversion engine to use, which licence permits which, how to
+rank a search, which optimisations to accept and which to discard. Several were
+discarded precisely because they were measured — reducing the search candidate
+pool appeared to be ten times faster and in fact lowered accuracy from 19 to 17
+out of 20 — and those measurements are recorded alongside the decisions they
+justify.
+
+## Licence
+
+Apache 2.0. The software may be used, modified and sold, provided the copyright
+notice is retained.
+
+PyMuPDF was deliberately avoided: its AGPL licence would require anyone using
+this software to publish their own under AGPL, including those offering it only
+as a network service.

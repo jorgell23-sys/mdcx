@@ -12,23 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""mdcx: convierte un expediente documental a Markdown verificado y lo deja consultable.
+"""Convert document collections to verified Markdown and make them queryable.
 
-El paquete resuelve tres cosas encadenadas:
+The package covers three stages:
 
-  Convertir. Cada documento pasa a Markdown y se comprueba contra el texto que el original
-  expone de verdad, con una libreria independiente del motor que convirtio. Lo que el motor
-  estructurado no incluye se anexa literal en vez de darse por perdido.
+Conversion
+    Each document is converted to Markdown and checked against the text the
+    original actually exposes, read with a library independent from the engine
+    that performed the conversion. Content the structured engine omits is
+    appended verbatim rather than reported as lost.
 
-  Empaquetar. El corpus, su indice de busqueda y la procedencia de cada pasaje caben en un
-  solo archivo .mdcx, cifrado, que se puede mover y verificar sin abrirlo.
+Packaging
+    The resulting corpus, its search index and the provenance of every passage
+    fit into a single encrypted ``.mdcx`` file. Its header can be read without
+    the key, so the issuer and the integrity of a file can be verified before
+    deciding to open it.
 
-  Consultar. Una pregunta devuelve los pasajes que la responden con su fuente exacta, en
-  milisegundos y sin pasar el expediente entero por el contexto de un modelo.
+Retrieval
+    A query returns the passages that answer it, each with its exact source, in
+    milliseconds and without sending the whole collection through a model's
+    context window.
 """
 
 __version__ = "1.0.0"
 
-from . import buscar, formato  # noqa: F401
+from . import archive, search  # noqa: F401
 
-__all__ = ["buscar", "formato", "__version__"]
+__all__ = ["archive", "search", "__version__"]

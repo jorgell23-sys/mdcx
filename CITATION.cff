@@ -1,18 +1,18 @@
 cff-version: 1.2.0
 title: "mdcx: conversion verificada de expedientes documentales a Markdown consultable"
-message: "Si usa este software en un trabajo publicado, cite la entrada siguiente."
+message: "If you use this software in published work, please cite the entry below."
 type: software
 authors:
   - family-names: Ellena
     given-names: Jorge
 repository-code: "https://github.com/jorgell23-sys/mdcx"
 abstract: >-
-  Convierte expedientes documentales completos a Markdown comprobando cada archivo
-  contra el texto que el original expone de verdad, empaqueta el corpus resultante
-  con su indice y su procedencia en un unico archivo cifrado, y lo expone a agentes
-  mediante el Model Context Protocol. Sobre un expediente de 99 documentos,
-  responder una consulta a traves del paquete cuesta 435 tokens de modelo frente a
-  los 2.265.488 que cuesta leer los originales.
+  Converts complete document collections to Markdown, checking each file against
+  the text the original actually exposes, packages the resulting corpus with its
+  index and provenance into a single encrypted file, and exposes it to agents
+  through the Model Context Protocol. Over a collection of 99 documents, answering
+  one query through the package costs 435 model tokens against the 2,265,488
+  required to read the originals.
 keywords:
   - document conversion
   - markdown
