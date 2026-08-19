@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mdcx"
+version = "1.0.0"
+description = "Convierte expedientes documentales a Markdown verificado, los empaqueta cifrados y los expone a agentes por MCP"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Jorge Ellena G." }]
+keywords = ["markdown", "document-conversion", "retrieval", "mcp", "provenance", "rag"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Topic :: Office/Business",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+# Lo minimo para convertir, empaquetar y consultar. Deliberadamente no incluye PyMuPDF:
+# su licencia AGPL obligaria a publicar bajo AGPL cualquier programa que dependiera de
+# este, y pypdfium2 cubre lo mismo sin esa condicion.
+dependencies = [
+    "docling>=2.0",
+    "pypdfium2>=4.0",
+    "python-docx>=1.0",
+    "openpyxl>=3.1",
+    "python-pptx>=1.0",
+    "cryptography>=41.0",
+]
+
+[project.optional-dependencies]
+# El servidor para agentes. Se deja aparte porque quien solo convierta documentos no
+# necesita arrastrar el protocolo.
+mcp = ["mcp>=1.0"]
+# Reconocimiento optico, para expedientes con documentos escaneados.
+ocr = ["rapidocr-onnxruntime>=1.3", "onnxruntime>=1.16"]
+
+[project.scripts]
+mdcx = "mdcx.formato:main"
+mdcx-convertir = "mdcx.convertidor_cli:main"
+mdcx-buscar = "mdcx.buscar:main"
+
+[project.urls]
+Homepage = "https://github.com/jorgell23-sys/mdcx"
+Issues = "https://github.com/jorgell23-sys/mdcx/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mdcx"]

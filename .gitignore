@@ -1,0 +1,13 @@
+# Paquetes de corpus: llevan documentos dentro, cifrados, y no se versionan.
+*.mdcx
+
+# Carpetas de trabajo.
+Input/
+Output/
+
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+*.egg-info/
