@@ -1,6 +1,6 @@
 # mdcx
 
-<!-- mcp-name: io.github.jorgell23-sys/mdcx -->
+<!-- mcp-name: io.github.jorgell23-sys/markdown-document-search -->
 
 [![PyPI](https://img.shields.io/pypi/v/mdcx)](https://pypi.org/project/mdcx/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22015991.svg)](https://doi.org/10.5281/zenodo.22015991)
 
