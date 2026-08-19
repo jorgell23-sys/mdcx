@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.jorgell23-sys/mdcx",
   "title": "Document corpus",
-  "description": "Query a converted and verified document collection. Returns the passages that answer a question, each with its source document and portable path, so sources can be cited rather than recalled.",
+  "description": "Query a verified document collection: passages that answer a question, with their source.",
   "version": "1.0.3",
   "repository": {
     "url": "https://github.com/jorgell23-sys/mdcx",
