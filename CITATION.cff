@@ -1,11 +1,12 @@
 cff-version: 1.2.0
-title: "mdcx: conversion verificada de expedientes documentales a Markdown consultable"
+title: "mdcx: verified conversion of document collections to queryable Markdown"
 message: "If you use this software in published work, please cite the entry below."
 type: software
 authors:
   - family-names: Ellena
     given-names: Jorge
 repository-code: "https://github.com/jorgell23-sys/mdcx"
+doi: 10.5281/zenodo.22015991
 abstract: >-
   Converts complete document collections to Markdown, checking each file against
   the text the original actually exposes, packages the resulting corpus with its
@@ -20,5 +21,5 @@ keywords:
   - model context protocol
   - provenance
 license: Apache-2.0
-version: 1.0.1
+version: 1.0.2
 date-released: "2026-08-19"

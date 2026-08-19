@@ -2,6 +2,8 @@
 
 <!-- mcp-name: io.github.jorgell23-sys/mdcx -->
 
+[![PyPI](https://img.shields.io/pypi/v/mdcx)](https://pypi.org/project/mdcx/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22015991.svg)](https://doi.org/10.5281/zenodo.22015991)
+
 Convert a document collection to verified Markdown, package it into a single
 encrypted file, and make it queryable by agents through the Model Context
 Protocol.
@@ -202,6 +204,13 @@ discarded precisely because they were measured — reducing the search candidate
 pool appeared to be ten times faster and in fact lowered accuracy from 19 to 17
 out of 20 — and those measurements are recorded alongside the decisions they
 justify.
+
+## Citation
+
+Archived on Zenodo with a permanent identifier. The concept DOI always resolves
+to the latest version:
+
+    https://doi.org/10.5281/zenodo.22015991
 
 ## Licence
 
