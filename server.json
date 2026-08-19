@@ -3,7 +3,7 @@
   "name": "io.github.jorgell23-sys/mdcx",
   "title": "Document corpus",
   "description": "Query a converted and verified document collection. Returns the passages that answer a question, each with its source document and portable path, so sources can be cited rather than recalled.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "repository": {
     "url": "https://github.com/jorgell23-sys/mdcx",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "mdcx",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "transport": {
         "type": "stdio"
       },

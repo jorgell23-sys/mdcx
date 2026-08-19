@@ -297,3 +297,93 @@ def test_pack_refuses_an_empty_corpus(workspace):
 def test_pack_refuses_a_missing_folder(workspace):
     with pytest.raises(ValueError, match="Not a folder"):
         archive.pack(workspace / "nope", workspace / "o.mdcx", KEY)
+
+
+# ---------------------------------------------------------------------------
+# Concurrency
+#
+# The MCP SDK dispatches synchronous handlers on a thread pool, so a cached
+# connection is consumed from a different thread on each call. Reported against
+# 1.0.2, where the server served one call per restart.
+# ---------------------------------------------------------------------------
+
+def test_connection_is_usable_from_other_threads(workspace):
+    import threading
+
+    archive.pack(_corpus(workspace / "c"), workspace / "o.mdcx", KEY)
+    connection, _ = archive.open_package(workspace / "o.mdcx", KEY)
+
+    results, errors = [], []
+
+    def run():
+        try:
+            results.append(archive.query(connection, "minimum diameter", limit=2))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"query failed across threads: {errors[0]}"
+    assert len(results) == 8
+
+
+def test_concurrent_queries_return_consistent_results(workspace):
+    """Allowing cross-thread use without a lock returns wrong rows without raising."""
+    import threading
+
+    archive.pack(_corpus(workspace / "c"), workspace / "o.mdcx", KEY)
+    connection, _ = archive.open_package(workspace / "o.mdcx", KEY)
+
+    expected = len(archive.query(connection, "minimum diameter", limit=5))
+    counts, errors = [], []
+
+    def run():
+        for _ in range(10):
+            try:
+                counts.append(len(archive.query(connection, "minimum diameter", limit=5)))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    assert set(counts) == {expected}, f"divergent results: {sorted(set(counts))}"
+
+
+def test_statistics_cache_is_not_keyed_by_object_id(workspace):
+    """id() is recycled, which could alias a stale entry from a closed package."""
+    archive.pack(_corpus(workspace / "a"), workspace / "a.mdcx", KEY)
+
+    other = workspace / "b"
+    (other / "Received").mkdir(parents=True)
+    (other / "Received" / "x.md").write_text(
+        "---\nsource_format: pdf\n---\n\nCompletely different wording here.\n",
+        encoding="utf-8")
+    archive.pack(other, workspace / "b.mdcx", KEY)
+
+    first, _ = archive.open_package(workspace / "a.mdcx", KEY)
+    first.close()
+    del first
+
+    second, _ = archive.open_package(workspace / "b.mdcx", KEY)
+    assert isinstance(archive.query(second, "different wording", limit=2), list)
+
+
+def test_mcp_tools_are_async():
+    """Synchronous handlers are dispatched on a thread pool by the SDK."""
+    import inspect
+
+    pytest.importorskip("mcp")
+    from mdcx import mcp_server
+
+    source = inspect.getsource(mcp_server.create_server)
+    for tool in ("def search(", "def info(", "def document("):
+        assert f"async {tool}" in source, f"{tool} must be async"

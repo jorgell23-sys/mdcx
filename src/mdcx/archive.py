@@ -47,6 +47,7 @@ import os
 import sqlite3
 import struct
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -57,6 +58,17 @@ SCRYPT_N = 2 ** 15
 SCRYPT_R = 8
 SCRYPT_P = 1
 KEY_BYTES = 32
+
+# Serialises every access to a connection. SQLite is compiled in serialised mode
+# here, but the prepared statement cache lives in the Python object and is not
+# protected by it: two threads running the same statement can collide and return
+# a wrong row without raising.
+_CONNECTION_LOCK = threading.RLock()
+
+# Maps a connection to the digest of the package it holds, so cached statistics
+# are keyed by content rather than by id(), which Python recycles after garbage
+# collection and could alias a stale entry from a closed package.
+_CONNECTION_KEYS: dict[int, str] = {}
 
 def _derive_key(key: str, salt: bytes) -> bytes:
     memory = 128 * SCRYPT_N * SCRYPT_R
@@ -96,7 +108,7 @@ def _build_database(folder: Path) -> tuple[bytes, dict]:
         );
         CREATE TABLE passage (
             id INTEGER PRIMARY KEY,
-            documento_id INTEGER NOT NULL REFERENCES document(id),
+            document_id INTEGER NOT NULL REFERENCES document(id),
             position INTEGER NOT NULL,
             text TEXT NOT NULL
         );
@@ -335,21 +347,45 @@ def open_package(path: Path, key: str) -> tuple[sqlite3.Connection, dict]:
     header["_intact"] = True
     header["_body_bytes"] = len(body)
 
-    connection = sqlite3.connect(":memory:")
+    # check_same_thread=False is required because callers such as the MCP server
+    # dispatch handlers on a thread pool, so a single cached connection is used
+    # from a different thread on each call. On its own it is not safe: two threads
+    # running the same statement can collide on the per-connection prepared
+    # statement cache and return a wrong row without raising. Every access is
+    # therefore serialised through _CONNECTION_LOCK.
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
     connection.deserialize(lzma.decompress(compressed))
+    _CONNECTION_KEYS[id(connection)] = header["body_digest"]
     return connection, header
 
-_SQL_BASE = """
+_SQL_TEMPLATE = """
     SELECT d.name, d.pseudopath, d.source, p.text, bm25(passage_fts) AS score
     FROM passage_fts
     JOIN passage p ON p.id = passage_fts.rowid
-    JOIN document d ON d.id = p.documento_id
+    JOIN document d ON d.id = p.{document_column}
     WHERE passage_fts MATCH ?
 """
 
+def document_column(connection: sqlite3.Connection) -> str:
+    """Name of the column linking a passage to its document.
+
+    Packages written before 1.0.3 use a Spanish column name. Reading it from the
+    table definition keeps those packages usable instead of failing on a name.
+    """
+    key = _CONNECTION_KEYS.get(id(connection), id(connection))
+    cached = _COLUMN_CACHE.get(key)
+    if cached:
+        return cached
+    with _CONNECTION_LOCK:
+        names = [row[1] for row in connection.execute("PRAGMA table_info(passage)")]
+    name = "document_id" if "document_id" in names else "documento_id"
+    _COLUMN_CACHE[key] = name
+    return name
+
+
 def _run_match(connection: sqlite3.Connection, expr: str, limit: int,
               only: str | None) -> list[dict]:
-    sql = _SQL_BASE
+    sql = _SQL_TEMPLATE.format(document_column=document_column(connection))
     params: list = [expr]
     if only:
         sql += " AND d.source = ?"
@@ -357,7 +393,8 @@ def _run_match(connection: sqlite3.Connection, expr: str, limit: int,
     sql += " ORDER BY score LIMIT ?"
     params.append(limit)
     try:
-        rows = connection.execute(sql, params).fetchall()
+        with _CONNECTION_LOCK:
+            rows = connection.execute(sql, params).fetchall()
     except sqlite3.OperationalError:
         return []
     return [{"document": r[0], "pseudopath": r[1], "source": r[2],
@@ -418,8 +455,9 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
 
     if len(phrase.split()) >= 5:
         needle = B._normalize(phrase)
-        preferred = [n for (n, t) in connection.execute(
-            "SELECT name, normalized_text FROM document") if t and needle in t]
+        with _CONNECTION_LOCK:
+            preferred = [n for (n, t) in connection.execute(
+                "SELECT name, normalized_text FROM document") if t and needle in t]
         if preferred:
             position = {d: i for i, d in enumerate(preferred)}
             ranking.sort(key=lambda par: (position.get(par[1][0]["document"], len(position)),
@@ -445,14 +483,19 @@ def _term_frequencies(text: str, terms: set[str]) -> dict[str, int]:
             cuenta[t] = cuenta.get(t, 0) + 1
     return cuenta
 
-_STATS_CACHE: dict[int, tuple] = {}
+_STATS_CACHE: dict = {}
+
+# Resolved column name per package, so the lookup happens once.
+_COLUMN_CACHE: dict = {}
 
 def _corpus_statistics(connection: sqlite3.Connection) -> tuple[dict, int, float]:
     """Document frequency per term and mean passage length, as packed."""
-    key = id(connection)
+    key = _CONNECTION_KEYS.get(id(connection), id(connection))
     if key not in _STATS_CACHE:
-        df = {t: n for t, n in connection.execute("SELECT term, passages FROM df")}
-        row = connection.execute("SELECT value FROM meta WHERE key='passages'").fetchone()
+        with _CONNECTION_LOCK:
+            df = {t: n for t, n in connection.execute("SELECT term, passages FROM df")}
+            row = connection.execute(
+                "SELECT value FROM meta WHERE key='passages'").fetchone()
         n = int(json.loads(row[0])) if row else max(len(df), 1)
         row = connection.execute(
             "SELECT value FROM meta WHERE key='largo_medio_pasaje'").fetchone()
@@ -468,7 +511,7 @@ def export(path: Path, key: str, target: Path) -> dict:
     try:
         rows = connection.execute(
             "SELECT d.pseudopath, d.name, group_concat(p.text, char(10) || char(10)) "
-            "FROM document d JOIN passage p ON p.documento_id = d.id "
+            "FROM document d JOIN passage p ON p." + document_column(connection) + " = d.id "
             "GROUP BY d.id ORDER BY p.position").fetchall()
         written = 0
         for pseudopath, name, text in rows:

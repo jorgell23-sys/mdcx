@@ -90,7 +90,8 @@ def create_server():
             "English."
         ),
     )
-    def search(query: str, limit: int = 5, direction: str | None = None) -> dict:
+    async def search(query: str, limit: int = 5,
+                     direction: str | None = None) -> dict:
         """Return passages answering the query.
 
         query: the question, phrased as it would be asked of a person.
@@ -126,7 +127,7 @@ def create_server():
             "and the fidelity with which it was converted from the originals."
         ),
     )
-    def info() -> dict:
+    async def info() -> dict:
         """Return the corpus record without querying it."""
         _connection()
         header = _STATE.get("header", {})
@@ -149,13 +150,13 @@ def create_server():
             "document may span tens of thousands of tokens."
         ),
     )
-    def document(name: str) -> dict:
+    async def document(name: str) -> dict:
         """Return the full text of one document in the corpus."""
         connection = _connection()
         row = connection.execute(
             "SELECT d.name, d.pseudopath, d.source, "
             "       group_concat(p.text, char(10) || char(10)) "
-            "FROM document d JOIN passage p ON p.document_id = d.id "
+            "FROM document d JOIN passage p ON p." + archive.document_column(connection) + " = d.id "
             "WHERE d.name = ? OR d.pseudopath = ? "
             "GROUP BY d.id ORDER BY p.position LIMIT 1",
             (name, name)).fetchone()
