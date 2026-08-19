@@ -284,3 +284,16 @@ def test_generated_keys_are_distinct():
     a, _ = archive.generate_signing_key()
     b, _ = archive.generate_signing_key()
     assert a != b
+
+
+def test_pack_refuses_an_empty_corpus(workspace):
+    """An empty package written without complaint fails only when queried."""
+    empty = workspace / "empty"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="No Markdown documents"):
+        archive.pack(empty, workspace / "o.mdcx", KEY)
+
+
+def test_pack_refuses_a_missing_folder(workspace):
+    with pytest.raises(ValueError, match="Not a folder"):
+        archive.pack(workspace / "nope", workspace / "o.mdcx", KEY)

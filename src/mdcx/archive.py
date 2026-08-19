@@ -229,9 +229,21 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
     """Write the .mdcx file and return its figures."""
     import lzma
 
+    if not folder.is_dir():
+        raise ValueError(f"Not a folder: {folder}")
+
     t0 = time.perf_counter()
     base_score, summary = _build_database(folder)
     t_base = time.perf_counter() - t0
+
+    # An empty package is written without complaint and fails only when queried,
+    # long after the mistake. The usual cause is pointing at the folder of source
+    # documents rather than at the converted Markdown.
+    if not summary["documents"]:
+        raise ValueError(
+            f"No Markdown documents found in {folder}. "
+            "This should be the output folder of a conversion, not the source documents."
+        )
 
     t0 = time.perf_counter()
     compressed = lzma.compress(base_score, preset=6)
