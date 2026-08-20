@@ -86,8 +86,8 @@ def create_server():
         description=(
             "Returns the passages that answer a query, each with its source "
             "document, portable path and whether it was sent or received. "
-            "Queries may be written in Spanish even when the documents tore in "
-            "English."
+            "Matching is literal, so the query should be written in the same "
+            "language as the documents; use info to see which that is."
         ),
     )
     async def search(query: str, limit: int = 5,
@@ -104,7 +104,7 @@ def create_server():
         if scope not in ("received", "sent"):
             scope = None
         results = archive.query(connection, query, limit=top, only=scope)
-        return {
+        respuesta = {
             "query": query,
             "found": len(results),
             "passages": [
@@ -118,6 +118,11 @@ def create_server():
                 for item in results
             ],
         }
+        if not results:
+            aviso = archive.language_mismatch(connection, query)
+            if aviso:
+                respuesta["hint"] = aviso
+        return respuesta
 
     @server.tool(
         name="info",
@@ -137,6 +142,7 @@ def create_server():
             "created_utc": header.get("created_utc"),
             "documents": header.get("documents"),
             "passages": header.get("passages"),
+            "language": header.get("language") or "(not detected)",
             "integrity": "intact" if header.get("_intact") else "ALTERED",
             "conversion": header.get("conversion", {}),
         }

@@ -126,98 +126,102 @@ def _bm25_index(docs: list[dict], only: str | None) -> dict:
     _BM25_CACHE[key] = idx
     return idx
 
-GLOSSARY = {
-    "caneria": ["piping", "pipe"],
-    "canerias": ["piping", "pipe"],
-    "tuberia": ["piping", "pipe"],
-    "tuberias": ["piping", "pipe"],
-    "diametro": ["diameter", "bore", "nps", "size"],
-    "diametros": ["diameter", "bore", "nps", "size"],
-    "minimo": ["minimum", "smallest", "above"],
-    "minima": ["minimum", "smallest", "above"],
-    "limit": ["maximum", "largest"],
-    "maxima": ["maximum", "largest"],
-    "modelar": ["modeled", "modelled", "model", "modeling"],
-    "modelado": ["modeled", "modelled", "model", "modeling"],
-    "modelo": ["model"],
-    "plano": ["drawing"],
-    "planos": ["drawings"],
-    "entregable": ["deliverable"],
-    "entregables": ["deliverables"],
-    "alcance": ["scope"],
-    "plazo": ["schedule", "duration"],
-    "plazos": ["schedule", "milestones"],
-    "hito": ["milestone"],
-    "hitos": ["milestones"],
-    "ingenieria": ["engineering"],
-    "detalle": ["detail", "detailed"],
-    "basica": ["basic"],
-    "acero": ["steel"],
-    "estructural": ["structural"],
-    "estructuras": ["structures", "structural"],
-    "civil": ["civil"],
-    "electrico": ["electrical"],
-    "electrica": ["electrical"],
-    "instrumentacion": ["instrumentation"],
-    "proceso": ["process"],
-    "procesos": ["process"],
-    "equipo": ["equipment"],
-    "equipos": ["equipment"],
-    "soporte": ["support"],
-    "soportes": ["supports"],
-    "valvula": ["valve"],
-    "valvulas": ["valves"],
-    "revision": ["review", "revision"],
-    "revisiones": ["reviews"],
-    "responsabilidad": ["responsibility", "responsible"],
-    "contratista": ["contractor"],
-    "proveedor": ["supplier", "vendor"],
-    "proveedores": ["suppliers", "vendors"],
-    "cliente": ["client", "owner"],
-    "requisito": ["requirement"],
-    "requisitos": ["requirements"],
-    "norma": ["standard", "code"],
-    "normas": ["standards", "codes"],
-    "criterio": ["criteria", "criterion"],
-    "criterios": ["criteria"],
-    "interfaz": ["interface"],
-    "interfaces": ["interfaces"],
-    "integracion": ["integration"],
-    "pulgada": ["inch", "nps"],
-    "pulgadas": ["inches", "nps"],
-    "presion": ["pressure"],
-    "temperatura": ["temperature"],
-    "capacidad": ["capacity"],
-    "costo": ["cost"],
-    "costos": ["costs"],
-    "precio": ["price"],
-    "moneda": ["currency"],
-    "pago": ["payment"],
-    "pagos": ["payments"],
-    "garantia": ["warranty", "guarantee"],
-    "seguridad": ["safety", "security"],
-    "calidad": ["quality"],
-    "riesgo": ["risk"],
-    "riesgos": ["risks"],
-    "reunion": ["meeting"],
-    "reuniones": ["meetings"],
-    "informe": ["report"],
-    "informes": ["reports"],
-    "document": ["document"],
-    "documents": ["documents"],
-    "donde": [],
-    "indica": [],
-    "cual": [],
-    "como": [],
-    "para": [],
+# Optional query glossary, empty by default.
+#
+# A glossary maps a term to equivalents in the language of a corpus, and is
+# therefore specific to one domain and one language pair. The package used to
+# ship one covering piping engineering, which helped that corpus, contributed
+# nothing to any other, and backed a claim of general Spanish support that
+# failed on eleven of twelve queries outside that domain.
+#
+# Load your own with load_glossary(path) and assign it here.
+GLOSSARY: dict = {}
+
+# Function words are the most frequent words of each language and identify it
+# without a model or a dependency. Detection is used to warn about a mismatch,
+# never to alter retrieval.
+_LANGUAGE_MARKERS = {
+    "en": {"the", "of", "and", "to", "in", "is", "that", "for", "with", "as",
+           "are", "was", "on", "at", "by", "this", "be", "from", "or", "an"},
+    "es": {"el", "la", "de", "que", "y", "en", "los", "del", "las", "por",
+           "con", "para", "una", "es", "se", "al", "lo", "como", "mas", "su"},
+    "de": {"der", "die", "das", "und", "in", "den", "von", "zu", "mit", "sich",
+           "des", "auf", "ist", "im", "dem", "nicht", "ein", "eine", "als"},
+    "fr": {"le", "la", "les", "de", "et", "des", "en", "un", "une", "du",
+           "dans", "est", "pour", "que", "qui", "sur", "au", "par", "pas"},
+    "pt": {"o", "a", "de", "que", "e", "do", "da", "em", "um", "para", "com",
+           "nao", "uma", "os", "no", "se", "na", "por", "mais", "as"},
+    "it": {"il", "di", "che", "e", "la", "in", "un", "per", "con", "del",
+           "una", "le", "da", "non", "sono", "si", "come", "piu", "al"},
 }
 
-STOPWORDS = {
-    "que", "cual", "cuales", "como", "donde", "cuando", "quien", "porque", "cuanto",
-    "what", "which", "how", "where", "when", "who", "why",
-    "the", "and", "for", "with", "that", "this", "from", "are", "was", "were", "has",
-    "have", "will", "shall", "can", "could", "would", "should", "not", "but", "any",
-}
+# Every marker of every language. Used as a floor for stopword removal when the
+# corpus is too small to derive its own.
+_ALL_MARKERS = {w for words in _LANGUAGE_MARKERS.values() for w in words}
+
+# Words removed from a query before matching. Previously a fixed Spanish and
+# English list, which filtered nothing in a German or French corpus. Using the
+# markers of every supported language covers all of them, and corpus_stopwords()
+# derives the rest from the material itself.
+STOPWORDS = _ALL_MARKERS
+
+
+def detect_language(text: str, minimum: float = 0.05) -> tuple[str | None, float]:
+    """Identify the language of a text by its function words.
+
+    Returns the code and the proportion of words that matched. Below the minimum
+    the answer is None: a text of technical terms and figures may legitimately
+    contain almost no function words, and guessing there would be worse than
+    admitting ignorance.
+    """
+    words = [w for w in _TOKEN_RE.findall(text.lower()) if w.isalpha()]
+    if not words:
+        return None, 0.0
+    scores = {
+        code: sum(1 for w in words if w in markers) / len(words)
+        for code, markers in _LANGUAGE_MARKERS.items()
+    }
+    best = max(scores, key=scores.get)
+    return (best, scores[best]) if scores[best] >= minimum else (None, scores[best])
+
+
+def corpus_stopwords(documents: list[dict], threshold: float = 0.6) -> set:
+    """Words appearing in most documents, which therefore distinguish none.
+
+    Deriving them from the corpus works in any language, whereas a fixed list
+    only works in the languages someone thought to include. The fixed markers
+    are added as a floor for corpora too small for the frequency to mean
+    anything.
+    """
+    if not documents:
+        return set(_ALL_MARKERS)
+    counts: dict[str, int] = {}
+    for d in documents:
+        for term in {w for w in _TOKEN_RE.findall(d["norm"]) if len(w) > 2}:
+            counts[term] = counts.get(term, 0) + 1
+    limit = max(2, int(len(documents) * threshold))
+    return {t for t, n in counts.items() if n >= limit} | _ALL_MARKERS
+
+
+def load_glossary(path: Path) -> dict:
+    """Read a query glossary from a JSON file: {"term": ["equivalent", ...]}.
+
+    A glossary is inherently specific to a domain and a language pair. The one
+    that used to ship with the package covered piping engineering, which helped
+    that corpus and contributed nothing to any other while backing a promise of
+    general Spanish support. Supplying one is now the caller's decision.
+    """
+    import json
+
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Cannot read glossary {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("A glossary must be an object mapping terms to lists.")
+    return {str(k).lower(): [str(v) for v in (vs or [])] for k, vs in data.items()}
+
+
 
 def expand_terms(terms: list[str]) -> list[str]:
     """Add corpus-language equivalents to the query, dropping stopwords."""

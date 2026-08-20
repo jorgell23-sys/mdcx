@@ -161,8 +161,17 @@ def _build_database(folder: Path) -> tuple[bytes, dict]:
     connection.executemany("INSERT INTO df VALUES (?,?)", df_count.items())
     avg_length = sum(lengths) / len(lengths) if lengths else 60.0
 
+    # The language of the corpus is recorded so that a client, a model, or the
+    # query itself can tell when a question is written in another one. Retrieval
+    # is lexical: a term absent from the index cannot match, and without this the
+    # result is an empty answer indistinguishable from "the corpus lacks it".
+    muestra = " ".join(d["text"][:4000] for d in docs[:40])
+    idioma, confianza = B.detect_language(muestra)
+
     summary = {
         "documents": len(docs),
+        "language": idioma,
+        "language_confidence": round(confianza, 3),
         "passages": n_passages,
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source_folder": folder.name,
@@ -274,6 +283,8 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         "created_utc": summary["created_utc"],
         "documents": summary["documents"],
         "passages": summary["passages"],
+        "language": summary.get("language"),
+        "language_confidence": summary.get("language_confidence"),
         "encryption": "AES-256-GCM",
         "key_derivation": {"algorithm": "scrypt", "n": SCRYPT_N, "r": SCRYPT_R, "p": SCRYPT_P},
         "compression": "lzma",
@@ -308,6 +319,65 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         "seconds_encrypt": round(t_cifrado, 2),
         **summary,
     }
+
+def language_mismatch(connection: sqlite3.Connection, query_text: str) -> str | None:
+    """Explain an empty result when the query cannot match the index.
+
+    Retrieval is lexical: a term absent from the index cannot match, however well
+    the material is indexed. When none of the query terms appear in the index at
+    all, and the corpus language is known and differs from what the query looks
+    like, the language is almost certainly the reason, and saying so turns a
+    silent zero into something the reader can act on.
+
+    This does not make the query work. It explains why it did not.
+    """
+    from . import search as B
+
+    terms = {t for t in B._TOKEN_RE.findall(B._normalize(query_text)) if len(t) > 2}
+    terms -= B.STOPWORDS
+    if not terms:
+        return None
+
+    with _CONNECTION_LOCK:
+        marcadores = ",".join("?" * len(terms))
+        fila = connection.execute(
+            f"SELECT count(*) FROM df WHERE term IN ({marcadores})",
+            tuple(terms)).fetchone()
+    presentes = fila[0] if fila else 0
+    if presentes:
+        # Some term does exist in the corpus, so the empty result is about the
+        # combination, not about the language.
+        return None
+
+    idioma = _corpus_language(connection)
+    if not idioma:
+        return ("None of the query terms appear in this corpus. If the documents "
+                "are in another language, note that matching is literal and a "
+                "query in a different language finds nothing.")
+
+    consulta_idioma, _ = B.detect_language(query_text)
+    if consulta_idioma and consulta_idioma == idioma:
+        return None
+    detalle = f" The query looks like '{consulta_idioma}'." if consulta_idioma else ""
+    return (f"None of the query terms appear in this corpus, which is in "
+            f"'{idioma}'.{detalle} Matching is literal, so a query in another "
+            f"language finds nothing even when the material is present. Try the "
+            f"same question in '{idioma}'.")
+
+
+def _corpus_language(connection: sqlite3.Connection) -> str | None:
+    """Language recorded when the package was built, if any."""
+    with _CONNECTION_LOCK:
+        fila = connection.execute(
+            "SELECT value FROM meta WHERE key='language'").fetchone()
+    if not fila or not fila[0]:
+        return None
+    try:
+        valor = json.loads(fila[0])
+    except Exception:  # noqa: BLE001
+        valor = fila[0]
+    return valor or None
+
 
 def read_header(path: Path) -> dict:
     """Header and integrity status, without requiring the key."""

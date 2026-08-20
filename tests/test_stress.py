@@ -465,3 +465,95 @@ def test_start_method_is_spawn_when_cuda_is_present():
     fake_torch.cuda.is_available.return_value = True
     with patch.dict("sys.modules", {"torch": fake_torch}):
         assert cli._select_start_method() == "spawn"
+
+
+# ---------------------------------------------------------------------------
+# Language
+#
+# Retrieval is lexical, so it works in whatever language a corpus is written in
+# and cannot cross between languages. What was wrong was a glossary of 83 terms
+# from one domain backing a claim of general cross-language support, and an empty
+# result that never said why.
+# ---------------------------------------------------------------------------
+
+def _multilingual_corpus(root: Path) -> Path:
+    folder = root / "Received"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "en.md").write_text(
+        "---\nsource_format: pdf\n---\n\n"
+        "Solving quadratic equations. The quadratic formula gives the roots of a "
+        "second degree polynomial equation in algebra.\n", encoding="utf-8")
+    return root
+
+
+def test_retrieval_works_in_the_language_of_the_corpus(workspace):
+    """A German corpus answers German queries without any glossary."""
+    folder = workspace / "de" / "Received"
+    folder.mkdir(parents=True)
+    (folder / "a.md").write_text(
+        "---\nsource_format: pdf\n---\n\n"
+        "Quadratische Gleichungen loesen. Die Loesungsformel liefert die Wurzeln "
+        "eines Polynoms zweiten Grades.\n", encoding="utf-8")
+    archive.pack(workspace / "de", workspace / "de.mdcx", KEY)
+    connection, _ = archive.open_package(workspace / "de.mdcx", KEY)
+    assert archive.query(connection, "quadratische Gleichungen", limit=3)
+
+
+def test_corpus_language_is_recorded(workspace):
+    archive.pack(_multilingual_corpus(workspace / "c"), workspace / "c.mdcx", KEY)
+    header = archive.read_header(workspace / "c.mdcx")
+    assert header.get("language") == "en"
+
+
+def test_empty_result_explains_a_language_mismatch(workspace):
+    """An empty result used to be indistinguishable from absent material."""
+    archive.pack(_multilingual_corpus(workspace / "c"), workspace / "c.mdcx", KEY)
+    connection, _ = archive.open_package(workspace / "c.mdcx", KEY)
+
+    assert archive.query(connection, "ecuacion cuadratica", limit=3) == []
+    warning = archive.language_mismatch(connection, "ecuacion cuadratica")
+    assert warning and "'en'" in warning
+
+
+def test_no_warning_when_the_query_matches(workspace):
+    """A query that finds nothing for other reasons must not blame the language."""
+    archive.pack(_multilingual_corpus(workspace / "c"), workspace / "c.mdcx", KEY)
+    connection, _ = archive.open_package(workspace / "c.mdcx", KEY)
+    assert archive.language_mismatch(connection, "quadratic formula") is None
+
+
+def test_glossary_is_empty_by_default():
+    """A domain glossary must not ship as if it were general language support."""
+    assert search.GLOSSARY == {}
+
+
+def test_a_glossary_can_be_supplied(workspace):
+    import json
+
+    path = workspace / "glossary.json"
+    path.write_text(json.dumps({"caneria": ["piping"]}), encoding="utf-8")
+    loaded = search.load_glossary(path)
+    assert loaded["caneria"] == ["piping"]
+
+
+def test_stopwords_cover_several_languages():
+    """A Spanish and English list filtered nothing in a German corpus."""
+    for word in ("the", "el", "der", "le", "il", "que"):
+        assert word in search.STOPWORDS
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("The quadratic formula gives the roots of a polynomial", "en"),
+    ("La ecuacion cuadratica se resuelve con la formula que da las raices", "es"),
+    ("Die Loesungsformel liefert die Wurzeln des Polynoms zweiten Grades", "de"),
+    ("La formule donne les racines du polynome dans les equations", "fr"),
+])
+def test_language_detection(text, expected):
+    code, _ = search.detect_language(text)
+    assert code == expected
+
+
+def test_detection_admits_ignorance():
+    """A string of technical terms carries no function words to judge by."""
+    code, _ = search.detect_language("NPS DN 50 ISO 9001 ASME B31.3")
+    assert code is None

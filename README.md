@@ -154,6 +154,37 @@ The suite covers hostile inputs: empty and corrupted files, names in other
 alphabets, malformed queries including SQL injection attempts, truncated and
 tampered packages, and compaction against content loss.
 
+## Language
+
+Retrieval is lexical: a query matches words that appear in the documents. It
+therefore works in whatever language a corpus is written in — English, German,
+French, Spanish, Portuguese, Italian and any other the tokenizer segments — and
+it cannot cross between languages. A Spanish query finds nothing in an English
+corpus, however well indexed, because the words are not there.
+
+The package records the predominant language of a corpus when it is built, and
+`info` reports it. When a query returns nothing and none of its terms appear in
+the index, the result says so and names the corpus language, so an empty answer
+can be told apart from material the corpus does not hold.
+
+Earlier versions shipped a glossary of 83 Spanish terms and advertised Spanish
+queries against English documents. Those terms all came from piping engineering
+and project management; measured against a corpus of mathematics, biology and
+history the glossary contributed nothing, and the claim it backed failed on
+eleven of twelve queries. Removing it left retrieval unchanged even on the
+engineering corpus it was written for: 19 of 20 queries still find the right
+document in the top five results.
+
+A glossary remains available for anyone who wants one, as a decision of theirs
+rather than an assumption of the package:
+
+```python
+from mdcx import search
+search.GLOSSARY = search.load_glossary("my-glossary.json")
+```
+
+The file maps a term to its equivalents: `{"caneria": ["piping", "pipe"]}`.
+
 ## Paths
 
 No output contains absolute paths. Every document is identified by a pseudopath
