@@ -86,8 +86,10 @@ def create_server():
         description=(
             "Returns the passages that answer a query, each with its source "
             "document, portable path and whether it was sent or received. "
-            "Matching is literal, so the query should be written in the same "
-            "language as the documents; use info to see which that is."
+            "When the package was built with meaning indexed, a query reaches "
+            "documents written in other languages as well; use info to see "
+            "whether it was. Otherwise matching is by word, and the query "
+            "should be written in the language of the documents."
         ),
     )
     async def search(query: str, limit: int = 5,
@@ -124,6 +126,16 @@ def create_server():
                 respuesta["hint"] = aviso
         return respuesta
 
+    def _cross_language() -> str:
+        """How this server can answer, in the terms that change the answer."""
+        connection = _connection()
+        if not archive.has_vectors(connection):
+            return "no: this package indexes words only"
+        if not archive._semantic_ready(connection):
+            return ("not in this installation: the package indexes meaning, but "
+                    "the multilingual extra is missing or set to another model")
+        return "yes: a query in one language reaches documents in the others"
+
     @server.tool(
         name="info",
         title="Corpus information",
@@ -143,6 +155,7 @@ def create_server():
             "documents": header.get("documents"),
             "passages": header.get("passages"),
             "language": header.get("language") or "(not detected)",
+            "cross_language_search": _cross_language(),
             "integrity": "intact" if header.get("_intact") else "ALTERED",
             "conversion": header.get("conversion", {}),
         }

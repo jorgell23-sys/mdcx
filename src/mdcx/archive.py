@@ -85,7 +85,7 @@ def _decrypt(body: bytes, clave_derivada: bytes, nonce: bytes) -> bytes:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     return AESGCM(clave_derivada).decrypt(nonce, body, None)
 
-def _build_database(folder: Path) -> tuple[bytes, dict]:
+def _build_database(folder: Path, semantic: bool = False) -> tuple[bytes, dict]:
     """Build the in-memory database with documents, index and provenance."""
     from . import search as B
 
@@ -120,6 +120,14 @@ def _build_database(folder: Path) -> tuple[bytes, dict]:
         -- twice: FTS5 indexes what lives in the passage table.
         CREATE VIRTUAL TABLE passage_fts USING fts5(
             search_text, content='passage', content_rowid='id', tokenize='unicode61'
+        );
+        -- Vector of each passage, when the package was built with semantic
+        -- retrieval. Half precision: the loss against single precision is far
+        -- below the differences the ranking turns on, and it halves what a
+        -- corpus of many passages adds to the file.
+        CREATE TABLE passage_vector (
+            passage_id INTEGER PRIMARY KEY REFERENCES passage(id),
+            vector BLOB NOT NULL
         );
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
         -- Document frequency per term. FTS5 holds this internally but does not
@@ -195,6 +203,9 @@ def _build_database(folder: Path) -> tuple[bytes, dict]:
             summary["conversion"] = m.get("summary", {})
         except Exception:  # noqa: BLE001
             pass
+    if semantic:
+        summary.update(_embed_passages(connection))
+
     for k, v in summary.items():
         connection.execute("INSERT INTO meta VALUES (?,?)",
                     (k, json.dumps(v) if not isinstance(v, str) else v))
@@ -256,7 +267,7 @@ def verify_signature(path: Path, public_key: str) -> bool:
 
 
 def pack(folder: Path, target: Path, key: str, issuer: str = "",
-         signing_key: str = "") -> dict:
+         signing_key: str = "", semantic: bool = False) -> dict:
     """Write the .mdcx file and return its figures."""
     import lzma
 
@@ -264,7 +275,7 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         raise ValueError(f"Not a folder: {folder}")
 
     t0 = time.perf_counter()
-    base_score, summary = _build_database(folder)
+    base_score, summary = _build_database(folder, semantic=semantic)
     t_base = time.perf_counter() - t0
 
     # An empty package is written without complaint and fails only when queried,
@@ -329,6 +340,100 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         "seconds_encrypt": round(t_cifrado, 2),
         **summary,
     }
+
+
+def _embed_passages(connection: sqlite3.Connection) -> dict:
+    """Compute and store the vector of every passage.
+
+    Encoding a corpus costs far more than encoding a query, and it is done once,
+    here, so that whoever receives the package pays only for their own queries.
+    """
+    import numpy as np
+
+    from . import semantic
+
+    filas = connection.execute("SELECT id, text FROM passage ORDER BY id").fetchall()
+    if not filas:
+        return {}
+
+    identificadores = [f[0] for f in filas]
+    vectores = semantic.encode([f[1] for f in filas], role="passage")
+    vectores = np.asarray(vectores, dtype=np.float16)
+    connection.executemany(
+        "INSERT INTO passage_vector VALUES (?,?)",
+        [(i, v.tobytes()) for i, v in zip(identificadores, vectores)])
+    return {"embedding_model": semantic.model_name(),
+            "embedding_dimensions": int(vectores.shape[1])}
+
+
+def has_vectors(connection: sqlite3.Connection) -> bool:
+    """Whether the package carries passage vectors."""
+    fila = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='passage_vector'"
+    ).fetchone()
+    if not fila:
+        return False
+    return connection.execute("SELECT 1 FROM passage_vector LIMIT 1").fetchone() is not None
+
+
+_VECTOR_CACHE: dict[int, tuple] = {}
+
+
+def _vectors(connection: sqlite3.Connection):
+    """The matrix of passage vectors, read once per connection.
+
+    Reading and assembling them takes long enough to be felt on a corpus of many
+    passages, and a server answers many queries against the same package.
+    """
+    import numpy as np
+
+    clave = id(connection)
+    if clave in _VECTOR_CACHE:
+        return _VECTOR_CACHE[clave]
+    filas = connection.execute(
+        "SELECT passage_id, vector FROM passage_vector ORDER BY passage_id").fetchall()
+    identificadores = [f[0] for f in filas]
+    matriz = np.frombuffer(b"".join(f[1] for f in filas), dtype=np.float16)
+    matriz = matriz.reshape(len(filas), -1).astype(np.float32)
+    _VECTOR_CACHE[clave] = (identificadores, matriz)
+    return _VECTOR_CACHE[clave]
+
+
+def semantic_query(connection: sqlite3.Connection, query_text: str,
+                   limit: int = 8) -> list[dict]:
+    """Rank passages by meaning rather than by word.
+
+    This is what reaches a document written in another language: the query and
+    the document share no term, and the model places them near each other
+    because they say the same thing.
+    """
+    import numpy as np
+
+    from . import semantic
+
+    identificadores, matriz = _vectors(connection)
+    if not identificadores:
+        return []
+    vector = np.asarray(semantic.encode([query_text], role="query")[0],
+                        dtype=np.float32)
+    puntajes = matriz @ vector
+    mejores = np.argsort(-puntajes)[:limit]
+
+    columna = document_column(connection)
+    salida = []
+    for posicion in mejores:
+        pid = identificadores[int(posicion)]
+        fila = connection.execute(
+            f"SELECT d.name, d.pseudopath, d.source, p.text "
+            f"FROM passage p JOIN document d ON d.id = p.{columna} WHERE p.id = ?",
+            (pid,)).fetchone()
+        if fila is None:
+            continue
+        salida.append({"document": fila[0], "pseudopath": fila[1], "source": fila[2],
+                       "passage": fila[3], "score": float(puntajes[int(posicion)]),
+                       "engine": "semantic"})
+    return salida
+
 
 def language_mismatch(connection: sqlite3.Connection, query_text: str) -> str | None:
     """Explain an empty result when the query cannot match the index.
@@ -487,9 +592,9 @@ DOC_TOP_PASSAGES = 8
 
 CANDIDATES = 1200
 
-def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
+def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
               only: str | None = None) -> list[dict]:
-    """Resolve a query, ranking by document rather than by isolated passage."""
+    """Resolve a query by word, ranking by document rather than by isolated passage."""
     from . import search as B
 
     phrase = query_text.strip().split(".")[0][:160].strip()
@@ -553,6 +658,80 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
                 if len(out) >= limit:
                     return out
     return out[:limit]
+
+
+def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
+          only: str | None = None, mode: str = "auto") -> list[dict]:
+    """Resolve a query, by word and by meaning where the package allows it.
+
+    The two engines answer different questions. The lexical one finds documents
+    that contain the words, which is exact and is what serves a query in the
+    language the documents are written in. The dense one finds documents that
+    mean the same thing, which is what reaches a document written in another
+    language, where no word is shared.
+
+    Neither replaces the other: used alone, the dense engine loses precision on
+    the language of the query, and the lexical one cannot leave that language at
+    all. They are merged by reciprocal rank, which needs no common scale between
+    a BM25 score and a cosine similarity.
+
+    The mode selects the engines. Left at auto, meaning is used when the package
+    carries vectors and the dependency is installed, and the query falls back to
+    words alone whenever it is not, without failing.
+    """
+    if mode not in ("auto", "lexical", "semantic"):
+        raise ValueError(f"mode must be auto, lexical or semantic, not {mode!r}")
+
+    lexical = [] if mode == "semantic" else lexical_query(
+        connection, query_text, limit * 3, only)
+    if mode == "lexical":
+        return lexical[:limit]
+
+    if not _semantic_ready(connection):
+        if mode == "semantic":
+            return []
+        return lexical[:limit]
+
+    dense = semantic_query(connection, query_text, limit * 3)
+    if only:
+        dense = [r for r in dense if r.get("source") == only]
+    if mode == "semantic":
+        return dense[:limit]
+    if not dense:
+        return lexical[:limit]
+    if not lexical:
+        return dense[:limit]
+
+    from . import semantic as S
+
+    def clave(r: dict) -> tuple:
+        return (r["document"], r["passage"][:120])
+
+    por_clave = {}
+    for r in lexical + dense:
+        por_clave.setdefault(clave(r), r)
+    orden = S.fuse([[clave(r) for r in lexical], [clave(r) for r in dense]])
+    return [por_clave[k] for k in orden[:limit]]
+
+
+def _semantic_ready(connection: sqlite3.Connection) -> bool:
+    """Whether this package and this interpreter can retrieve by meaning."""
+    try:
+        from . import semantic as S
+    except ImportError:
+        return False
+    if not has_vectors(connection):
+        return False
+    if not S.available():
+        return False
+    # A package encodes its passages with one model, and a query encoded with a
+    # different one lands somewhere else in the space. Comparing the two returns
+    # confident nonsense, so the mismatch disables meaning rather than reporting
+    # results that look ranked.
+    esperado = connection.execute(
+        "SELECT value FROM meta WHERE key = 'embedding_model'").fetchone()
+    return bool(esperado) and esperado[0] == S.model_name()
+
 
 def _term_frequencies(text: str, terms: set[str]) -> dict[str, int]:
     from . import search as B
@@ -627,6 +806,10 @@ def main() -> int:
     e.add_argument("--issuer", default="")
     e.add_argument("--signing-key", default="",
                    help="hex private key to sign the package with")
+    e.add_argument("--multilingual", action="store_true",
+                   help="also index meaning, so that a query in one language "
+                        "reaches documents written in another. Needs the "
+                        "multilingual extra and encodes the whole corpus once.")
 
     k = sub.add_parser("keygen")
 
@@ -648,18 +831,23 @@ def main() -> int:
     b.add_argument("--key", required=True)
     b.add_argument("--limit", type=int, default=5)
     b.add_argument("--only", choices=["received", "sent"])
+    b.add_argument("--mode", choices=["auto", "lexical", "semantic"], default="auto",
+                   help="which engines answer: words, meaning, or both")
 
     args = ap.parse_args()
 
     if args.action == "pack":
         r = pack(Path(args.output), Path(args.target), args.key, args.issuer,
-                 args.signing_key)
+                 args.signing_key, semantic=args.multilingual)
         print(f"Packed: {args.target}")
         print(f"  documents {r['documents']}   passages {r['passages']}")
         print(f"  database {r['bytes_database']:,} -> compressed {r['bytes_compressed']:,} "
               f"-> file {r['bytes_file']:,} bytes".replace(",", "."))
         print(f"  index {r['seconds_index']}s  compress {r['seconds_compress']}s  "
               f"encrypt {r['seconds_encrypt']}s")
+        if r.get("embedding_model"):
+            print(f"  meaning indexed with {r['embedding_model']} "
+                  f"({r['embedding_dimensions']} dimensions)")
         return 0
 
     if args.action == "keygen":
@@ -696,7 +884,7 @@ def main() -> int:
         return 0
 
     connection, header = open_package(Path(args.path), args.key)
-    results = query(connection, args.query_text, args.limit, args.only)
+    results = query(connection, args.query_text, args.limit, args.only, args.mode)
     print(f"{len(results)} passage(s)\n")
     for r in results:
         print("-" * 96)

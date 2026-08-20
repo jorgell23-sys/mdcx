@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mdcx"
-version = "1.0.7"
+version = "1.1.0"
 description = "Convert document collections to verified Markdown, package them encrypted, and expose them to agents over MCP"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -50,12 +50,20 @@ convert = [
 ]
 # Model Context Protocol server.
 mcp = ["mcp>=1.0"]
+# Retrieval across languages. A query written in one language reaches documents
+# written in another, which word matching cannot do: the words are not shared.
+# It brings a multilingual embedding model and its runtime.
+multilingual = [
+    "sentence-transformers>=3.0",
+    "numpy>=1.24",
+]
 # Optical character recognition, for collections containing scanned documents.
 ocr = ["rapidocr-onnxruntime>=1.3", "onnxruntime>=1.16"]
 # Everything.
 all = [
     "docling>=2.0", "pypdfium2>=4.0", "python-docx>=1.0", "openpyxl>=3.1",
     "python-pptx>=1.0", "mcp>=1.0", "rapidocr-onnxruntime>=1.3", "onnxruntime>=1.16",
+    "sentence-transformers>=3.0", "numpy>=1.24",
 ]
 
 [project.scripts]
