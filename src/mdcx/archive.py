@@ -110,12 +110,16 @@ def _build_database(folder: Path) -> tuple[bytes, dict]:
             id INTEGER PRIMARY KEY,
             document_id INTEGER NOT NULL REFERENCES document(id),
             position INTEGER NOT NULL,
-            text TEXT NOT NULL
+            text TEXT NOT NULL,
+            -- Searchable form of the same text. Identical to it for every
+            -- script that separates words; Chinese, Japanese and Korean are
+            -- split into characters so a lexical index can match them.
+            search_text TEXT
         );
         -- The index is declared external to the content so the text is not stored
         -- twice: FTS5 indexes what lives in the passage table.
         CREATE VIRTUAL TABLE passage_fts USING fts5(
-            text, content='passage', content_rowid='id', tokenize='unicode61'
+            search_text, content='passage', content_rowid='id', tokenize='unicode61'
         );
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
         -- Document frequency per term. FTS5 holds this internally but does not
@@ -142,8 +146,14 @@ def _build_database(folder: Path) -> tuple[bytes, dict]:
             if not bloque.strip():
                 continue
             n_passages += 1
-            connection.execute("INSERT INTO passage VALUES (?,?,?,?)",
-                        (n_passages, i, j, bloque))
+            # La columna indexada nunca queda vacia: FTS5 con contenido externo
+            # lee esta columna directamente, y un nulo equivale a no indexar el
+            # pasaje. Para texto que ya separa palabras es identica al original,
+            # y la duplicacion la absorbe la compresion del paquete.
+            connection.execute(
+                "INSERT INTO passage VALUES (?,?,?,?,?)",
+                (n_passages, i, j, bloque,
+                 B._normalize(B.segment_for_index(bloque))))
 
     connection.execute("INSERT INTO passage_fts(passage_fts) VALUES('rebuild')")
 
@@ -153,10 +163,10 @@ def _build_database(folder: Path) -> tuple[bytes, dict]:
     df_count: _Counter = _Counter()
     lengths: list[int] = []
     for (text,) in connection.execute("SELECT text FROM passage"):
-        tk = _B._TOKEN_RE.findall(_B._normalize(text))
+        tk = _B.tokenize_text(_B._normalize(text))
         lengths.append(len(tk))
         for t in set(tk):
-            if len(t) > 2:
+            if len(t) >= 3 or (len(t) == 1 and _B._is_cjk(t)):
                 df_count[t] += 1
     connection.executemany("INSERT INTO df VALUES (?,?)", df_count.items())
     avg_length = sum(lengths) / len(lengths) if lengths else 60.0
@@ -333,7 +343,7 @@ def language_mismatch(connection: sqlite3.Connection, query_text: str) -> str | 
     """
     from . import search as B
 
-    terms = {t for t in B._TOKEN_RE.findall(B._normalize(query_text)) if len(t) > 2}
+    terms = set(B.searchable_terms(B._normalize(query_text)))
     terms -= B.STOPWORDS
     if not terms:
         return None
@@ -485,13 +495,13 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
     phrase = query_text.strip().split(".")[0][:160].strip()
     effective = phrase if len(phrase.split()) >= 5 else query_text
 
-    terms = [t for t in B._TOKEN_RE.findall(B._normalize(effective)) if len(t) > 2]
-    terms = B.expand_terms(terms)
+    terms = B.searchable_terms(B._normalize(effective))
+    terms = B.expand_terms(terms, _corpus_language(connection))
     if not terms:
         return []
     distinct_terms = set(terms)
 
-    expr = " OR ".join(f'"{t}"' for t in distinct_terms)
+    expr = " OR ".join(f'"{B.segment_for_index(t)}"' for t in distinct_terms)
     candidates = _run_match(connection, expr, CANDIDATES, only)
     if not candidates:
         return []
@@ -503,7 +513,7 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
         frec = _term_frequencies(r["passage"], distinct_terms)
         if not frec:
             continue
-        largo = max(len(B._TOKEN_RE.findall(B._normalize(r["passage"]))), 1)
+        largo = max(len(B.tokenize_text(B._normalize(r["passage"]))), 1)
         score = 0.0
         for t, f in frec.items():
             d_t = df.get(t, 1)
@@ -548,7 +558,7 @@ def _term_frequencies(text: str, terms: set[str]) -> dict[str, int]:
     from . import search as B
 
     cuenta: dict[str, int] = {}
-    for t in B._TOKEN_RE.findall(B._normalize(text)):
+    for t in B.tokenize_text(B._normalize(text)):
         if t in terms:
             cuenta[t] = cuenta.get(t, 0) + 1
     return cuenta

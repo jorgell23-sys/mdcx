@@ -1,0 +1,134 @@
+{
+  "english": {"code": "en", "script": "Latin", "docs": {
+    "math": "The quadratic equation is solved with the general formula of algebra. Its roots depend on the discriminant.",
+    "bio": "Photosynthesis lets plants turn sunlight into sugar. The leaves capture carbon dioxide from the air.",
+    "hist": "Gutenberg built the printing press with movable type. Books stopped being copied by hand.",
+    "food": "Bread is made with flour, water, salt and yeast. The dough must rest before baking."},
+   "queries": {"math": "quadratic discriminant", "bio": "photosynthesis leaves", "hist": "printing movable type", "food": "dough yeast flour"}},
+
+  "spanish": {"code": "es", "script": "Latin", "docs": {
+    "math": "La ecuacion cuadratica se resuelve con la formula general del algebra. Sus raices dependen del discriminante.",
+    "bio": "La fotosintesis permite a las plantas convertir la luz solar en azucar. Las hojas capturan dioxido de carbono del aire.",
+    "hist": "Gutenberg construyo la imprenta de tipos moviles. Los libros dejaron de copiarse a mano.",
+    "food": "El pan se hace con harina, agua, sal y levadura. La masa debe reposar antes de hornear."},
+   "queries": {"math": "ecuacion discriminante", "bio": "fotosintesis hojas", "hist": "imprenta tipos moviles", "food": "masa levadura harina"}},
+
+  "portuguese": {"code": "pt", "script": "Latin", "docs": {
+    "math": "A equacao do segundo grau resolve-se com a formula resolvente. As suas raizes dependem do binomio discriminante.",
+    "bio": "A fotossintese permite as plantas transformar a luz do sol em acucar. As folhas absorvem dioxido de carbono.",
+    "hist": "Gutenberg construiu a prensa de tipos moveis. Os livros deixaram de ser copiados a mao.",
+    "food": "O pao faz-se com farinha, agua, sal e fermento. A massa deve descansar antes de ir ao forno."},
+   "queries": {"math": "equacao resolvente discriminante", "bio": "fotossintese folhas", "hist": "prensa tipos moveis", "food": "massa fermento farinha"}},
+
+  "french": {"code": "fr", "script": "Latin", "docs": {
+    "math": "L equation du second degre se resout avec la formule generale. Ses racines dependent du discriminant.",
+    "bio": "La photosynthese permet aux plantes de transformer la lumiere en sucre. Les feuilles absorbent le dioxyde de carbone.",
+    "hist": "Gutenberg a construit la presse a caracteres mobiles. Les livres ont cesse d etre copies a la main.",
+    "food": "Le pain se fait avec de la farine, de l eau, du sel et de la levure. La pate doit reposer avant la cuisson."},
+   "queries": {"math": "equation discriminant racines", "bio": "photosynthese feuilles", "hist": "presse caracteres mobiles", "food": "pate levure farine"}},
+
+  "italian": {"code": "it", "script": "Latin", "docs": {
+    "math": "L equazione di secondo grado si risolve con la formula risolutiva. Le sue radici dipendono dal discriminante.",
+    "bio": "La fotosintesi permette alle piante di trasformare la luce in zucchero. Le foglie assorbono anidride carbonica.",
+    "hist": "Gutenberg costrui la stampa a caratteri mobili. I libri smisero di essere copiati a mano.",
+    "food": "Il pane si fa con farina, acqua, sale e lievito. L impasto deve riposare prima della cottura."},
+   "queries": {"math": "equazione discriminante radici", "bio": "fotosintesi foglie", "hist": "stampa caratteri mobili", "food": "impasto lievito farina"}},
+
+  "german": {"code": "de", "script": "Latin", "docs": {
+    "math": "Die quadratische Gleichung löst man mit der Lösungsformel. Ihre Wurzeln hängen von der Diskriminante ab.",
+    "bio": "Die Photosynthese erlaubt Pflanzen, Sonnenlicht in Zucker umzuwandeln. Die Blätter nehmen Kohlendioxid auf.",
+    "hist": "Gutenberg baute die Druckerpresse mit beweglichen Lettern. Bücher wurden nicht mehr von Hand kopiert.",
+    "food": "Brot wird aus Mehl, Wasser, Salz und Hefe gemacht. Der Teig muss vor dem Backen ruhen."},
+   "queries": {"math": "quadratische Diskriminante Wurzeln", "bio": "Photosynthese Blätter", "hist": "Druckerpresse beweglichen Lettern", "food": "Teig Hefe Mehl"}},
+
+  "dutch": {"code": "nl", "script": "Latin", "docs": {
+    "math": "De vierkantsvergelijking wordt opgelost met de algemene formule. De wortels hangen af van de discriminant.",
+    "bio": "Fotosynthese laat planten zonlicht omzetten in suiker. De bladeren nemen koolstofdioxide op.",
+    "hist": "Gutenberg bouwde de drukpers met losse letters. Boeken werden niet meer met de hand gekopieerd.",
+    "food": "Brood wordt gemaakt van bloem, water, zout en gist. Het deeg moet rusten voor het bakken."},
+   "queries": {"math": "vierkantsvergelijking discriminant wortels", "bio": "fotosynthese bladeren", "hist": "drukpers losse letters", "food": "deeg gist bloem"}},
+
+  "swedish": {"code": "sv", "script": "Latin", "docs": {
+    "math": "Andragradsekvationen löses med den allmänna formeln. Rötterna beror på diskriminanten.",
+    "bio": "Fotosyntesen låter växter omvandla solljus till socker. Bladen tar upp koldioxid ur luften.",
+    "hist": "Gutenberg byggde tryckpressen med lösa typer. Böcker kopierades inte längre för hand.",
+    "food": "Bröd görs av mjöl, vatten, salt och jäst. Degen måste vila före gräddningen."},
+   "queries": {"math": "andragradsekvationen diskriminanten rötterna", "bio": "fotosyntesen bladen", "hist": "tryckpressen lösa typer", "food": "degen jäst mjöl"}},
+
+  "danish": {"code": "da", "script": "Latin", "docs": {
+    "math": "Andengradsligningen løses med den generelle formel. Rødderne afhænger af diskriminanten.",
+    "bio": "Fotosyntesen lader planter omdanne sollys til sukker. Bladene optager kuldioxid fra luften.",
+    "hist": "Gutenberg byggede trykpressen med løse typer. Bøger blev ikke længere kopieret i hånden.",
+    "food": "Brød laves af mel, vand, salt og gær. Dejen skal hvile før bagningen."},
+   "queries": {"math": "andengradsligningen diskriminanten rødderne", "bio": "fotosyntesen bladene", "hist": "trykpressen løse typer", "food": "dejen gær mel"}},
+
+  "norwegian": {"code": "no", "script": "Latin", "docs": {
+    "math": "Andregradslikningen løses med den generelle formelen. Røttene avhenger av diskriminanten.",
+    "bio": "Fotosyntesen lar plantene omdanne sollys til sukker. Bladene tar opp karbondioksid fra lufta.",
+    "hist": "Gutenberg bygde trykkpressen med løse typer. Bøker ble ikke lenger kopiert for hand.",
+    "food": "Brød lages av mel, vann, salt og gjær. Deigen må hvile før steking."},
+   "queries": {"math": "andregradslikningen diskriminanten røttene", "bio": "fotosyntesen bladene plantene", "hist": "trykkpressen løse typer", "food": "deigen gjær mel"}},
+
+  "finnish": {"code": "fi", "script": "Latin", "docs": {
+    "math": "Toisen asteen yhtälö ratkaistaan yleisellä kaavalla. Juuret riippuvat diskriminantista.",
+    "bio": "Yhteyttäminen antaa kasvien muuttaa auringonvalon sokeriksi. Lehdet ottavat hiilidioksidia ilmasta.",
+    "hist": "Gutenberg rakensi kirjapainon irrallisilla kirjasimilla. Kirjoja ei enää kopioitu käsin.",
+    "food": "Leipä tehdään jauhoista, vedestä, suolasta ja hiivasta. Taikinan tulee levätä ennen paistamista."},
+   "queries": {"math": "yhtälö diskriminantista juuret", "bio": "yhteyttäminen lehdet kasvien", "hist": "kirjapainon kirjasimilla", "food": "taikinan hiivasta jauhoista"}},
+
+  "polish": {"code": "pl", "script": "Latin", "docs": {
+    "math": "Równanie kwadratowe rozwiązuje się ogólnym wzorem. Pierwiastki zależą od wyróżnika.",
+    "bio": "Fotosynteza pozwala roślinom zamieniać światło słoneczne w cukier. Liście pochłaniają dwutlenek węgla.",
+    "hist": "Gutenberg zbudował prasę drukarską z ruchomych czcionek. Książki przestano przepisywać ręcznie.",
+    "food": "Chleb robi się z mąki, wody, soli i drożdży. Ciasto musi odpocząć przed pieczeniem."},
+   "queries": {"math": "równanie kwadratowe wyróżnika", "bio": "fotosynteza liście roślinom", "hist": "prasę drukarską czcionek", "food": "ciasto drożdży mąki"}},
+
+  "czech": {"code": "cs", "script": "Latin", "docs": {
+    "math": "Kvadratická rovnice se řeší obecným vzorcem. Kořeny závisí na diskriminantu.",
+    "bio": "Fotosyntéza umožňuje rostlinám měnit sluneční světlo na cukr. Listy přijímají oxid uhličitý.",
+    "hist": "Gutenberg postavil tiskařský lis s pohyblivými literami. Knihy se přestaly opisovat ručně.",
+    "food": "Chléb se dělá z mouky, vody, soli a droždí. Těsto musí před pečením odpočívat."},
+   "queries": {"math": "kvadratická rovnice diskriminantu", "bio": "fotosyntéza listy rostlinám", "hist": "tiskařský pohyblivými literami", "food": "těsto droždí mouky"}},
+
+  "hungarian": {"code": "hu", "script": "Latin", "docs": {
+    "math": "A másodfokú egyenletet az általános képlettel oldjuk meg. A gyökei a diszkrimináns értékétől függnek.",
+    "bio": "A fotoszintézis lehetővé teszi a növényeknek, hogy a napfényt cukorra alakítsák. A levelek szén dioxidot vesznek fel.",
+    "hist": "Gutenberg megépítette a nyomdagépet mozgatható betűkkel. A könyveket már nem másolták kézzel.",
+    "food": "A kenyér lisztből, vízből, sóból és élesztőből készül. A tésztának pihennie kell sütés előtt."},
+   "queries": {"math": "másodfokú egyenletet diszkrimináns", "bio": "fotoszintézis levelek növényeknek", "hist": "nyomdagépet mozgatható betűkkel", "food": "tésztának élesztőből lisztből"}},
+
+  "romanian": {"code": "ro", "script": "Latin", "docs": {
+    "math": "Ecuația de gradul doi se rezolvă cu formula generală. Rădăcinile depind de discriminant.",
+    "bio": "Fotosinteza permite plantelor să transforme lumina în zahăr. Frunzele absorb dioxidul de carbon.",
+    "hist": "Gutenberg a construit presa de tipar cu litere mobile. Cărțile nu au mai fost copiate de mână.",
+    "food": "Pâinea se face din făină, apă, sare și drojdie. Aluatul trebuie să se odihnească înainte de coacere."},
+   "queries": {"math": "ecuația discriminant rădăcinile", "bio": "fotosinteza frunzele plantelor", "hist": "presa tipar litere mobile", "food": "aluatul drojdie făină"}},
+
+  "turkish": {"code": "tr", "script": "Latin", "docs": {
+    "math": "İkinci dereceden denklem genel formülle çözülür. Kökleri diskriminanta bağlıdır.",
+    "bio": "Fotosentez bitkilerin güneş ışığını şekere dönüştürmesini sağlar. Yapraklar havadan karbondioksit alır.",
+    "hist": "Gutenberg hareketli harflerle matbaayı kurdu. Kitaplar artık elle kopyalanmadı.",
+    "food": "Ekmek undan, sudan, tuzdan ve mayadan yapılır. Hamurun pişirmeden önce dinlenmesi gerekir."},
+   "queries": {"math": "denklem diskriminanta kökleri", "bio": "fotosentez yapraklar bitkilerin", "hist": "matbaayı hareketli harflerle", "food": "hamurun mayadan undan"}},
+
+  "indonesian": {"code": "id", "script": "Latin", "docs": {
+    "math": "Persamaan kuadrat diselesaikan dengan rumus umum. Akarnya bergantung pada diskriminan.",
+    "bio": "Fotosintesis memungkinkan tumbuhan mengubah cahaya matahari menjadi gula. Daun menyerap karbon dioksida.",
+    "hist": "Gutenberg membangun mesin cetak dengan huruf bergerak. Buku tidak lagi disalin dengan tangan.",
+    "food": "Roti dibuat dari tepung, air, garam dan ragi. Adonan harus istirahat sebelum dipanggang."},
+   "queries": {"math": "persamaan kuadrat diskriminan", "bio": "fotosintesis daun tumbuhan", "hist": "mesin cetak huruf bergerak", "food": "adonan ragi tepung"}},
+
+  "vietnamese": {"code": "vi", "script": "Latin", "docs": {
+    "math": "Phương trình bậc hai được giải bằng công thức tổng quát. Nghiệm phụ thuộc vào biệt thức.",
+    "bio": "Quang hợp cho phép thực vật biến ánh sáng mặt trời thành đường. Lá cây hấp thụ khí cacbonic.",
+    "hist": "Gutenberg đã chế tạo máy in với con chữ rời. Sách không còn được chép tay nữa.",
+    "food": "Bánh mì được làm từ bột mì, nước, muối và men. Bột nhào phải nghỉ trước khi nướng."},
+   "queries": {"math": "phương trình biệt thức nghiệm", "bio": "quang hợp lá cây thực vật", "hist": "máy in con chữ rời", "food": "bột nhào men nướng"}},
+
+  "catalan": {"code": "ca", "script": "Latin", "docs": {
+    "math": "L equació de segon grau es resol amb la fórmula general. Les arrels depenen del discriminant.",
+    "bio": "La fotosíntesi permet a les plantes convertir la llum en sucre. Les fulles absorbeixen diòxid de carboni.",
+    "hist": "Gutenberg va construir la impremta de tipus mòbils. Els llibres van deixar de copiar se a mà.",
+    "food": "El pa es fa amb farina, aigua, sal i llevat. La massa ha de reposar abans de coure."},
+   "queries": {"math": "equació discriminant arrels", "bio": "fotosíntesi fulles plantes", "hist": "impremta tipus mòbils", "food": "massa llevat farina"}}
+}

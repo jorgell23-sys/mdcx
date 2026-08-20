@@ -27,7 +27,11 @@ from collections import Counter
 COVERAGE_OK = 0.995
 COVERAGE_WARN = 0.970
 
-_TOKEN_RE = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]+", re.UNICODE)
+# The tokenizer of the retrieval engine, imported rather than restated, so that a
+# document verified as complete is a document that can be searched. Restating it
+# splits words wherever the two patterns disagree, and the count of a word that
+# was never a word measures nothing.
+from ..search import _TOKEN_RE  # noqa: E402
 
 _MD_NOISE = re.compile(
     r"(?m)^[ \t]*(?:"

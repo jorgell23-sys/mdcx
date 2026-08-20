@@ -150,40 +150,74 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-The suite covers hostile inputs: empty and corrupted files, names in other
-alphabets, malformed queries including SQL injection attempts, truncated and
-tampered packages, and compaction against content loss.
+Seventy tests run in two groups.
 
-## Language
+`test_stress.py` covers hostile inputs: empty and corrupted files, names in
+other alphabets, malformed queries including SQL injection attempts, truncated
+and tampered packages, concurrent access, and compaction against content loss.
 
-Retrieval is lexical: a query matches words that appear in the documents. It
-therefore works in whatever language a corpus is written in — English, German,
-French, Spanish, Portuguese, Italian and any other the tokenizer segments — and
-it cannot cross between languages. A Spanish query finds nothing in an English
-corpus, however well indexed, because the words are not there.
+`test_languages.py` measures retrieval itself. It builds a corpus of 136
+documents written in 34 languages across 11 writing systems, and checks two
+properties: that a query written in a language retrieves the documents written
+in that language, and that a term shared by several languages returns the
+documents of all of them. The second is what keeps a search from narrowing to
+one language, whether the language of the query or that of the corpus.
 
-The package records the predominant language of a corpus when it is built, and
-`info` reports it. When a query returns nothing and none of its terms appear in
-the index, the result says so and names the corpus language, so an empty answer
-can be told apart from material the corpus does not hold.
+## Languages
 
-Earlier versions shipped a glossary of 83 Spanish terms and advertised Spanish
-queries against English documents. Those terms all came from piping engineering
-and project management; measured against a corpus of mathematics, biology and
-history the glossary contributed nothing, and the claim it backed failed on
-eleven of twelve queries. Removing it left retrieval unchanged even on the
-engineering corpus it was written for: 19 of 20 queries still find the right
-document in the top five results.
+Retrieval is lexical and script-aware. A query matches the words that appear in
+the documents, in whatever writing system they were written, and the results of
+one search may come from documents in several different languages at once. The
+language of a corpus is recorded and reported by `info`; it describes the corpus
+and never restricts what a query returns.
 
-A glossary remains available for anyone who wants one, as a decision of theirs
-rather than an assumption of the package:
+The following are verified by `tests/test_languages.py`, which builds one corpus
+holding the same four subjects — algebra, botany, printing and baking — written
+in every language listed, and then issues a query in each language. Every query
+competes against the three other documents in its own language and against the
+whole of the rest of the corpus. All 136 queries return the expected document in
+first place.
 
-```python
-from mdcx import search
-search.GLOSSARY = search.load_glossary("my-glossary.json")
-```
+| Script | Languages |
+|---|---|
+| Latin | English, Spanish, Portuguese, French, Italian, German, Dutch, Swedish, Danish, Norwegian, Finnish, Polish, Czech, Hungarian, Romanian, Turkish, Indonesian, Vietnamese, Catalan |
+| Cyrillic | Russian, Ukrainian, Bulgarian, Serbian |
+| Greek | Greek |
+| Arabic | Arabic, Persian |
+| Hebrew | Hebrew |
+| Devanagari | Hindi |
+| Bengali | Bengali |
+| Tamil | Tamil |
+| Thai | Thai |
+| Han | Chinese, Japanese |
+| Hangul | Korean |
 
-The file maps a term to its equivalents: `{"caneria": ["piping", "pipe"]}`.
+Support is a property of the writing system rather than of the language, so a
+language written in one of these scripts is covered whether or not it appears in
+the table. Three properties make that hold:
+
+Words are runs of letters, digits and the combining marks that belong to them.
+The marks are read from the Unicode database rather than listed, which is what
+keeps the vowels of Devanagari, Bengali, Tamil and Thai attached to the letters
+they modify instead of splitting each word into fragments.
+
+Accent folding is limited to the combining marks that represent an accent placed
+on a letter, so that `café` matches `cafe`. The vowel signs of Indic scripts and
+the points of Hebrew and Arabic are left in place, because there they carry the
+sound of the syllable rather than decorate it.
+
+Writing systems that do not separate words with spaces — Chinese, Japanese,
+Korean, Thai, Lao, Khmer, Burmese, Tibetan and Javanese — are indexed by
+character, at query time and at index time alike. This is what a lexical index
+can match without a segmenter trained on one particular language, which would
+serve that language and leave every other one where it started.
+
+Retrieval works within a language: the words of a query have to be present in
+the document. A query written in one language does not find a document written
+in another unless the two share the term, which proper names and loanwords often
+do. When a query returns nothing and none of its terms appear in the index, the
+result says so and names the language of the corpus, so an empty answer can be
+told apart from material the corpus does not hold.
 
 ## Paths
 
