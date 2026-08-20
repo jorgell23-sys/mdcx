@@ -2,7 +2,7 @@
 
 <!-- mcp-name: io.github.jorgell23-sys/markdown-document-search -->
 
-[![PyPI](https://img.shields.io/pypi/v/mdcx)](https://pypi.org/project/mdcx/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22015991.svg)](https://doi.org/10.5281/zenodo.22015991)
+[![PyPI](https://img.shields.io/pypi/v/mdcx)](https://pypi.org/project/mdcx/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/jorgell23-sys/mdcx/blob/main/LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22015991.svg)](https://doi.org/10.5281/zenodo.22015991)
 
 Convert a document collection to verified Markdown, package it into a single
 encrypted file, and query it from an agent through the Model Context Protocol.
@@ -451,8 +451,10 @@ latest version:
 
 ## Licence
 
-Apache 2.0. See [LICENSE](LICENSE). Third-party components and their licences are
-listed in [NOTICE](NOTICE).
+Apache 2.0. See
+[LICENSE](https://github.com/jorgell23-sys/mdcx/blob/main/LICENSE). Third-party
+components and their licences are listed in
+[NOTICE](https://github.com/jorgell23-sys/mdcx/blob/main/NOTICE).
 
 PyMuPDF is not used. Its AGPL licence would require software incorporating this
 package to be published under AGPL, including software offered as a network
