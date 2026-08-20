@@ -259,6 +259,19 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
     record["engine"] = best_engine
     record["ocr"] = best_ocr
 
+    # An engine that crashed is not the same as an engine that was not needed,
+    # and until now both looked alike in the report. On Linux with CUDA every
+    # docling attempt failed and the run still reported success.
+    failed = [a["engine"] for a in attempts if a.get("error")]
+    if failed:
+        record["failed_engines"] = failed
+
+    # Coverage is measured in words, and a native engine recovers every word of a
+    # table while flattening it into a paragraph. Counting table rows exposes a
+    # loss of structure that coverage alone reports as perfect.
+    record["table_rows"] = sum(
+        1 for line in best_md.splitlines() if line.lstrip().startswith("|"))
+
     if best_v is None:
         record["verification"] = {"status": "error", "measurable": False,
                                  "coverage": None, "numeric_coverage": None}

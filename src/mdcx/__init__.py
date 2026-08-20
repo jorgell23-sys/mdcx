@@ -34,7 +34,7 @@ Retrieval
     context window.
 """
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 from . import archive, search  # noqa: F401
 

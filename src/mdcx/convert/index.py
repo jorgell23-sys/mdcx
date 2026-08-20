@@ -361,6 +361,23 @@ def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
     cg = res["global_token_coverage"]
     L.append(f"Global fidelity        : {_pct(cg)}  "
              f"({res['tokens_not_recovered']} of {res['reference_tokens']} tokens not recovered)")
+
+    # A crashed engine and an unnecessary one used to look identical here. On Linux
+    # with CUDA every docling attempt failed inside the worker processes, the native
+    # engine won by default, and the run reported full success with every table
+    # flattened into a paragraph.
+    con_fallo = [r for r in principales if r.get("failed_engines")]
+    if con_fallo:
+        motores = sorted({e for r in con_fallo for e in r["failed_engines"]})
+        L.append(f"Engines that failed    : {len(con_fallo)} document(s), "
+                 f"affecting {', '.join(motores)}")
+
+    # Fidelity is measured in words, and a native engine recovers every word of a
+    # table while flattening it. Reporting table rows makes a loss of structure
+    # visible that coverage alone reports as perfect.
+    filas = sum(r.get("table_rows") or 0 for r in principales)
+    con_tablas = sum(1 for r in principales if (r.get("table_rows") or 0) > 0)
+    L.append(f"Table rows preserved   : {filas} across {con_tablas} document(s)")
     L.append("")
 
     if fallidos:

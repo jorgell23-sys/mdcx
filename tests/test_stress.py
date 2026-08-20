@@ -387,3 +387,81 @@ def test_mcp_tools_are_async():
     source = inspect.getsource(mcp_server.create_server)
     for tool in ("def search(", "def info(", "def document("):
         assert f"async {tool}" in source, f"{tool} must be async"
+
+
+# ---------------------------------------------------------------------------
+# Engine failures and process start method
+#
+# On Linux a CUDA context does not survive fork(), so docling failed inside every
+# worker and the native engine won by default. The run reported full coverage
+# with every table flattened into a paragraph.
+# ---------------------------------------------------------------------------
+
+def test_failed_engine_is_recorded(workspace):
+    """A crashed engine and an unnecessary one must not look alike."""
+    from unittest.mock import patch
+
+    pytest.importorskip("docx")
+    import docx
+
+    from mdcx.convert import convert, engines
+    from mdcx.convert.paths import plan_jobs
+
+    folder = workspace / "Received"
+    folder.mkdir(parents=True)
+    document = docx.Document()
+    document.add_heading("Spec", 1)
+    table = document.add_table(rows=2, cols=2)
+    for row, values in enumerate([("Stage", "Diameter"), ("Basic", "DN 50")]):
+        for column, value in enumerate(values):
+            table.cell(row, column).text = value
+    document.save(folder / "spec.docx")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("CUDA error: initialization error")
+
+    jobs, _ = plan_jobs(workspace)
+    with patch.object(engines, "docling_convert", broken):
+        record = convert.convert_one(jobs[0], workspace / "out", True, False)
+
+    assert record["failed_engines"] == ["docling"]
+    assert "table_rows" in record
+
+
+def test_table_rows_are_counted(workspace):
+    """Coverage is measured in words and cannot see a flattened table."""
+    pytest.importorskip("docx")
+    import docx
+
+    from mdcx.convert import convert
+    from mdcx.convert.paths import plan_jobs
+
+    folder = workspace / "Received"
+    folder.mkdir(parents=True)
+    document = docx.Document()
+    table = document.add_table(rows=3, cols=2)
+    for row in range(3):
+        for column in range(2):
+            table.cell(row, column).text = f"cell {row}{column}"
+    document.save(folder / "table.docx")
+
+    jobs, _ = plan_jobs(workspace)
+    record = convert.convert_one(jobs[0], workspace / "out", True, False)
+    assert record.get("table_rows", 0) > 0
+
+
+def test_start_method_is_spawn_when_cuda_is_present():
+    """fork() breaks a CUDA context, which silently disabled docling on Linux."""
+    import sys as _sys
+    from unittest.mock import MagicMock, patch
+
+    from mdcx import cli
+
+    if _sys.platform == "win32":
+        assert cli._select_start_method() == "spawn"
+        return
+
+    fake_torch = MagicMock()
+    fake_torch.cuda.is_available.return_value = True
+    with patch.dict("sys.modules", {"torch": fake_torch}):
+        assert cli._select_start_method() == "spawn"

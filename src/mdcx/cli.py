@@ -122,6 +122,40 @@ def _error_record(job, exc: Exception) -> dict:
         "errors": [f"{type(exc).__name__}: {exc}"],
     }
 
+
+def _select_start_method() -> str:
+    """Choose how worker processes are started, and say so.
+
+    On Linux, multiprocessing forks by default, and a CUDA context does not
+    survive fork(): docling fails inside every child, the engine selector reads
+    that failure as "this output is not usable", and the native engine wins. The
+    run reports success and full coverage while every table has been flattened
+    into a paragraph.
+
+    Windows already spawns, which is why the defect never appeared there.
+    """
+    import multiprocessing
+
+    current = multiprocessing.get_start_method(allow_none=True)
+    if sys.platform == "win32" or current == "spawn":
+        return current or "spawn"
+
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return current or "fork"
+    except Exception:  # noqa: BLE001
+        return current or "fork"
+
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        # Already started elsewhere; nothing to do but report what is in use.
+        return multiprocessing.get_start_method()
+    return "spawn"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Convert documents to Markdown with fidelity verification."
@@ -173,8 +207,13 @@ def main() -> int:
     tiene_gpu = (not args.no_gpu) and engines.gpu_available()
     dispositivo = engines.device_name() if tiene_gpu else "CPU"
 
+    # The start method is chosen before any pool is created: on Linux a CUDA
+    # context does not survive fork(), which silently disabled docling.
+    start_method = _select_start_method()
+
     if args.serial:
         gpu_workers, cpu_workers = 1, 1
+        print("Serial mode: one document at a time (timings are comparable across runs)")
     else:
         gpu_workers = args.gpu_workers if args.gpu_workers is not None else (2 if tiene_gpu else 3)
         gpu_workers = max(1, min(gpu_workers, args.max_cores - 1))
@@ -295,13 +334,20 @@ def main() -> int:
         print(f"Long documents (dispatched last): "
               + ", ".join(f"{j.rel_source.name[:40]} ({estimated_cost(j):.0f} pag)"
                           for j in pesados[-4:]))
+    # The start method is chosen before any pool is created: on Linux a CUDA
+    # context does not survive fork(), which silently disabled docling.
+    start_method = _select_start_method()
 
     if args.serial:
+        gpu_workers, cpu_workers = 1, 1
         print("Serial mode: one document at a time (timings are comparable across runs)")
     else:
         print(f"Carril GPU: {len(lanes[LANE_GPU])} documents en {gpu_workers} procesos | "
               f"Carril CPU: {len(lanes[LANE_CPU])} documents en {cpu_workers} procesos | "
               f"tope {args.max_cores} cores")
+        if start_method == "spawn" and sys.platform != "win32":
+            print("Workers start with spawn: a CUDA context does not survive fork, "
+                  "which would disable docling in every child.")
     print()
 
     started = time.time()
