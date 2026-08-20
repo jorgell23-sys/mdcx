@@ -1,8 +1,12 @@
 @echo off
 REM Publishes the server to the MCP Registry.
 REM
-REM Authentication opens a browser page where a code must be entered. The code
-REM expires after fifteen minutes, so it is entered right after it appears.
+REM Authentication opens a browser page where a code must be entered. Two
+REM deadlines apply and both are short. The device code expires fifteen minutes
+REM after it appears, and the registry token that the sign-in returns expires
+REM five minutes after that. Signing in and publishing therefore have to run in
+REM one go, which is why this script does both, and the code has to be entered
+REM as soon as it is shown rather than later.
 
 setlocal
 cd /d "%~dp0"

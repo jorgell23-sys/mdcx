@@ -20,6 +20,7 @@ is measured against an external reference rather than against itself.
 """
 from __future__ import annotations
 
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -116,11 +117,95 @@ def _plain_text(path: Path) -> tuple[str, dict]:
     return text, {"encoding": "utf-8/replace", "lines": text.count("\n") + 1}
 
 
+
+class _TextCollector(HTMLParser):
+    """Collects the text of an HTML document, leaving out its markup.
+
+    Script and style hold code rather than prose, and counting it as text would
+    credit a conversion for content no reader ever sees.
+    """
+
+    _SKIP = {"script", "style", "head", "title", "meta", "link"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._depth = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in self._SKIP:
+            self._depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP and self._depth:
+            self._depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._depth and data.strip():
+            self.parts.append(data)
+
+
+def _html_to_text(markup: str) -> str:
+    collector = _TextCollector()
+    try:
+        collector.feed(markup)
+    except Exception:  # noqa: BLE001 - malformed markup yields what was parsed
+        pass
+    return " ".join(collector.parts)
+
+
+def _epub_text(path: Path) -> tuple[str, dict]:
+    """Reference text of an EPUB, read from the documents it declares.
+
+    The reading order comes from the spine when the package file can be read.
+    Order does not affect coverage, which compares multisets of tokens, but it
+    makes the reference readable when someone inspects it.
+    """
+    import re
+    import zipfile
+
+    parts: list[str] = []
+    documents = 0
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        contenido = [n for n in names
+                     if n.lower().endswith((".xhtml", ".html", ".htm"))]
+
+        # The package file lists the documents in reading order. It is read as
+        # a hint: a spine that names files the archive does not hold is a
+        # damaged EPUB, and the remaining documents are still worth reading.
+        opf = next((n for n in names if n.lower().endswith(".opf")), None)
+        if opf:
+            try:
+                paquete = archive.read(opf).decode("utf-8", "replace")
+                base = opf.rsplit("/", 1)[0] + "/" if "/" in opf else ""
+                rutas = dict(re.findall(r'id="([^"]+)"[^>]*href="([^"]+)"', paquete))
+                orden = [base + rutas[i] for i in re.findall(r'idref="([^"]+)"', paquete)
+                         if i in rutas]
+                ordenados = [n for n in orden if n in contenido]
+                contenido = ordenados + [n for n in contenido if n not in ordenados]
+            except Exception:  # noqa: BLE001 - the spine is a hint, not a requirement
+                pass
+
+        for nombre in contenido:
+            try:
+                texto = _html_to_text(archive.read(nombre).decode("utf-8", "replace"))
+            except Exception:  # noqa: BLE001 - a damaged member is skipped, not fatal
+                continue
+            if texto.strip():
+                parts.append(texto)
+                documents += 1
+
+    texto = "\n\n".join(parts)
+    return texto, {"documents": documents, "characters": len(texto)}
+
+
 _EXTRACTORS = {
     "pdf": _pdf_text,
     "docx": _docx_text,
     "xlsx": _xlsx_text,
     "pptx": _pptx_text,
+    "epub": _epub_text,
     "text": _plain_text,
     "html": _plain_text,
 }

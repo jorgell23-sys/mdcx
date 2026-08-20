@@ -89,6 +89,22 @@ mdcx-convert --input ./Documents --output ./Documents_md
 The output mirrors the input directory structure, adds a global index, and
 records for each file the coverage achieved against its original.
 
+### Formats
+
+PDF, EPUB, Word, Excel, PowerPoint, HTML, Markdown, CSV and plain text.
+
+Which one a file is gets decided by reading its first bytes rather than its
+name. A file states what it is in its own content, and that statement is worth
+more than its extension: repositories serve EPUB files from URLs ending in
+`.pdf`, declaring `application/pdf`, where only the bytes disagree. Handed to
+the PDF reader such a file fails in a way that looks like a damaged document
+rather than a misrouted one, and it converts without its fidelity ever being
+measured.
+
+Plain text carries no signature, so there the extension decides, which is the
+one case where the name holds information the content does not. A file whose
+bytes identify nothing is left alone rather than guessed at.
+
 ## Packaging and querying
 
 ```
@@ -155,7 +171,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-Eighty tests run in three groups.
+Ninety-three tests run in four groups.
 
 `test_stress.py` covers hostile inputs: empty and corrupted files, names in
 other alphabets, malformed queries including SQL injection attempts, truncated
@@ -167,6 +183,10 @@ properties: that a query written in a language retrieves the documents written
 in that language, and that a term shared by several languages returns the
 documents of all of them. The second is what keeps a search from narrowing to
 one language, whether the language of the query or that of the corpus.
+
+`test_formats.py` checks that a file is treated as what it contains rather than
+as what it is called, in both directions: a supported format under an unexpected
+extension, and a file served under the wrong one.
 
 `test_multilingual.py` measures retrieval across languages: that a query written
 in one language returns documents written in others, that every writing system

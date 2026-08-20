@@ -36,12 +36,88 @@ SUPPORTED = {
     ".xlsm": "xlsx",
     ".xls": "xlsx",
     ".pptx": "pptx",
+    ".epub": "epub",
     ".txt": "text",
     ".md": "text",
     ".csv": "text",
     ".html": "html",
     ".htm": "html",
 }
+
+# Formats identified by their first bytes. A file states what it is in its own
+# content, and that statement is worth more than its name: a document served
+# under the wrong extension is common enough to matter, and treating it by name
+# sends it to an engine that cannot read it.
+_SIGNATURES = (
+    (b"%PDF", "pdf"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "ole"),   # pre-2007 Office
+    (b"PK\x03\x04", "zip"),                              # OOXML, EPUB, ODF
+)
+
+# Inside a ZIP, the member that identifies the format.
+_ZIP_MARKERS = (
+    ("word/", "docx"),
+    ("xl/", "xlsx"),
+    ("ppt/", "pptx"),
+)
+
+
+def _zip_format(path: Path) -> str | None:
+    """The format of a ZIP container, read from what it holds."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            # EPUB states its type in a member named mimetype, which the
+            # specification requires to be first and uncompressed.
+            if "mimetype" in names:
+                try:
+                    if archive.read("mimetype").strip() == b"application/epub+zip":
+                        return "epub"
+                except Exception:  # noqa: BLE001 - a damaged member is not a format
+                    pass
+            for member in names:
+                for prefix, kind in _ZIP_MARKERS:
+                    if member.startswith(prefix):
+                        return kind
+    except Exception:  # noqa: BLE001 - not a readable ZIP, so not one of these
+        return None
+    return None
+
+
+def sniff_format(path: Path) -> str | None:
+    """The format of a file according to its content, or None when unreadable.
+
+    Returns None rather than guessing when the bytes identify nothing. Plain
+    text has no signature to read, so it is left to the extension, which is the
+    one case where the name carries information the content does not.
+    """
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(8)
+    except OSError:
+        return None
+
+    for signature, kind in _SIGNATURES:
+        if head.startswith(signature):
+            if kind == "zip":
+                return _zip_format(path)
+            if kind == "ole":
+                # The OLE container holds Word, Excel or PowerPoint alike, and
+                # telling them apart needs a parser. The extension decides.
+                return None
+            return kind
+    return None
+
+
+def resolve_format(path: Path) -> str | None:
+    """The format to convert a file as, preferring what it contains.
+
+    The extension is the fallback, used for text formats, which have no
+    signature, and whenever the content identifies nothing.
+    """
+    return sniff_format(path) or SUPPORTED.get(path.suffix.lower())
 
 def to_pseudopath(rel: Path) -> str:
     """Convert a relative path into a portable pseudopath."""
@@ -107,8 +183,7 @@ def plan_jobs(input_root: Path) -> tuple[list[Job], list[Path]]:
     for path in sorted(input_root.rglob("*")):
         if not path.is_file():
             continue
-        ext = path.suffix.lower()
-        kind = SUPPORTED.get(ext)
+        kind = resolve_format(path)
         if kind is None:
             skipped.append(path)
             continue
