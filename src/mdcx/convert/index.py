@@ -67,6 +67,12 @@ def build_manifest(records: list[dict], input_root: Path, skipped: list[Path],
     measurable = [r for r in records
                   if (r.get("verification") or {}).get("measurable")
                   and not r.get("es_indice_de_documento")]
+    # Verification could not be performed, as against performed and not met.
+    unverifiable = sum(
+        1 for r in principales
+        if not r.get("ok")
+        and (r.get("verification") or {}).get("status") in ("no-reference", "sin-lectura"))
+
     coverages = [r["verification"]["coverage"] for r in measurable
                  if r["verification"].get("coverage") is not None]
     total_ref = sum(r["verification"].get("ref_tokens", 0) for r in measurable)
@@ -83,7 +89,13 @@ def build_manifest(records: list[dict], input_root: Path, skipped: list[Path],
             "documents": len(principales),
             "chapters": len(chapters),
             "converted_ok": ok,
-            "with_findings": len(principales) - ok,
+            # A document with no text of its own cannot be verified, which is
+            # not the same as failing verification. Counting the two together
+            # reported a collection of scanned books as entirely non-conforming
+            # while its coverage read 100%, because coverage was measured over
+            # the documents that could be measured at all.
+            "unverifiable": unverifiable,
+            "with_findings": len(principales) - ok - unverifiable,
             "skipped_archive_no_soportado": len(skipped),
             "global_token_coverage": (
                 round((total_ref - total_missing) / total_ref, 5) if total_ref else None
@@ -111,7 +123,8 @@ def write_index(records: list[dict], output_root: Path, manifest: dict) -> Path:
         "",
         f"Generated: {manifest['generado_utc']}  ",
         f"Documents: **{res['documents']}**  |  Conforming: **{res['converted_ok']}**  "
-        f"|  With findings: **{res['with_findings']}**  ",
+        f"|  With findings: **{res['with_findings']}**  "
+        + (f"|  Unverifiable: **{res['unverifiable']}**  " if res.get("unverifiable") else ""),
         f"Global text coverage: **{_fmt_pct(res['global_token_coverage'])}** "
         f"({res['reference_tokens']:,} reference tokens, "
         f"{res['tokens_not_recovered']:,} not recovered)".replace(",", "."),
@@ -287,7 +300,20 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(lines), encoding="utf-8")
 
-    estado = "ok" if conforming == len(chapters) else "warn"
+    # A chapter that exposes no text cannot be verified, which is not the same
+    # as failing verification. A book whose cover plate was scanned would
+    # otherwise be reported as non-conforming although every word of its text
+    # was recovered.
+    no_conformes = [c for c in chapters if not c.get("ok")]
+    no_medibles = [c for c in no_conformes
+                   if (c.get("verification") or {}).get("status")
+                   in ("no-reference", "sin-lectura")]
+    if not no_conformes:
+        estado = "ok"
+    elif len(no_medibles) == len(no_conformes):
+        estado = "no-reference"
+    else:
+        estado = "warn"
     return {
         "source_pseudopath": to_pseudopath(rel_source),
         "markdown_pseudopath": to_pseudopath(rel_target),

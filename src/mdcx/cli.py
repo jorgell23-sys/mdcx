@@ -450,6 +450,9 @@ def main() -> int:
     print(f"Documentos      : {res['documents']}")
     print(f"Conforming      : {res['converted_ok']}")
     print(f"With findings   : {res['with_findings']}")
+    if res.get('unverifiable'):
+        print(f"Unverifiable    : {res['unverifiable']} "
+              "(no text in the original to measure against)")
     cg = res["global_token_coverage"]
     print(f"Global coverage : {cg * 100:.3f}%" if cg is not None else "Global coverage : n/d")
     print(f"Tokens not recovered: {res['tokens_not_recovered']} of {res['reference_tokens']}")

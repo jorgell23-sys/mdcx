@@ -289,11 +289,14 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
 
     record["recovered_lines"] = recovered_lines
     record["verification"] = best_v
-    record["ok"] = best_v.get("status") in ("ok", "no-reference")
+    # A document is conforming when it was measured against its original and
+    # met it. A document that exposes no text was never measured, so it is not
+    # conforming, and it is not a failure either: the two are counted apart in
+    # the index.
+    record["ok"] = best_v.get("status") == "ok"
 
     if best_v.get("status") == "no-reference":
         contenido = len(verify.tokenize(best_md))
-        record["ok"] = False
         if contenido < MIN_TOKENS_SIN_REFERENCIA:
             record["verification"]["status"] = "sin-lectura"
             record["verification"]["note"] = (

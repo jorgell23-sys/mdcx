@@ -472,8 +472,10 @@ Retrieval returns documents whose content is close to the query. It does not
 translate them: passages are returned in the language in which they were written.
 
 Documents that expose no text, such as scanned drawings, are read by optical
-character recognition and marked as unverifiable, since no text original exists
-against which to measure fidelity.
+character recognition and counted as unverifiable rather than as findings, since
+no text original exists against which to measure fidelity. Coverage is computed
+over the documents that could be measured, so an unverifiable document neither
+raises nor lowers it.
 
 Coverage measures the tokens preserved by a conversion. It does not measure the
 preservation of table structure, which is reported separately.
@@ -490,7 +492,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-108 tests in six groups.
+114 tests in seven groups.
 
 | File | Scope |
 |---|---|
@@ -500,6 +502,7 @@ python -m pytest tests/ -v
 | `test_multilingual.py` | retrieval across languages, and the requirement that merging engines preserves the precision of the lexical engine |
 | `test_incremental.py` | reuse of vectors between packages: that unchanged passages are not encoded again, that an edited one is, and that reuse produces the same ranking |
 | `test_multipackage.py` | querying several packages as one corpus, including key configuration and the reporting of a missing package |
+| `test_reporting.py` | that the summary separates a document measured and found short from one that could not be measured at all |
 
 `test_multilingual.py` is skipped when the `multilingual` extra is not installed,
 which is a supported configuration.
