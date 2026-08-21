@@ -33,6 +33,8 @@ import unicodedata
 from collections import Counter
 from pathlib import Path
 
+from . import console
+
 
 def _combining_mark_ranges() -> str:
     r"""Character ranges of every combining mark, read from the Unicode database.
@@ -516,10 +518,7 @@ def search_literal(docs: list[dict], frase: str, context: int = 1,
     return results
 
 def main() -> int:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+    console.configure()
 
     ap = argparse.ArgumentParser(description="Busqueda con cita exacta sobre los .md convertidos.")
     ap.add_argument("frase", nargs="?", help="text a search_literal")

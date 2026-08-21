@@ -88,7 +88,7 @@ def _decrypt(body: bytes, clave_derivada: bytes, nonce: bytes) -> bytes:
 def _build_database(folder: Path, semantic: bool = False,
                     reuse: dict | None = None) -> tuple[bytes, dict]:
     """Build the in-memory database with documents, index and provenance."""
-    from . import search as B
+    from . import console, search as B
 
     docs = B.load_documents(folder)
     connection = sqlite3.connect(":memory:")
@@ -858,10 +858,7 @@ def _direction(value: str) -> str:
 
 
 def main() -> int:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+    console.configure()
 
     ap = argparse.ArgumentParser(description="The .mdcx format: an indexed, encrypted, portable corpus")
     sub = ap.add_subparsers(dest="action", required=True)

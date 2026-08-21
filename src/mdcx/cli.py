@@ -31,6 +31,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+from . import console  # noqa: E402
 from .convert import chapters, engines, index  # noqa: E402
 from .convert import compact as compact_module  # noqa: E402
 from .convert.convert import convert_one_safe  # noqa: E402
@@ -100,7 +101,7 @@ def _print_progress(done: int, total: int, lane: str, rec: dict) -> None:
     cov = v.get("coverage")
     cov_s = f"{cov * 100:6.2f}%" if cov is not None else "  n/d "
     flag = "ok " if rec.get("ok") else "!! "
-    print(
+    console.safe_print(
         f"[{done:>3}/{total}] {lane.upper():<3} {flag} {cov_s} "
         f"{rec.get('engine', '?'):<11} {rec.get('seconds', 0):>6.1f}s "
         f"{rec['source_name'][:52]}",
@@ -157,6 +158,7 @@ def _select_start_method() -> str:
 
 
 def main() -> int:
+    console.configure()
     ap = argparse.ArgumentParser(
         description="Convert documents to Markdown with fidelity verification."
     )

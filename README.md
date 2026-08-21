@@ -492,7 +492,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-114 tests in seven groups.
+120 tests in eight groups.
 
 | File | Scope |
 |---|---|
@@ -503,6 +503,7 @@ python -m pytest tests/ -v
 | `test_incremental.py` | reuse of vectors between packages: that unchanged passages are not encoded again, that an edited one is, and that reuse produces the same ranking |
 | `test_multipackage.py` | querying several packages as one corpus, including key configuration and the reporting of a missing package |
 | `test_reporting.py` | that the summary separates a document measured and found short from one that could not be measured at all |
+| `test_console.py` | that a document name the console cannot represent does not stop the conversion, in the parent process and in the workers |
 
 `test_multilingual.py` is skipped when the `multilingual` extra is not installed,
 which is a supported configuration.

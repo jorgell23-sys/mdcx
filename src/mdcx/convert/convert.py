@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import chapters, compact as compact_module, engines, extract, verify
+from .. import console
 from .paths import Job, file_digest, to_pseudopath
 
 _H_RE = re.compile(r"(?m)^#{1,6}\s+\S")
@@ -352,10 +353,14 @@ def convert_one_safe(args) -> dict:
     """Process pool wrapper: one broken file must not bring down the batch."""
     job, output_root, use_docling, save_lossless, *resto = args
     compact = resto[0] if resto else True
+    # A worker is a new process and does not inherit the streams the parent
+    # configured, so it configures its own before writing anything.
+    console.configure()
+
     etiqueta = job.rel_source.name
     if job.is_chapter:
         etiqueta += f"  [cap. {job.chapter_index}: {job.chapter_title[:40]}]"
-    print(f">>> {etiqueta}", flush=True)
+    console.safe_print(f">>> {etiqueta}", flush=True)
     try:
         return convert_one(job, output_root, use_docling, save_lossless, compact)
     except Exception:  # noqa: BLE001
