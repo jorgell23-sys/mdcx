@@ -101,6 +101,65 @@ def _connection():
 
 
 
+# How far below the best a package may sit and still be asked. Measured on
+# packages that hold unrelated subjects: when one alone answers the query, the
+# next best sits at least 0.18 below it, and when the subject genuinely spans
+# two, the second sits within 0.04. The gate belongs between those two regimes.
+RELEVANCE_MARGIN = 0.10
+
+
+def _best_similarity(connection, vector) -> float | None:
+    """How close this package comes to the query, at its closest passage.
+
+    Unlike a BM25 score, this number means the same thing in every package: it
+    is the angle between the query and a passage, measured by one model that
+    knows nothing of the corpus the passage was drawn from.
+    """
+    identificadores, matriz = archive._vectors(connection)
+    if not identificadores:
+        return None
+    return float((matriz @ vector).max())
+
+
+def _packages_worth_asking(paquetes: list[dict], query: str) -> list[dict]:
+    """Drop the packages that have nothing to say about this query.
+
+    Reciprocal rank compares positions, and a position only means something
+    among lists that are about the same thing. Merging one list per package
+    assumes every package is equally worth reading, so the first passage of a
+    package on an unrelated subject arrives with the weight of the first
+    passage of the package that answers -- and the merged list converges on
+    equal shares, one in N of it useful.
+
+    The signal that separates them is the one reciprocal rank discards, and
+    between packages it is comparable: the cosine of the dense branch. So the
+    packages are read first for how near they come, and those far below the
+    nearest do not reach the merge at all.
+
+    A package without vectors leaves nothing to compare, and then every package
+    is asked, as before: a query that cannot be measured is not one to filter on.
+    """
+    if len(paquetes) < 2:
+        return paquetes
+    if not all(archive._semantic_ready(p["connection"]) for p in paquetes):
+        return paquetes
+
+    import numpy as np
+
+    from . import semantic
+
+    vector = np.asarray(semantic.encode([query], role="query")[0], dtype=np.float32)
+    cercania = {}
+    for paquete in paquetes:
+        mejor = _best_similarity(paquete["connection"], vector)
+        if mejor is None:
+            return paquetes
+        cercania[paquete["name"]] = mejor
+
+    tope = max(cercania.values())
+    return [p for p in paquetes if cercania[p["name"]] >= tope - RELEVANCE_MARGIN]
+
+
 def search_packages(query: str, limit: int = 5,
                     only: str | None = None) -> list[dict]:
     """Search every configured package and return one ranked list.
@@ -109,10 +168,28 @@ def search_packages(query: str, limit: int = 5,
     statistics -- the frequency of a term depends on the corpus it is measured
     in -- so they cannot be compared to one another. Position within each
     package can, which is what reciprocal rank merges.
+
+    Which packages take part is decided first: merging positions across
+    packages that are not about the same thing buries the answer, so a package
+    far from the query never reaches the merge.
     """
-    paquetes = _open_packages()
+    configurados = _open_packages()
+    if len(configurados) == 1:
+        return archive.query(configurados[0]["connection"], query,
+                             limit=limit, only=only)
+
+    paquetes = _packages_worth_asking(configurados, query)
+
+    def etiquetado(paquete):
+        """Results carry the package they came from, since several are served."""
+        for item in archive.query(paquete["connection"], query, limit=limit,
+                                  only=only):
+            item = dict(item)
+            item["package"] = paquete["name"]
+            yield item
+
     if len(paquetes) == 1:
-        return archive.query(paquetes[0]["connection"], query, limit=limit, only=only)
+        return list(etiquetado(paquetes[0]))[:limit]
 
     from .semantic import fuse
 
@@ -120,10 +197,7 @@ def search_packages(query: str, limit: int = 5,
     listas: list[list] = []
     for paquete in paquetes:
         lista = []
-        for item in archive.query(paquete["connection"], query, limit=limit,
-                                  only=only):
-            item = dict(item)
-            item["package"] = paquete["name"]
+        for item in etiquetado(paquete):
             clave = (paquete["name"], item["document"], item["passage"][:120])
             por_clave[clave] = item
             lista.append(clave)
