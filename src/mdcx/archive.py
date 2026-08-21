@@ -85,7 +85,8 @@ def _decrypt(body: bytes, clave_derivada: bytes, nonce: bytes) -> bytes:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     return AESGCM(clave_derivada).decrypt(nonce, body, None)
 
-def _build_database(folder: Path, semantic: bool = False) -> tuple[bytes, dict]:
+def _build_database(folder: Path, semantic: bool = False,
+                    reuse: dict | None = None) -> tuple[bytes, dict]:
     """Build the in-memory database with documents, index and provenance."""
     from . import search as B
 
@@ -204,7 +205,7 @@ def _build_database(folder: Path, semantic: bool = False) -> tuple[bytes, dict]:
         except Exception:  # noqa: BLE001
             pass
     if semantic:
-        summary.update(_embed_passages(connection))
+        summary.update(_embed_passages(connection, reuse))
 
     for k, v in summary.items():
         connection.execute("INSERT INTO meta VALUES (?,?)",
@@ -267,15 +268,25 @@ def verify_signature(path: Path, public_key: str) -> bool:
 
 
 def pack(folder: Path, target: Path, key: str, issuer: str = "",
-         signing_key: str = "", semantic: bool = False) -> dict:
+         signing_key: str = "", semantic: bool = False,
+         reuse_from: Path | None = None) -> dict:
     """Write the .mdcx file and return its figures."""
     import lzma
 
     if not folder.is_dir():
         raise ValueError(f"Not a folder: {folder}")
 
+    reuse = None
+    if semantic and reuse_from is not None:
+        from . import semantic as _S
+
+        # Reading the previous package needs the same key, which the caller
+        # already holds: a package that cannot be decrypted holds no vectors
+        # that can be reused.
+        reuse = reusable_vectors(Path(reuse_from), key, _S.model_name())
+
     t0 = time.perf_counter()
-    base_score, summary = _build_database(folder, semantic=semantic)
+    base_score, summary = _build_database(folder, semantic=semantic, reuse=reuse)
     t_base = time.perf_counter() - t0
 
     # An empty package is written without complaint and fails only when queried,
@@ -342,11 +353,47 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
     }
 
 
-def _embed_passages(connection: sqlite3.Connection) -> dict:
-    """Compute and store the vector of every passage.
+def passage_digest(text: str) -> str:
+    """Identity of a passage for the purpose of reusing its vector.
+
+    The same text encoded by the same model yields the same vector, so the text
+    is what identifies it. The digest is taken over the exact bytes: any edit,
+    however small, produces a different passage and must be encoded again.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def reusable_vectors(path: Path, key: str, model: str) -> dict[str, bytes]:
+    """Vectors from an existing package, indexed by the digest of their passage.
+
+    Returns nothing when the package was encoded by a different model, since
+    vectors from two models occupy different spaces and mixing them would
+    produce a ranking over quantities that cannot be compared.
+    """
+    connection, _ = open_package(path, key)
+    try:
+        # The model is recorded in the package metadata rather than in the
+        # header, which is the part readable without the key.
+        fila = connection.execute(
+            "SELECT value FROM meta WHERE key = 'embedding_model'").fetchone()
+        if not fila or fila[0] != model:
+            return {}
+        filas = connection.execute(
+            "SELECT p.text, v.vector FROM passage p "
+            "JOIN passage_vector v ON v.passage_id = p.id").fetchall()
+        return {passage_digest(texto): vector for texto, vector in filas}
+    finally:
+        connection.close()
+
+
+def _embed_passages(connection: sqlite3.Connection,
+                    reuse: dict[str, bytes] | None = None) -> dict:
+    """Compute and store the vector of every passage, reusing what is known.
 
     Encoding a corpus costs far more than encoding a query, and it is done once,
     here, so that whoever receives the package pays only for their own queries.
+    A passage whose text is unchanged keeps its vector, so a corpus that grows
+    costs what was added rather than what it holds.
     """
     import numpy as np
 
@@ -356,14 +403,34 @@ def _embed_passages(connection: sqlite3.Connection) -> dict:
     if not filas:
         return {}
 
-    identificadores = [f[0] for f in filas]
-    vectores = semantic.encode([f[1] for f in filas], role="passage")
-    vectores = np.asarray(vectores, dtype=np.float16)
-    connection.executemany(
-        "INSERT INTO passage_vector VALUES (?,?)",
-        [(i, v.tobytes()) for i, v in zip(identificadores, vectores)])
+    reuse = reuse or {}
+    conocidos: list[tuple[int, bytes]] = []
+    por_codificar: list[tuple[int, str]] = []
+    for identificador, texto in filas:
+        vector = reuse.get(passage_digest(texto))
+        if vector is None:
+            por_codificar.append((identificador, texto))
+        else:
+            conocidos.append((identificador, vector))
+
+    dimensiones = 0
+    if por_codificar:
+        vectores = np.asarray(
+            semantic.encode([t for _, t in por_codificar], role="passage"),
+            dtype=np.float16)
+        dimensiones = int(vectores.shape[1])
+        connection.executemany(
+            "INSERT INTO passage_vector VALUES (?,?)",
+            [(i, v.tobytes()) for (i, _), v in zip(por_codificar, vectores)])
+    if conocidos:
+        connection.executemany("INSERT INTO passage_vector VALUES (?,?)", conocidos)
+        if not dimensiones:
+            dimensiones = len(conocidos[0][1]) // np.dtype(np.float16).itemsize
+
     return {"embedding_model": semantic.model_name(),
-            "embedding_dimensions": int(vectores.shape[1])}
+            "embedding_dimensions": dimensiones,
+            "passages_encoded": len(por_codificar),
+            "passages_reused": len(conocidos)}
 
 
 def has_vectors(connection: sqlite3.Connection) -> bool:
@@ -806,6 +873,11 @@ def main() -> int:
     e.add_argument("--issuer", default="")
     e.add_argument("--signing-key", default="",
                    help="hex private key to sign the package with")
+    e.add_argument("--reuse", metavar="PACKAGE",
+                   help="reuse the vectors of an existing package for passages "
+                        "whose text is unchanged, so that packaging costs what "
+                        "was added rather than what the corpus holds. Requires "
+                        "the same key and the same model.")
     e.add_argument("--multilingual", action="store_true",
                    help="also index meaning, so that a query in one language "
                         "reaches documents written in another. Needs the "
@@ -838,7 +910,8 @@ def main() -> int:
 
     if args.action == "pack":
         r = pack(Path(args.output), Path(args.target), args.key, args.issuer,
-                 args.signing_key, semantic=args.multilingual)
+                 args.signing_key, semantic=args.multilingual,
+                 reuse_from=Path(args.reuse) if args.reuse else None)
         print(f"Packed: {args.target}")
         print(f"  documents {r['documents']}   passages {r['passages']}")
         print(f"  database {r['bytes_database']:,} -> compressed {r['bytes_compressed']:,} "
@@ -848,6 +921,9 @@ def main() -> int:
         if r.get("embedding_model"):
             print(f"  meaning indexed with {r['embedding_model']} "
                   f"({r['embedding_dimensions']} dimensions)")
+            if r.get("passages_reused"):
+                print(f"  passages encoded {r['passages_encoded']:,}   "
+                      f"reused {r['passages_reused']:,}".replace(",", "."))
         return 0
 
     if args.action == "keygen":

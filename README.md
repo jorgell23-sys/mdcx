@@ -15,6 +15,7 @@ encrypted file, and query it from an agent through the Model Context Protocol.
 - [Quick start](#quick-start)
 - [Conversion](#conversion)
 - [Packaging and querying](#packaging-and-querying)
+- [Working incrementally](#working-incrementally)
 - [MCP server](#mcp-server)
 - [Language support](#language-support)
 - [Cross-language retrieval](#cross-language-retrieval)
@@ -150,6 +151,98 @@ mdcx export corpus.mdcx --target ./restored --key "passphrase"
 `info` reads the header without the key, so the issuer and the integrity of a
 file can be checked before it is opened. `export` reconstructs the original
 folder, so a collection can be moved out of the format at any time.
+
+## Working incrementally
+
+A collection that is delivered once and a collection that grows every day place
+different demands on the tool. The second must not pay for what it has already
+done.
+
+### Conversion resumes
+
+Conversion records the digest of each source in the Markdown it produces, and
+skips any file whose source is unchanged and whose output is present. This is
+the default; `--force` disables it.
+
+The unit is the chapter rather than the document, so a book split into 47
+chapters and interrupted at the 40th costs the remaining 7 on the next run.
+Progress is written after each unit and flushed to disk, so an interrupted run
+leaves a record that the next one reads.
+
+A run over a converted collection reports what it reused:
+
+```
+Already converted and unchanged: 8 (reused)
+Elapsed         : 0.4 min
+```
+
+A chapter is reconverted when its verification reported findings, since a result
+that was not certified is not a result worth keeping.
+
+### Packaging costs what was added
+
+Indexing meaning dominates the cost of packaging. On one measured book: 505
+seconds of encoding against 4 seconds of compression and 0.2 of encryption.
+Encoding the whole corpus on every publication makes adding one document cost a
+reindex of every previous one.
+
+A passage whose text has not changed has the same vector. `--reuse` reads the
+vectors of an existing package and encodes only what is new:
+
+```
+mdcx pack --output ./Documents_md --target corpus-2.mdcx --key "passphrase" \
+    --multilingual --reuse corpus-1.mdcx
+```
+
+```
+  meaning indexed with BAAI/bge-m3 (1024 dimensions)
+  passages encoded 395   reused 733
+```
+
+Measured over the chapters of one book, where 733 of 1,128 passages were
+unchanged, packaging took 15.4 seconds against 37.8 without reuse.
+
+The vectors are read from the previous package, which already holds them and is
+already encrypted with the same key. No intermediate store is created: a vector
+allows the text it represents to be approximated, so keeping vectors outside the
+package would undo the encryption the format provides.
+
+Reuse requires the same model. Vectors from two models occupy different spaces,
+so a package encoded by another model contributes nothing rather than
+contributing values that cannot be compared.
+
+### Several packages as one corpus
+
+`MDCX_FILE` accepts more than one package, separated by the path separator of
+the platform or by a comma. The server queries all of them and returns one
+ranked list, with each result naming the package it came from.
+
+```json
+{
+  "mcpServers": {
+    "mdcx": {
+      "command": "python",
+      "args": ["-m", "mdcx.mcp_server"],
+      "env": {
+        "MDCX_FILE": "/corpora/2026-01.mdcx:/corpora/2026-02.mdcx",
+        "MDCX_KEY": "package-key"
+      }
+    }
+  }
+}
+```
+
+One key serves every package; several keys are matched to the packages in order.
+
+This makes each package immutable: it is indexed once and never rebuilt. A
+corpus grows by adding packages rather than by enlarging one, which also keeps
+each of them within what can be decrypted into memory, since a package is
+decrypted whole when it is opened.
+
+Results from different packages are merged by reciprocal rank. Their scores are
+computed over different corpus statistics — the frequency of a term depends on
+the corpus it is measured in — so the scores are not comparable between
+packages, while positions within each are.
 
 ## MCP server
 
@@ -385,6 +478,11 @@ against which to measure fidelity.
 Coverage measures the tokens preserved by a conversion. It does not measure the
 preservation of table structure, which is reported separately.
 
+A package is decrypted in full when it is opened, so its size is bounded by the
+memory available. A corpus larger than that is held as several packages and
+queried together, as described under
+[Working incrementally](#working-incrementally).
+
 ## Tests
 
 ```
@@ -392,7 +490,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-93 tests in four groups.
+108 tests in six groups.
 
 | File | Scope |
 |---|---|
@@ -400,6 +498,8 @@ python -m pytest tests/ -v
 | `test_languages.py` | retrieval in 34 languages across 11 writing systems, and the requirement that a term shared by several languages returns the documents of all of them |
 | `test_formats.py` | identification of a file by content rather than extension, in both directions, and the extraction of reference text from EPUB |
 | `test_multilingual.py` | retrieval across languages, and the requirement that merging engines preserves the precision of the lexical engine |
+| `test_incremental.py` | reuse of vectors between packages: that unchanged passages are not encoded again, that an edited one is, and that reuse produces the same ranking |
+| `test_multipackage.py` | querying several packages as one corpus, including key configuration and the reporting of a missing package |
 
 `test_multilingual.py` is skipped when the `multilingual` extra is not installed,
 which is a supported configuration.

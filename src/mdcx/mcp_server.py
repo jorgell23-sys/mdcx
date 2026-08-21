@@ -39,30 +39,96 @@ from . import archive
 _STATE: dict = {}
 
 
-def _connection():
-    """Open the package once and reuse it.
+def _split_setting(value: str) -> list[str]:
+    """Split a setting that may name several packages.
+
+    The separator is the one the platform uses for lists of paths, so a Windows
+    path keeps its drive letter. A comma is also accepted, since it is what
+    people write.
+    """
+    partes: list[str] = []
+    for trozo in value.split(","):
+        partes.extend(t for t in trozo.split(os.pathsep) if t.strip())
+    return [t.strip() for t in partes if t.strip()]
+
+
+def _open_packages() -> list[dict]:
+    """Open every configured package once and reuse them.
 
     Decryption and decompression take a fraction of a second and need not be
-    repeated per query. The database is held in memory, so an open package
+    repeated per query. Each database is held in memory, so an open package
     leaves no plaintext copy on disk.
     """
-    if "connection" in _STATE:
-        return _STATE["connection"]
+    if "packages" in _STATE:
+        return _STATE["packages"]
 
-    path = os.environ.get("MDCX_FILE", "").strip()
-    key = os.environ.get("MDCX_KEY", "")
-    if not path:
+    ajuste = os.environ.get("MDCX_FILE", "").strip()
+    claves_ajuste = os.environ.get("MDCX_KEY", "")
+    if not ajuste:
         raise RuntimeError("MDCX_FILE is not set: provide the path to the .mdcx package.")
-    target = Path(path)
-    if not target.is_file():
-        raise RuntimeError(f"Package not found: {target}")
-    if not key:
+    if not claves_ajuste:
         raise RuntimeError("MDCX_KEY is not set: the package is encrypted.")
 
-    connection, header = archive.open_package(target, key)
-    _STATE["connection"] = connection
-    _STATE["header"] = header
-    return connection
+    rutas = _split_setting(ajuste)
+    claves = _split_setting(claves_ajuste)
+    # One key serves every package, which is the ordinary case; several keys are
+    # matched to the packages in order.
+    if len(claves) == 1:
+        claves = claves * len(rutas)
+    if len(claves) != len(rutas):
+        raise RuntimeError(
+            f"MDCX_KEY names {len(claves)} keys for {len(rutas)} packages: "
+            "give one key for all of them, or one key per package in the same order.")
+
+    paquetes: list[dict] = []
+    for ruta, clave in zip(rutas, claves):
+        destino = Path(ruta)
+        if not destino.is_file():
+            raise RuntimeError(f"Package not found: {destino}")
+        connection, header = archive.open_package(destino, clave)
+        paquetes.append({"name": destino.name, "path": destino,
+                         "connection": connection, "header": header})
+
+    _STATE["packages"] = paquetes
+    _STATE["connection"] = paquetes[0]["connection"]
+    _STATE["header"] = paquetes[0]["header"]
+    return paquetes
+
+
+def _connection():
+    """The first package, for the operations that read a single record."""
+    return _open_packages()[0]["connection"]
+
+
+
+def search_packages(query: str, limit: int = 5,
+                    only: str | None = None) -> list[dict]:
+    """Search every configured package and return one ranked list.
+
+    Scores from different packages are computed over different corpus
+    statistics -- the frequency of a term depends on the corpus it is measured
+    in -- so they cannot be compared to one another. Position within each
+    package can, which is what reciprocal rank merges.
+    """
+    paquetes = _open_packages()
+    if len(paquetes) == 1:
+        return archive.query(paquetes[0]["connection"], query, limit=limit, only=only)
+
+    from .semantic import fuse
+
+    por_clave: dict = {}
+    listas: list[list] = []
+    for paquete in paquetes:
+        lista = []
+        for item in archive.query(paquete["connection"], query, limit=limit,
+                                  only=only):
+            item = dict(item)
+            item["package"] = paquete["name"]
+            clave = (paquete["name"], item["document"], item["passage"][:120])
+            por_clave[clave] = item
+            lista.append(clave)
+        listas.append(lista)
+    return [por_clave[c] for c in fuse(listas)[:limit]]
 
 
 def create_server():
@@ -100,12 +166,11 @@ def create_server():
         limit: number of passages to return, between 1 and 20.
         direction: "received" or "sent" to restrict the search; omit for all.
         """
-        connection = _connection()
         top = max(1, min(int(limit), 20))
         scope = (direction or "").lower().strip() or None
         if scope not in ("received", "sent"):
             scope = None
-        results = archive.query(connection, query, limit=top, only=scope)
+        results = search_packages(query, top, scope)
         respuesta = {
             "query": query,
             "found": len(results),
@@ -116,6 +181,7 @@ def create_server():
                     "path": item["pseudopath"],
                     "score": item.get("score"),
                     "text": item["passage"],
+                    **({"package": item["package"]} if "package" in item else {}),
                 }
                 for item in results
             ],
@@ -144,20 +210,40 @@ def create_server():
             "and the fidelity with which it was converted from the originals."
         ),
     )
-    async def info() -> dict:
-        """Return the corpus record without querying it."""
-        _connection()
-        header = _STATE.get("header", {})
+    def _describe(paquete: dict) -> dict:
+        header = paquete["header"]
         return {
+            "package": paquete["name"],
             "format": f"{header.get('file_format')} v{header.get('version')}",
             "issuer": header.get("issuer") or "(not declared)",
             "created_utc": header.get("created_utc"),
             "documents": header.get("documents"),
             "passages": header.get("passages"),
             "language": header.get("language") or "(not detected)",
-            "cross_language_search": _cross_language(),
             "integrity": "intact" if header.get("_intact") else "ALTERED",
             "conversion": header.get("conversion", {}),
+        }
+
+    async def info() -> dict:
+        """Return the corpus record without querying it."""
+        paquetes = _open_packages()
+        if len(paquetes) == 1:
+            descripcion = _describe(paquetes[0])
+            descripcion.pop("package")
+            descripcion["cross_language_search"] = _cross_language()
+            return descripcion
+
+        # Several packages are queried as one corpus, so the totals describe the
+        # whole of it and the list says where each part comes from.
+        partes = [_describe(p) for p in paquetes]
+        return {
+            "packages": len(partes),
+            "documents": sum(p["documents"] or 0 for p in partes),
+            "passages": sum(p["passages"] or 0 for p in partes),
+            "integrity": ("intact" if all(p["integrity"] == "intact" for p in partes)
+                          else "ALTERED"),
+            "cross_language_search": _cross_language(),
+            "each": partes,
         }
 
     @server.tool(
@@ -171,19 +257,26 @@ def create_server():
     )
     async def document(name: str) -> dict:
         """Return the full text of one document in the corpus."""
-        connection = _connection()
-        row = connection.execute(
-            "SELECT d.name, d.pseudopath, d.source, "
-            "       group_concat(p.text, char(10) || char(10)) "
-            "FROM document d JOIN passage p ON p." + archive.document_column(connection) + " = d.id "
-            "WHERE d.name = ? OR d.pseudopath = ? "
-            "GROUP BY d.id ORDER BY p.position LIMIT 1",
-            (name, name)).fetchone()
-        if not row:
-            return {"found": False,
-                    "message": f"No document named {name!r} in this corpus."}
-        return {"found": True, "document": row[0], "path": row[1],
-                "direction": row[2], "text": row[3] or ""}
+        paquetes = _open_packages()
+        for paquete in paquetes:
+            connection = paquete["connection"]
+            row = connection.execute(
+                "SELECT d.name, d.pseudopath, d.source, "
+                "       group_concat(p.text, char(10) || char(10)) "
+                "FROM document d JOIN passage p ON p."
+                + archive.document_column(connection) + " = d.id "
+                "WHERE d.name = ? OR d.pseudopath = ? "
+                "GROUP BY d.id ORDER BY p.position LIMIT 1",
+                (name, name)).fetchone()
+            if row:
+                salida = {"found": True, "document": row[0], "path": row[1],
+                          "direction": row[2], "text": row[3] or ""}
+                if len(paquetes) > 1:
+                    salida["package"] = paquete["name"]
+                return salida
+        donde = "this corpus" if len(paquetes) == 1 else f"any of the {len(paquetes)} packages"
+        return {"found": False,
+                "message": f"No document named {name!r} in {donde}."}
 
     return server
 

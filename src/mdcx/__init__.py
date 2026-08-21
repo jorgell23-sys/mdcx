@@ -34,7 +34,15 @@ Retrieval
     context window.
 """
 
-__version__ = "1.0.6"
+# Read from the installed metadata rather than restated here. A version written
+# in two places is a version that will disagree with itself: this one had drifted
+# three releases behind what the package actually was.
+try:
+    from importlib.metadata import PackageNotFoundError, version as _version
+
+    __version__ = _version("mdcx")
+except (ImportError, PackageNotFoundError):  # running from a source tree
+    __version__ = "0.0.0+source"
 
 from . import archive, search  # noqa: F401
 
