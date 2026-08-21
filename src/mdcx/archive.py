@@ -51,6 +51,8 @@ import threading
 import time
 from pathlib import Path
 
+from . import console
+
 MAGIC = b"MDCX"
 VERSION = 1
 
@@ -88,7 +90,7 @@ def _decrypt(body: bytes, clave_derivada: bytes, nonce: bytes) -> bytes:
 def _build_database(folder: Path, semantic: bool = False,
                     reuse: dict | None = None) -> tuple[bytes, dict]:
     """Build the in-memory database with documents, index and provenance."""
-    from . import console, search as B
+    from . import search as B
 
     docs = B.load_documents(folder)
     connection = sqlite3.connect(":memory:")

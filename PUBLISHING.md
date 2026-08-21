@@ -86,7 +86,7 @@ discover available servers.
 
 The registry stores metadata only, which is why PyPI comes first. Ownership is
 verified by looking for a marker inside the package description: this repository
-carries `<!-- mcp-name: io.github.jorgell23-sys/mdcx -->` at the top of the
+carries `<!-- mcp-name: io.github.jorgell23-sys/markdown-document-search -->` at the top of the
 README, and `server.json` declares the same name. Both must match, and the marker
 must already be in the published version: adding it later would require a new
 release.

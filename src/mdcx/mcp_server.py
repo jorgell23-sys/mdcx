@@ -202,14 +202,6 @@ def create_server():
                     "the multilingual extra is missing or set to another model")
         return "yes: a query in one language reaches documents in the others"
 
-    @server.tool(
-        name="info",
-        title="Corpus information",
-        description=(
-            "Describes the package: number of documents, creation date, issuer "
-            "and the fidelity with which it was converted from the originals."
-        ),
-    )
     def _describe(paquete: dict) -> dict:
         header = paquete["header"]
         return {
@@ -224,6 +216,14 @@ def create_server():
             "conversion": header.get("conversion", {}),
         }
 
+    @server.tool(
+        name="info",
+        title="Corpus information",
+        description=(
+            "Describes the package: number of documents, creation date, issuer "
+            "and the fidelity with which it was converted from the originals."
+        ),
+    )
     async def info() -> dict:
         """Return the corpus record without querying it."""
         paquetes = _open_packages()
