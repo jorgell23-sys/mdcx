@@ -242,7 +242,30 @@ def _covers_less(v: dict, attempts: list[dict]) -> bool:
     return covered < best - COVERAGE_TOLERANCE
 
 
-def _good_enough(name: str, meta: dict, v: dict, score: tuple) -> bool:
+# The coverage above which there is no text left for another engine to recover.
+# Not 1.0: two correct readings of the same page differ in the last decimals,
+# and holding out for exactness would run the expensive engine over documents
+# that were already read whole.
+COVERAGE_COMPLETE = 0.995
+
+
+def _nothing_left_to_recover(attempts: list[dict]) -> bool:
+    """Whether some engine has already read the whole document.
+
+    Layout analysis is worth its cost when text is missing. When the cheap path
+    has already covered the document end to end, what it could still add is
+    structure -- and it charges about a hundred times more per page for it.
+
+    Measured on chapters of a textbook: the native engine covered 1.0000 and the
+    hybrid 0.9924, which counts as a warning rather than a pass, so the search
+    continued and layout analysis ran over a document with nothing left to find.
+    Those chapters took twenty seconds where they now take two.
+    """
+    return any((a.get("coverage") or 0.0) >= COVERAGE_COMPLETE for a in attempts)
+
+
+def _good_enough(name: str, meta: dict, v: dict, score: tuple,
+                 attempts: list[dict] | None = None) -> bool:
     """Whether this result makes running the next engine pointless.
 
     Stopping early is what the order of the engines is worth: putting the cheap
@@ -258,14 +281,29 @@ def _good_enough(name: str, meta: dict, v: dict, score: tuple) -> bool:
     "Figure 4.2" announced nothing, so nothing was missing, so the whole
     document went unexamined. Three books in six were skipped that way.
     """
+    # The hybrid engine is the end of the cheap path: it has already sent the
+    # model every page the rest could not settle. If by then the document has
+    # been read end to end, layout analysis has no text left to recover, and
+    # what it would still add is structure at a hundred times the cost per page.
+    # This is checked before the status, because a hybrid result sits at "warn"
+    # for losing a thousandth of coverage against a native reading that is
+    # already complete -- and that alone was sending whole chapters to the
+    # expensive engine for nothing.
+    # Structure is still required: a chapter read whole but returned as a wall
+    # of prose is what sending it to layout analysis is for, and accepting it
+    # here would undo that. What this allows is the opposite case -- a document
+    # already read end to end, with its headings, that the hybrid engine left at
+    # "warn" for trading a thousandth of coverage for a table.
+    if (name == "hibrido" and score[0] == 1 and score[1] > 0
+            and _nothing_left_to_recover(
+                list(attempts or []) + [{"coverage": v.get("coverage")}])):
+        return True
+
     if v.get("status") != "ok" or score[0] != 1 or score[1] <= 0:
         return False
     if name.startswith("docling"):
         return True
     if name == "hibrido":
-        # It already sent the model everything the cheap path could not settle,
-        # so converting the whole document again would read the same pages a
-        # second way to no purpose.
         return True
     pending = meta.get("unresolved")
     if pending is None:
@@ -354,7 +392,14 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
             if meta.get("pages"):
                 record.setdefault("pages", meta["pages"])
 
-        if not retrocede and _good_enough(name, meta, v, score):
+        # Whether to stop does not depend on this result being the best one. A
+        # result that reads less than an earlier attempt is not used -- that is
+        # what `retrocede` decides above -- but the search can still end here if
+        # what is already in hand is enough. Tying the two together kept sending
+        # documents to layout analysis precisely when the cheap path had already
+        # read them whole and the hybrid had merely traded a thousandth of
+        # coverage for a table.
+        if _good_enough(name, meta, v, score, attempts):
             break
 
     record["attempts"] = attempts

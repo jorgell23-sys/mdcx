@@ -118,5 +118,11 @@ def test_a_chapter_of_prose_is_no_longer_rejected_as_structureless():
 
     assert C._score(sin_titulos, v)[1] == 0
     assert C._score(con_titulos, v)[1] > 0
-    assert C._good_enough("hibrido", {"unresolved": []}, v, C._score(sin_titulos, v)) is False
-    assert C._good_enough("hibrido", {"unresolved": []}, v, C._score(con_titulos, v)) is True
+
+    # A result with no structural marks is not accepted however much of the
+    # document it covered: a chapter returned as a wall of prose is exactly
+    # what the expensive engine is for.
+    assert C._good_enough("hibrido", {"unresolved": []}, v,
+                          C._score(sin_titulos, v), []) is False
+    assert C._good_enough("hibrido", {"unresolved": []}, v,
+                          C._score(con_titulos, v), []) is True

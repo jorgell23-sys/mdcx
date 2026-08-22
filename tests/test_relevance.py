@@ -38,23 +38,48 @@ SUBJECTS = {
     "anatomy": {
         "nervous system": """The autonomic nervous system regulates heart rate and
             digestion. The sympathetic chain ganglia run alongside the vertebral
-            column. Preganglionic fibres synapse there before reaching the organ.""",
+            column. Preganglionic fibres synapse there before reaching the organ.
+            Myelin sheaths increase the speed at which an action potential travels
+            along an axon, and glial cells support the neurons around them.""",
         "the cell": """Mitochondria perform respiration and produce adenosine
-            triphosphate. Enzymes catalyse reactions by lowering activation energy.""",
+            triphosphate. Enzymes catalyse reactions by lowering activation energy.
+            Membranes are built of phospholipids and decide what enters the cell.""",
+        "circulation": """The heart drives blood through arteries and veins.
+            Haemoglobin carries oxygen from the lungs to the tissues that need it,
+            and returns carrying carbon dioxide to be exhaled.""",
+        "the skeleton": """Bone is living tissue, remodelled continuously by cells
+            that deposit and resorb mineral. A joint is where two bones meet, and
+            cartilage keeps their surfaces from wearing against each other.""",
     },
     "government": {
         "local government": """State and local government administers education and
             public works. A political culture may be moralistic, individualistic or
-            traditional. Federalism divides authority between nation and states.""",
+            traditional. Federalism divides authority between nation and states,
+            each of which keeps a constitution and a legislature of its own.""",
         "elections": """An electoral system turns votes into seats. Proportional
-            representation allocates them in proportion to the vote.""",
+            representation allocates them in proportion to the vote, while a
+            plurality system gives the seat to whoever leads in a district.""",
+        "the courts": """A court interprets the law and settles disputes brought
+            before it. Judicial review lets it strike down a statute it finds
+            incompatible with the constitution.""",
+        "public administration": """A bureaucracy runs on written rules and a
+            hierarchy of offices. Civil servants are appointed on examination
+            rather than patronage, which is what separates it from spoils.""",
     },
     "manufacturing": {
         "additive manufacturing": """Additive manufacturing builds a part layer by
             layer. Design for additive manufacturing exploits geometries that
-            machining cannot produce, such as internal lattices.""",
+            machining cannot produce, such as internal lattices and conformal
+            cooling channels that follow the shape of the part.""",
         "fatigue": """A material fails under cyclic load below its tensile strength.
-            Fatigue cracks start at a stress concentration and grow each cycle.""",
+            Fatigue cracks start at a stress concentration and grow each cycle,
+            and the S-N curve relates stress amplitude to cycles until failure.""",
+        "machining": """A cutting tool removes material to reach a finished shape.
+            Feed rate and depth of cut decide both the finish and how quickly the
+            tool wears out against the workpiece.""",
+        "welding": """Welding joins metals by melting them together at the seam.
+            The heat affected zone around the weld has different properties from
+            the parent metal, and is where a joint usually fails.""",
     },
 }
 
