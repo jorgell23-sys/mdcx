@@ -52,14 +52,22 @@ def test_a_passage_carries_its_position_and_not_a_score():
         "publicar el score invita a ordenar y filtrar por el, y no es valido")
 
 
-def test_the_threshold_sits_between_what_was_measured():
-    """Set from questions a corpus answers and questions it does not.
+def test_relevance_is_judged_against_the_corpus_and_not_against_a_constant():
+    """How near anything comes at all depends on the collection.
 
-    The ones it answered came no closer than 0.57; the ones it did not reached
-    0.41. A threshold outside that gap either disparages real answers or never
-    fires.
+    On one corpus the questions it answers start at 0.57 and on another at
+    0.64, so a threshold on the absolute number marks nothing on the second or
+    disparages good answers on the first. A first attempt set at 0.45 never
+    fired once outside the corpus it was measured on.
+
+    What travels is the shape of the ranking: an answer stands clear of the
+    tail, and a question the corpus knows nothing about does not, because there
+    the ordering is only noise.
     """
-    assert 0.41 < mcp_server.NOTHING_CLOSE < 0.57
+    assert not hasattr(mcp_server, "NOTHING_CLOSE"), (
+        "un umbral absoluto no sobrevive un cambio de corpus")
+    assert 0.0 < mcp_server.STANDS_CLEAR < 1.0
+    assert mcp_server.TAIL_AT > 1
 
 
 def test_a_corpus_that_cannot_answer_says_so_without_hiding_anything():
@@ -81,6 +89,15 @@ def test_a_package_without_vectors_offers_no_such_number(monkeypatch):
     monkeypatch.setattr(mcp_server, "_open_packages", lambda: [{"connection": None}])
     monkeypatch.setattr(mcp_server.archive, "_semantic_ready", lambda _: False)
     assert mcp_server._closest_to("cualquier cosa") is None
+
+
+def test_the_tail_is_what_the_best_passage_is_compared_against():
+    """Both numbers are reported, and the judgement rests on the second."""
+    fuente = (Path(__file__).resolve().parents[1]
+              / "src" / "mdcx" / "mcp_server.py").read_text(encoding="utf-8")
+    assert 'respuesta["stands_clear"]' in fuente
+    assert "despegue < STANDS_CLEAR" in fuente, (
+        "el aviso debe decidirse por el despegue, no por el coseno absoluto")
 
 
 def test_one_blank_page_does_not_send_a_book_to_optical_recognition():

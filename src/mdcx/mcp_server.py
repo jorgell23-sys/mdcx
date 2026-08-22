@@ -108,25 +108,36 @@ def _connection():
 RELEVANCE_MARGIN = 0.10
 
 
-# How near the corpus must come before an answer is worth calling one. Cosine
-# is the only number here that means the same thing everywhere -- it is an angle
-# from one model, and owes nothing to the statistics of any corpus -- so it is
-# the only one a threshold can be set on.
+# How far the best passage must stand clear of the rest before the corpus is
+# said to answer at all.
 #
-# Measured over questions a corpus answers and questions it does not: the ones
-# it answers came no closer than 0.57 and the ones it does not reached 0.41.
-# This sits between them, low enough not to disparage a real answer. It marks
-# rather than hides: the passages are still returned, because the nearest
-# passage is worth seeing even when it is not an answer, and because a corpus
-# that answers in another language is a case this must not swallow.
-NOTHING_CLOSE = 0.45
+# The obvious measure is how near the best passage comes, and it does not
+# survive a change of corpus. How near anything comes at all depends on what is
+# in the collection and how much of it there is: on one corpus the questions it
+# answers start at 0.57 and on another they start at 0.64, so a threshold set on
+# one marks nothing on the other, or disparages good answers. A first attempt at
+# this was set at 0.45 and never fired once outside the corpus it was measured
+# on.
+#
+# What does travel is the shape of the result. A question the corpus answers has
+# a best passage that stands well clear of the fiftieth; a question it cannot
+# answer has a best passage barely distinguishable from the tail, because
+# nothing in there is about it and the ranking is just noise. Measured, the two
+# groups separate as cleanly by this as by the absolute number -- and this one
+# is a comparison the corpus makes against itself.
+STANDS_CLEAR = 0.25
+
+# Which passage stands in for the tail. Far enough down that a handful of real
+# answers do not drag it up, near enough that it is still the same corpus.
+TAIL_AT = 50
 
 
-def _closest_to(query: str) -> float | None:
-    """How near the whole corpus comes to a question, or None if it cannot say.
+def _closest_to(query: str) -> tuple[float, float] | None:
+    """How near the corpus comes to a question, and how far that stands clear.
 
-    A package that indexes words alone has no such number, and inventing one
-    from BM25 would be exactly the mistake this replaced.
+    Returns the best cosine and its distance from the tail of the ranking, or
+    None where there is no such number: a package that indexes words alone has
+    none, and inventing one from BM25 would be the mistake this replaced.
     """
     paquetes = _open_packages()
     if not all(archive._semantic_ready(p["connection"]) for p in paquetes):
@@ -138,11 +149,18 @@ def _closest_to(query: str) -> float | None:
 
         vector = np.asarray(semantic.encode([query], role="query")[0],
                             dtype=np.float32)
+        todos: list[float] = []
+        for paquete in paquetes:
+            identificadores, matriz = archive._vectors(paquete["connection"])
+            if identificadores:
+                todos.extend((matriz @ vector).tolist())
     except Exception:  # noqa: BLE001
         return None
-    cercanias = [_best_similarity(p["connection"], vector) for p in paquetes]
-    cercanias = [c for c in cercanias if c is not None]
-    return max(cercanias) if cercanias else None
+    if not todos:
+        return None
+    todos.sort(reverse=True)
+    cola = todos[min(TAIL_AT, len(todos) - 1)]
+    return float(todos[0]), float(todos[0] - cola)
 
 
 def _best_similarity(connection, vector) -> float | None:
@@ -305,14 +323,16 @@ def create_server():
                 for position, item in enumerate(results, start=1)
             ],
         }
-        cercania = _closest_to(query)
-        if cercania is not None:
+        medido = _closest_to(query)
+        if medido is not None:
+            cercania, despegue = medido
             respuesta["similarity"] = round(cercania, 4)
-            if cercania < NOTHING_CLOSE:
+            respuesta["stands_clear"] = round(despegue, 4)
+            if despegue < STANDS_CLEAR:
                 respuesta["warning"] = (
-                    "nothing in this corpus is close to the question; the "
-                    "passages below are the nearest there are, which is not "
-                    "the same as an answer")
+                    "nothing in this corpus is about the question: the best "
+                    "passage is no nearer than the rest, so the passages below "
+                    "are the nearest there are rather than an answer")
         if not results:
             aviso = archive.language_mismatch(connection, query)
             if aviso:
