@@ -157,10 +157,11 @@ def _build_database(folder: Path, semantic: bool = False,
             if not bloque.strip():
                 continue
             n_passages += 1
-            # La columna indexada nunca queda vacia: FTS5 con contenido externo
-            # lee esta columna directamente, y un nulo equivale a no indexar el
-            # pasaje. Para texto que ya separa palabras es identica al original,
-            # y la duplicacion la absorbe la compresion del paquete.
+            # The indexed column is never left empty. FTS5 with external content
+            # reads it directly, so a null there is a passage that was not
+            # indexed at all. For text that already separates words it is
+            # identical to the original, and the compression of the package
+            # absorbs the duplication.
             connection.execute(
                 "INSERT INTO passage VALUES (?,?,?,?,?)",
                 (n_passages, i, j, bloque,

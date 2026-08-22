@@ -368,10 +368,16 @@ def create_server():
         title="Search the corpus",
         description=(
             "Returns the passages that answer a query, each with its source "
-            "document, portable path and whether it was sent or received. "
+            "document, portable path, whether it was sent or received, and its "
+            "rank. The list is ordered by that rank and by nothing else: the "
+            "two engines behind it score on scales with no common meaning, so "
+            "there is no number here to sort or filter by. "
+            "The reply carries `similarity`, how near the corpus comes to the "
+            "question, and a `warning` when nothing in it is about the question "
+            "-- the passages are still returned, being the nearest there are. "
             "When the package was built with meaning indexed, a query reaches "
             "documents written in other languages as well; use info to see "
-            "whether it was. Otherwise matching is by word, and the query "
+            "whether it was. Without that, matching is by word and the query "
             "should be written in the language of the documents."
         ),
     )

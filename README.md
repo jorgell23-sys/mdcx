@@ -296,12 +296,24 @@ Three tools are exposed:
 
 | Tool | Returns |
 |---|---|
-| `search` | passages answering a question, each with its source document and portable path |
+| `search` | passages answering a question, each with its source document, portable path and rank |
 | `info` | the corpus record, including the fidelity of its conversion |
 | `document` | a complete document, when passages are insufficient |
 
 The package is verified before the server begins listening, so an incorrect path
 or key is reported at startup rather than on the first query.
+
+A passage carries its `rank` and no score. The list is ordered by that rank and
+by nothing else: word matching and meaning score on scales with no common
+meaning — one has no upper bound and depends on the corpus it was measured in,
+the other runs from zero to one and does not — so there is no single number here
+that can be compared, sorted or filtered by.
+
+What can be compared is reported once for the reply. `similarity` is how near
+the corpus comes to the question, and a `warning` appears when nothing in it is
+about the question. The passages are returned either way: the nearest passage is
+worth seeing even when it is not an answer, and a corpus that answers in another
+language must not be hidden by this.
 
 ## Language support
 
@@ -358,8 +370,10 @@ response states this and names the language of the corpus, distinguishing an
 empty answer from material the corpus does not hold.
 
 Retrieval across languages is a separate capability, described below. It is
-optional, requires a model, and is merged with word matching rather than
-replacing it.
+optional and requires a model. Where the query is written in the language of the
+documents the two are merged, each covering what the other cannot; where it is
+not, word matching has nothing to contribute and is left out, because the few
+terms it does match there are accidents and they arrive first.
 
 ## Cross-language retrieval
 
