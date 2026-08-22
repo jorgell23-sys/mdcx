@@ -1,0 +1,52 @@
+# What this guards is not that the code is correct -- the tests do that -- but
+# that it is still correct on a machine that is not the one it was written on.
+#
+# The heavy extras are deliberately not installed. Retrieval by meaning needs a
+# multilingual model and reading table shapes needs a vision model, and between
+# them they are gigabytes and a GPU; the tests that need either skip themselves
+# when it is absent, which is a supported configuration and worth exercising in
+# its own right. What runs here is everything that does not: the container
+# format, the conversion pipeline, the engine order, the shape of a reply.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest and the newest interpreter the package declares support
+        # for. A syntax or standard-library difference between them is the kind
+        # of thing that only shows up on the machine of whoever installs it.
+        python: ["3.10", "3.13"]
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[convert,mcp]" pytest
+
+      - name: Run the tests
+        run: python -m pytest tests/ -q
+
+      - name: Check that every declared entry point starts
+        # A package that installs and cannot be run is the failure that a test
+        # of the API alone does not see; it shipped once and reached PyPI.
+        run: |
+          mdcx --help
+          mdcx-convert --help
+          mdcx-search --help
