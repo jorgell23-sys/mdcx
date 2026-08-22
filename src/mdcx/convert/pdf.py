@@ -129,6 +129,27 @@ def extract_pages(source: Path, first: int, last: int, target: Path) -> Path:
         src.close()
     return target
 
+def extract_page_list(source: Path, pages: list[int], target: Path) -> Path:
+    """Write a new PDF holding the given pages, zero-based, in order.
+
+    Gathering scattered pages into one document is what lets an engine that
+    charges per document read them in a single pass. Converting them one at a
+    time costs that charge once per page: measured on four pages of a textbook,
+    separately they took longer than converting the whole forty-page extract.
+    """
+    import pypdfium2 as pdfium
+
+    src = _abrir(source)
+    try:
+        out = pdfium.PdfDocument.new()
+        out.import_pages(src, sorted(set(pages)))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        out.save(str(target))
+        out.close()
+    finally:
+        src.close()
+    return target
+
 LINE_TOLERANCE = 2.0
 
 PARAGRAPH_GAP = 14.0

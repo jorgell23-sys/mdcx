@@ -1,0 +1,118 @@
+"""Checks which engine reads a document, and what stops a wrong table.
+
+Reading a page with a vision model costs about a second; extracting its text
+costs three milliseconds. That difference only buys something where the page
+holds a table, and in a corpus of books nine pages in ten hold none, so the
+order the engines are tried in is most of what converting a library costs.
+
+Ordering them is only half of it. Trying the cheap engine first saves nothing
+if the expensive one runs anyway, so something has to decide that the cheap
+result is enough -- and the thing the cheap engine can quietly get wrong is a
+table. A page whose table was read as running text still scores as covered: the
+words are all there, in the wrong shape. So the decision rests on the one
+question it can answer about its own blind spot, which is how many of the pages
+that announce a table it found a table on.
+
+The other half is refusing a table that came out wrong. Where a column boundary
+falls inside a word the halves land in adjacent cells -- "subtracting" arrives
+as "subtractin" and "g numbers" -- and the row still looks well formed. Nothing
+downstream would catch it, so it is caught here: the cells of a row must add up
+to the line they were cut from.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from mdcx.convert import convert as C  # noqa: E402
+from mdcx.convert import tables  # noqa: E402
+
+
+class Textpage:
+    """A page that reports the text it holds, which is all a caption needs."""
+
+    def __init__(self, text: str):
+        self._text = text
+
+    def get_text_range(self) -> str:
+        return self._text
+
+
+def test_the_cheap_engine_is_tried_first():
+    """A vision model is what the order exists to avoid paying for."""
+    job = SimpleNamespace(kind="pdf")
+    nombres = [n for n, _ in C._candidates(job, {}, use_docling=True)]
+    assert nombres, "algun motor debe quedar"
+    assert nombres[0] == "nativo"
+    assert nombres.index("nativo") < nombres.index("docling")
+
+
+def test_a_document_that_needs_ocr_goes_to_the_model_first():
+    """There is nothing to extract from a page with no text layer."""
+    job = SimpleNamespace(kind="pdf")
+    nombres = [n for n, _ in C._candidates(job, {"needs_ocr": True}, use_docling=True)]
+    assert nombres[0] == "docling-ocr"
+
+
+def test_the_cheap_result_stops_the_expensive_engine_when_nothing_is_missing():
+    """A document that announces no table and converted cleanly is finished."""
+    v = {"status": "ok"}
+    score = (1, 5, 1.0, 1000)
+    meta = {"tables": 0, "tables_announced": 0}
+    assert C._good_enough("nativo", meta, v, score) is True
+
+
+def test_a_missed_table_sends_the_document_on():
+    """Coverage cannot see a missing table: every word is still on the page."""
+    v = {"status": "ok"}
+    score = (1, 5, 1.0, 1000)
+    assert C._good_enough("nativo", {"tables": 0, "tables_announced": 4}, v, score) is False
+    assert C._good_enough("nativo", {"tables": 4, "tables_announced": 4}, v, score) is True
+
+
+def test_an_engine_that_cannot_answer_defers_to_the_model():
+    """Silence about tables is not a claim that there were none."""
+    v = {"status": "ok"}
+    score = (1, 5, 1.0, 1000)
+    assert C._good_enough("nativo", {}, v, score) is False
+
+
+def test_a_bad_conversion_never_stops_the_search():
+    """Whatever the tables say, a result that failed is not enough."""
+    score = (1, 5, 1.0, 1000)
+    meta = {"tables": 4, "tables_announced": 4}
+    assert C._good_enough("nativo", meta, {"status": "fail"}, score) is False
+    assert C._good_enough("nativo", meta, {"status": "ok"}, (0, 5, 0.2, 10)) is False
+
+
+def test_a_caption_is_recognised_and_a_mention_is_not():
+    """The number and the punctuation are what make it a caption."""
+    assert tables.announces_a_table(Textpage("Table 3.1: Ionisation energies"))
+    assert tables.announces_a_table(Textpage("Tabla 2 - Resultados"))
+    assert tables.announces_a_table(Textpage("Tabelle 4. Messwerte"))
+    assert not tables.announces_a_table(Textpage("the table above shows that"))
+    assert not tables.announces_a_table(Textpage("a periodic table is useful"))
+
+
+def test_rules_drawn_as_several_paths_are_one_rule():
+    """A rule split into segments must not be counted as several."""
+    assert tables._cluster([100.0, 101.5, 300.0]) == pytest.approx([100.75, 300.0])
+    assert tables._cluster([]) == []
+
+
+def test_a_band_needs_two_rules_and_some_height():
+    """One rule bounds nothing, and a sliver holds no rows."""
+    assert tables._table_band([100.0], 800.0) is None
+    assert tables._table_band([100.0, 101.0], 800.0) is None      # too thin
+    assert tables._table_band([100.0, 400.0], 800.0) == (100.0, 400.0)
+
+
+def test_comparing_cells_to_their_line_ignores_only_spacing():
+    """Splitting and rejoining moves spaces about; it must not move letters."""
+    assert tables._squeeze("Rule: When adding") == tables._squeeze("Rule:Whenadding")
+    assert tables._squeeze("subtractin g") != tables._squeeze("subtracting numbers")

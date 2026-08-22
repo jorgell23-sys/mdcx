@@ -138,7 +138,17 @@ def _is_drawing(job: Job, ref_meta: dict) -> bool:
     return True
 
 def _candidates(job: Job, ref_meta: dict, use_docling: bool) -> list[tuple[str, callable]]:
-    """Choose which engines to try, and in what order, by document type."""
+    """Choose which engines to try, and in what order, by document type.
+
+    Reading a page with a vision model costs about a second and extracting its
+    text costs three milliseconds, so which engine is tried first decides what
+    converting a library costs. The cheap one goes first and the expensive one
+    is kept for the documents it actually helps -- the ones whose tables the
+    cheap engine could not find, or whose pages carry no text layer at all.
+
+    A document that needs OCR has nothing to extract, so there the order does
+    not apply: only the model can read it.
+    """
     native = engines.NATIVE.get(job.kind)
     needs_ocr = bool(ref_meta.get("needs_ocr"))
 
@@ -156,10 +166,16 @@ def _candidates(job: Job, ref_meta: dict, use_docling: bool) -> list[tuple[str, 
             out.append(("nativo", native))
         return out
 
-    if docling_ok:
-        out.append(("docling", lambda p: engines.docling_convert(p, ocr=False)))
     if native:
         out.append(("nativo", native))
+    if docling_ok and job.kind == "pdf":
+        # Between the two extremes: everything extracted cheaply, and only the
+        # pages that announce a table the cheap path could not produce read by
+        # the model. A book with tables on a tenth of its pages then pays for
+        # layout analysis on a tenth of its pages.
+        out.append(("hibrido", lambda p: engines.hybrid_pdf(p)))
+    if docling_ok:
+        out.append(("docling", lambda p: engines.docling_convert(p, ocr=False)))
     return out
 
 MIN_USABLE_COVERAGE = 0.60
@@ -172,6 +188,42 @@ def _score(md: str, v: dict) -> tuple:
     usable = 1 if (cov is None and md.strip()) or (cov is not None and cov >= MIN_USABLE_COVERAGE) else 0
     structure = len(_H_RE.findall(md)) * 2 + len(_TBL_RE.findall(md)) * 5 + len(_LI_RE.findall(md))
     return (usable, structure, cov or 0.0, len(md))
+
+# What fraction of the tables a document announces the cheap engine must have
+# found before the expensive one is skipped. Captions are the only count of
+# tables available without converting the document a second way, and they are
+# reliable in this material because the author writes them on purpose.
+MIN_TABLE_RECALL = 0.8
+
+def _good_enough(name: str, meta: dict, v: dict, score: tuple) -> bool:
+    """Whether this result makes running the next engine pointless.
+
+    Stopping early is what the order of the engines is worth: putting the cheap
+    one first saves nothing if the expensive one runs anyway. But stopping on
+    the cheap engine needs more than a good score, because the thing it can
+    quietly miss is a table, and a page whose table was read as running text
+    still scores as covered -- the words are all there, in the wrong shape.
+
+    So it is asked the one question it can answer about its own blind spot: of
+    the pages that say they carry a table, how many did it find a table on. A
+    document that announces none and converted cleanly has nothing left for a
+    vision model to add.
+    """
+    if v.get("status") != "ok" or score[0] != 1 or score[1] <= 0:
+        return False
+    if name.startswith("docling"):
+        return True
+    if name == "hibrido":
+        # It already sent the model everything the cheap path could not settle,
+        # so converting the whole document again would read the same pages a
+        # second way to no purpose.
+        return True
+    announced = meta.get("tables_announced")
+    if announced is None:
+        return False        # an engine that cannot answer defers to the model
+    if not announced:
+        return True
+    return meta.get("tables", 0) >= announced * MIN_TABLE_RECALL
 
 def convert_one(job: Job, output_root: Path, use_docling: bool = True,
                 save_lossless: bool = True, compact: bool = True) -> dict:
@@ -253,7 +305,7 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
             if meta.get("pages"):
                 record.setdefault("pages", meta["pages"])
 
-        if name.startswith("docling") and v.get("status") == "ok" and score[0] == 1 and score[1] > 0:
+        if _good_enough(name, meta, v, score):
             break
 
     record["attempts"] = attempts

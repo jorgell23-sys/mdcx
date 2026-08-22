@@ -171,22 +171,122 @@ def docling_convert(path: Path, ocr: bool = False) -> tuple[str, dict, dict | No
         pass
     return md, meta, lossless
 
-def native_pdf(path: Path) -> tuple[str, dict, None]:
-    """PDF to Markdown by layout blocks, preserving reading order and page separation."""
+# How much of a page's text a table must account for before the table stands
+# in for the page. Below it the prose is kept as well: the table is then a
+# small part of the page and dropping the rest loses more than it saves.
+TABLE_DOMINATES = 0.6
+
+def _native_pages(path: Path) -> tuple[list[str], dict]:
+    """Each page as Markdown, and which pages this engine could not settle.
+
+    Tables are located from what is drawn on the page and from the caption the
+    author wrote, never from text alignment alone; `tables` says why.
+
+    A page that announces a table and yields none is reported rather than
+    quietly accepted. It is the one thing this engine knows it may have got
+    wrong, and naming it is what lets a caller send those pages -- and only
+    those -- to something that can read them.
+    """
     from . import pdf as _pdf
+    from . import tables as _tables
 
     doc = _pdf.open_document(path)
-    out: list[str] = []
+    pages: list[str] = []
+    found = 0
+    announced = 0
+    unresolved: list[int] = []
     try:
-        for i, page in enumerate(doc, start=1):
-            out.append(f"\n<!-- page {i} -->\n")
-            for text in _pdf.page_paragraphs_fast(page):
-                if text:
-                    out.append(text)
-        meta = {"engine": "pypdfium2", "pages": len(doc)}
+        for index, page in enumerate(doc):
+            table = None
+            says_so = False
+            try:
+                textpage = page.get_textpage()
+                says_so = _tables.announces_a_table(textpage)
+                table = _tables.table_on_page(page, textpage)
+            except Exception:  # noqa: BLE001
+                table = None        # a page that resists is still prose
+            if says_so:
+                announced += 1
+
+            parts = [f"\n<!-- page {index + 1} -->\n"]
+            prose = [t for t in _pdf.page_paragraphs_fast(page) if t]
+            if table:
+                found += 1
+                written = sum(len(t) for t in prose)
+                # A page that is a table should be the table: read as running
+                # text its cells arrive in reading order, which is worse than
+                # not having them. But on most pages the table is the smaller
+                # part, and replacing the page with it throws away the prose
+                # around it -- measured here, a table of 237 characters was
+                # costing 1,530 characters of text on the same page.
+                if written and len(table) < written * TABLE_DOMINATES:
+                    parts.extend(prose)
+                parts.append(table)
+            else:
+                if says_so:
+                    unresolved.append(index)
+                parts.extend(prose)
+            pages.append("\n\n".join(parts))
+        meta = {"engine": "pypdfium2", "pages": len(doc), "tables": found,
+                "tables_announced": announced, "unresolved": unresolved}
     finally:
         doc.close()
-    return "\n\n".join(out), meta, None
+    return pages, meta
+
+def native_pdf(path: Path) -> tuple[str, dict, None]:
+    """PDF to Markdown by layout blocks, preserving reading order and page separation."""
+    pages, meta = _native_pages(path)
+    return "\n\n".join(pages), meta, None
+
+def hybrid_pdf(path: Path) -> tuple[str, dict, None]:
+    """Extract the whole document, and read with the model only what needs it.
+
+    Deciding the engine once per document is what makes the expensive one
+    expensive: a book with tables on a tenth of its pages pays for layout
+    analysis on the other nine tenths. The decision belongs to the page.
+
+    So every page is extracted natively, and the few that announce a table the
+    cheap path could not produce are handed to the model one at a time. Where
+    that is a handful of pages in a book, the cost of the model is charged on a
+    handful of pages rather than on all of them.
+    """
+    import tempfile
+
+    from . import pdf as _pdf
+
+    pages, meta = _native_pages(path)
+    pending = list(meta.get("unresolved") or [])
+    if not pending or not docling_available():
+        return "\n\n".join(pages), meta, None
+
+    read_by_model = 0
+    with tempfile.TemporaryDirectory(prefix="mdcx-pages-") as carpeta:
+        gathered = Path(carpeta) / "pending.pdf"
+        try:
+            # One document rather than one per page. Layout analysis charges a
+            # fixed cost per document and batches the pages inside it, so four
+            # pages sent separately cost more than the whole extract sent at
+            # once -- measured, 21.7 seconds against 13.3.
+            _pdf.extract_page_list(path, pending, gathered)
+            md, _, _ = docling_convert(gathered, ocr=False)
+        except Exception:  # noqa: BLE001
+            md = ""             # the natively extracted pages stay as they are
+        if md and md.strip():
+            # The model reads the gathered pages as one document and does not
+            # say where each began, so its reading is placed where the first of
+            # them was and the others give up their native text to it. They are
+            # pages whose table the cheap path could not produce, and their
+            # prose is what the model returns.
+            first = pending[0]
+            pages[first] = f"\n<!-- pages {', '.join(str(i + 1) for i in pending)} -->\n\n{md.strip()}"
+            for index in pending[1:]:
+                pages[index] = ""
+            read_by_model = len(pending)
+
+    meta = dict(meta)
+    meta["engine"] = "pypdfium2+docling" if read_by_model else "pypdfium2"
+    meta["pages_read_by_model"] = read_by_model
+    return "\n\n".join(p for p in pages if p), meta, None
 
 def _md_escape_cell(value) -> str:
     if value is None:
