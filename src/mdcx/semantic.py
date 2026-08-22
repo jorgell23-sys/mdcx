@@ -77,6 +77,60 @@ def available() -> bool:
     return True
 
 
+# How much work fits in one batch, counted in characters rather than texts.
+# What a batch costs is its rows times its longest column: a thousand headings
+# and one long passage cost as much as a thousand long passages. A budget keeps
+# that product flat, taking many short texts at once and fewer as they get
+# longer, where a fixed count of texts cannot.
+#
+# Bigger is not better, and the curve has an interior maximum: measured on a
+# corpus of books at roughly four characters to the token, the rate rises to
+# about 24k characters a batch and falls away on both sides -- a batch of a
+# fixed 256 texts, which lets the long ones dictate an enormous product, runs
+# slower than encoding thirty-two at a time and fills the card.
+BATCH_BUDGET = 24_000
+
+# A ceiling on rows regardless of budget, so a corpus of one-line headings does
+# not assemble a batch of tens of thousands and reserve memory for all of it.
+MAX_ROWS = 1024
+
+
+def _accelerator_kwargs() -> dict:
+    """Half precision, but only where it is faster.
+
+    On a GPU it roughly halves the work with no consequence for retrieval: the
+    same text encoded in single and in half precision comes back with a cosine
+    of 0.9998 between the two, which no ranking can tell apart. On a processor
+    it is the opposite -- half precision has no hardware behind it there and
+    collapses the rate -- and mdcx is meant to run without CUDA, so the choice
+    is made per device rather than set once for everyone.
+    """
+    try:
+        import torch
+    except ImportError:
+        return {}
+    if not torch.cuda.is_available():
+        return {}
+    return {"torch_dtype": torch.float16, "attn_implementation": "sdpa"}
+
+
+def _batches(orden: list[int], textos: list[str], max_rows: int, budget: int):
+    """Group sorted texts into batches of bounded cost.
+
+    The texts arrive shortest first, so the last one added is the longest, and
+    the cost of the batch is that length times the number of rows.
+    """
+    lote: list[int] = []
+    for indice in orden:
+        mas_largo = len(textos[indice])
+        if lote and ((len(lote) + 1) * mas_largo > budget or len(lote) >= max_rows):
+            yield lote
+            lote = []
+        lote.append(indice)
+    if lote:
+        yield lote
+
+
 def load(name: str | None = None):
     """Return the encoder, loading it once per process.
 
@@ -96,7 +150,8 @@ def load(name: str | None = None):
                 "pip install 'mdcx[multilingual]'") from e
         # The device is left to the library, which selects the accelerator when
         # one is present and the processor otherwise.
-        model = SentenceTransformer(name, trust_remote_code=True)
+        model = SentenceTransformer(name, trust_remote_code=True,
+                                    model_kwargs=_accelerator_kwargs())
         _LOADED[name] = model
         return model
 
@@ -107,22 +162,49 @@ def prefixes(name: str | None = None) -> tuple[str, str]:
 
 
 def encode(texts: list[str], role: str = "passage", name: str | None = None,
-           batch_size: int = 32):
+           batch_size: int = MAX_ROWS, budget: int = BATCH_BUDGET):
     """Encode texts as unit vectors.
 
     The role selects the prefix. A text encoded as a passage and the same text
     encoded as a query are different vectors, by design of the models that use
     prefixes.
+
+    The texts are encoded shortest first and returned in the order they came.
+    A batch costs its rows times its longest column -- every text in it is
+    padded to the longest -- and sorting is what lets a batch be filled to a
+    budget without one long passage dictating the width of it.
+
+    Sorting on its own buys nothing, which is worth stating because the
+    arithmetic of the padding suggests otherwise: sentence_transformers already
+    sorts within each call, so a corpus passed in one call has that waste
+    handled. What pays is the pairing -- reduced precision on the accelerator,
+    and batches filled to a budget rather than to a count of texts.
     """
     if role not in ("query", "passage"):
         raise ValueError(f"role must be query or passage, not {role!r}")
+
+    import numpy as np
+
     model = load(name)
     query_prefix, passage_prefix = prefixes(name)
     prefix = query_prefix if role == "query" else passage_prefix
-    return model.encode([prefix + t for t in texts],
-                        normalize_embeddings=True,
-                        show_progress_bar=False,
-                        batch_size=batch_size)
+    preparados = [prefix + t for t in texts]
+    if not preparados:
+        return np.zeros((0, dimensions(name)), dtype=np.float32)
+
+    orden = sorted(range(len(preparados)), key=lambda i: len(preparados[i]))
+    salida: list = [None] * len(preparados)
+    for lote in _batches(orden, preparados, batch_size, budget):
+        vectores = model.encode([preparados[i] for i in lote],
+                                normalize_embeddings=True,
+                                show_progress_bar=False,
+                                batch_size=len(lote))
+        for indice, vector in zip(lote, vectores):
+            salida[indice] = vector
+
+    # Reduced precision is a way of spending the accelerator, not a change to
+    # the format: a package stores single precision whatever produced it.
+    return np.asarray(salida, dtype=np.float32)
 
 
 def dimensions(name: str | None = None) -> int:
