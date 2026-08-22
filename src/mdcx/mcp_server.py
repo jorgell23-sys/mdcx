@@ -108,23 +108,34 @@ def _connection():
 RELEVANCE_MARGIN = 0.10
 
 
-# How far the best passage must stand clear of the rest before the corpus is
-# said to answer at all.
+# Two conditions, and both are required, because each one alone has been shipped
+# and each one alone was wrong.
 #
-# The obvious measure is how near the best passage comes, and it does not
-# survive a change of corpus. How near anything comes at all depends on what is
-# in the collection and how much of it there is: on one corpus the questions it
-# answers start at 0.57 and on another they start at 0.64, so a threshold set on
-# one marks nothing on the other, or disparages good answers. A first attempt at
-# this was set at 0.45 and never fired once outside the corpus it was measured
-# on.
+# How near the best passage comes depends on what is in the collection: on one
+# corpus the questions it answers start at 0.57 and on another at 0.64, so a
+# threshold set on the first marks nothing on the second. That was shipped at
+# 0.45 and never fired.
 #
-# What does travel is the shape of the result. A question the corpus answers has
-# a best passage that stands well clear of the fiftieth; a question it cannot
-# answer has a best passage barely distinguishable from the tail, because
-# nothing in there is about it and the ranking is just noise. Measured, the two
-# groups separate as cleanly by this as by the absolute number -- and this one
-# is a comparison the corpus makes against itself.
+# How far the best passage stands clear of the fiftieth depends on how many
+# passages there are: with a hundred thousand the fiftieth is nearly the best,
+# with forty it is nearly the worst. That was shipped at 0.25 and marked
+# everything.
+#
+# Requiring both is what neither gives on its own. A question is called
+# unanswered only when the corpus comes no nearer than NOTHING_NEAR *and* its
+# best passage does not rise out of the tail. On a small corpus the first
+# condition fires wrongly and the second holds it back; on a large one the
+# second fires wrongly and the first holds it back. Both values sit where the
+# two groups separated on the corpus each was measured on.
+#
+# It is still two constants describing a collection they cannot see, which is
+# the wrong shape for this. The right one is to measure the corpus when it is
+# packed and carry the number in the manifest -- an attempt at that measured the
+# similarity of unrelated passages and produced 0.87, higher than any question
+# reaches, because two passages of one chemistry book resemble each other far
+# more than a short question resembles either. It needs questions to calibrate
+# against, and packing has none.
+NOTHING_NEAR = 0.635
 STANDS_CLEAR = 0.25
 
 # Which passage stands in for the tail. Far enough down that a handful of real
@@ -328,7 +339,7 @@ def create_server():
             cercania, despegue = medido
             respuesta["similarity"] = round(cercania, 4)
             respuesta["stands_clear"] = round(despegue, 4)
-            if despegue < STANDS_CLEAR:
+            if cercania < NOTHING_NEAR and despegue < STANDS_CLEAR:
                 respuesta["warning"] = (
                     "nothing in this corpus is about the question: the best "
                     "passage is no nearer than the rest, so the passages below "

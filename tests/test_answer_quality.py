@@ -52,6 +52,34 @@ def test_a_passage_carries_its_position_and_not_a_score():
         "publicar el score invita a ordenar y filtrar por el, y no es valido")
 
 
+def test_both_conditions_are_required_because_each_alone_was_wrong():
+    """Two measurements, two failure modes, and each one holds the other back.
+
+    How near the best passage comes depends on what is in the collection: one
+    corpus answers from 0.57 up and another from 0.64, so a threshold set on
+    the first marks nothing on the second. Shipped at 0.45, it never fired.
+
+    How far the best passage stands clear of the fiftieth depends on how many
+    passages there are: with a hundred thousand the fiftieth is nearly the
+    best, with forty it is nearly the worst. Shipped at 0.25, it marked
+    everything.
+
+    Checked here against the edges each was measured on -- the large corpus
+    where the absolute number separates and the small one where it does not.
+    """
+    def marca(sim, clear):
+        return sim < mcp_server.NOTHING_NEAR and clear < mcp_server.STANDS_CLEAR
+
+    # Large corpus: answered questions from 0.6427, unanswered up to 0.6320.
+    assert not marca(0.6427, 0.2235), "la peor respuesta buena no debe marcarse"
+    assert marca(0.6320, 0.1347), "la mejor sin respuesta debe marcarse"
+    assert marca(0.5452, 0.1150), "recipe for neapolitan pizza dough"
+
+    # Small corpus: answered questions from 0.566, and they stand well clear.
+    assert not marca(0.566, 0.331), "una respuesta buena de un corpus chico"
+    assert marca(0.327, 0.172), "una consulta ajena en un corpus chico"
+
+
 def test_relevance_is_judged_against_the_corpus_and_not_against_a_constant():
     """How near anything comes at all depends on the collection.
 
@@ -65,8 +93,9 @@ def test_relevance_is_judged_against_the_corpus_and_not_against_a_constant():
     the ordering is only noise.
     """
     assert not hasattr(mcp_server, "NOTHING_CLOSE"), (
-        "un umbral absoluto no sobrevive un cambio de corpus")
+        "el umbral absoluto solo no sobrevive un cambio de corpus")
     assert 0.0 < mcp_server.STANDS_CLEAR < 1.0
+    assert 0.0 < mcp_server.NOTHING_NEAR < 1.0
     assert mcp_server.TAIL_AT > 1
 
 

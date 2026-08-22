@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mdcx"
-version = "1.6.2"
+version = "1.6.3"
 description = "Convert document collections to verified Markdown, package them encrypted, and expose them to agents over MCP"
 readme = "README.md"
 requires-python = ">=3.10"
