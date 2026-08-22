@@ -166,20 +166,23 @@ def _candidates(job: Job, ref_meta: dict, use_docling: bool) -> list[tuple[str, 
             out.append(("nativo", native))
         return out
 
-    if native and job.kind == "pdf":
-        # A chapter is converted from pages cut out of the book, and cutting
-        # them leaves the bookmarks behind. The headings have to be fetched
-        # from the book itself, or the chapter arrives as a wall of prose with
-        # no section titles -- which are among the best answers a search can
-        # return, and which the author already wrote.
-        titulos = None
-        if job.is_chapter and job.page_range:
-            try:
-                from . import pdf as _pdf
+    # A chapter is converted from pages cut out of the book, and cutting them
+    # leaves the bookmarks behind. The headings have to be fetched from the book
+    # itself, or the chapter arrives as a wall of prose with no section titles
+    # -- which are among the best answers a search can return, and which the
+    # author already wrote. Both cheap engines need them: giving them to one and
+    # not the other leaves the second producing nothing structural, being
+    # rejected for it, and sending the document to layout analysis anyway.
+    titulos = None
+    if job.kind == "pdf" and job.is_chapter and job.page_range:
+        try:
+            from . import pdf as _pdf
 
-                titulos = _pdf.outline_for_range(job.source, *job.page_range)
-            except Exception:  # noqa: BLE001
-                titulos = None
+            titulos = _pdf.outline_for_range(job.source, *job.page_range)
+        except Exception:  # noqa: BLE001
+            titulos = None
+
+    if native and job.kind == "pdf":
         out.append(("nativo", lambda p, t=titulos: engines.native_pdf(p, t)))
     elif native:
         out.append(("nativo", native))
@@ -188,7 +191,11 @@ def _candidates(job: Job, ref_meta: dict, use_docling: bool) -> list[tuple[str, 
         # pages that announce a table the cheap path could not produce read by
         # the model. A book with tables on a tenth of its pages then pays for
         # layout analysis on a tenth of its pages.
-        out.append(("hibrido", lambda p: engines.hybrid_pdf(p)))
+        # The same titles the cheap path gets. Without them this engine returns
+        # a chapter with no structural marks, is rejected for having none, and
+        # the document goes to layout analysis after all -- which is the whole
+        # of what fetching the headings was for.
+        out.append(("hibrido", lambda p, t=titulos: engines.hybrid_pdf(p, t)))
     if docling_ok:
         out.append(("docling", lambda p: engines.docling_convert(p, ocr=False)))
     return out
