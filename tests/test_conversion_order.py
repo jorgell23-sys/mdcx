@@ -141,3 +141,37 @@ def test_comparing_cells_to_their_line_ignores_only_spacing():
     """Splitting and rejoining moves spaces about; it must not move letters."""
     assert tables._squeeze("Rule: When adding") == tables._squeeze("Rule:Whenadding")
     assert tables._squeeze("subtractin g") != tables._squeeze("subtracting numbers")
+
+
+def test_no_engine_is_preferred_to_one_that_read_more():
+    """The score ranks structure above coverage, so text can be traded for it.
+
+    A result that recovers a table and drops the prose around it wins on
+    points while publishing less of the document than the pipeline already
+    had. Measured over 214 chapters it happened in 45, and in one the chosen
+    result was 16,624 characters shorter than the one already extracted.
+    """
+    intentos = [{"engine": "nativo", "coverage": 1.0}]
+    assert C._covers_less({"coverage": 0.900}, intentos) is True
+    assert C._covers_less({"coverage": 0.762}, intentos) is True
+    assert C._covers_less({"coverage": 0.997}, intentos) is False   # dentro de la tolerancia
+    assert C._covers_less({"coverage": 1.0}, intentos) is False
+
+
+def test_layout_analysis_is_held_to_the_same_rule():
+    """It returns more characters and covers fewer of the document's words."""
+    intentos = [{"engine": "nativo", "coverage": 1.0},
+                {"engine": "hibrido", "coverage": 0.95}]
+    assert C._covers_less({"coverage": 0.990}, intentos) is True
+
+
+def test_an_engine_that_reads_more_is_not_held_back():
+    """The rule is against losing ground, not against improving on it."""
+    intentos = [{"engine": "nativo", "coverage": 0.900}]
+    assert C._covers_less({"coverage": 1.0}, intentos) is False
+
+
+def test_a_document_with_nothing_to_compare_against_is_not_rejected():
+    """A first attempt, or one with no reference text, has no ground to lose."""
+    assert C._covers_less({"coverage": 0.5}, []) is False
+    assert C._covers_less({}, [{"engine": "nativo", "coverage": 1.0}]) is False

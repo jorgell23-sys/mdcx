@@ -211,6 +211,37 @@ def _score(md: str, v: dict) -> tuple:
     structure = len(_H_RE.findall(md)) * 2 + len(_TBL_RE.findall(md)) * 5 + len(_LI_RE.findall(md))
     return (usable, structure, cov or 0.0, len(md))
 
+# How much less of the document a later engine may cover and still be preferred.
+# Half a hundredth absorbs the difference between two correct readings of the
+# same page; beyond that the text is being dropped rather than rearranged. A
+# whole hundredth is too generous: the reported cases include one at exactly
+# 0.990 against 1.000, which would have sat on the boundary and been kept, and
+# one per cent of a chapter of two hundred thousand characters is two thousand
+# characters of text.
+COVERAGE_TOLERANCE = 0.005
+
+
+def _covers_less(v: dict, attempts: list[dict]) -> bool:
+    """Whether this result reads less of the document than one already tried.
+
+    No engine should be preferred to one that already covered more. The
+    composite score ranks structure above coverage, so a result that recovers a
+    table while dropping the prose around it wins on points and publishes less
+    text than the pipeline already had in hand. Measured over 214 chapters that
+    happened in 45 of them, and in one the chosen result was 16,624 characters
+    shorter than the one already extracted.
+
+    It applies to every engine and not only to the cheap ones: layout analysis
+    returns more characters and covers fewer of the words that are actually in
+    the document, so it wins on length while losing text.
+    """
+    covered = v.get("coverage")
+    if covered is None:
+        return False        # nothing measured here to compare against
+    best = max((a.get("coverage") or 0.0) for a in attempts) if attempts else 0.0
+    return covered < best - COVERAGE_TOLERANCE
+
+
 def _good_enough(name: str, meta: dict, v: dict, score: tuple) -> bool:
     """Whether this result makes running the next engine pointless.
 
@@ -314,14 +345,16 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
             "score": list(score),
         })
 
-        if best_score is None or score > best_score:
+        retrocede = _covers_less(v, attempts)
+
+        if not retrocede and (best_score is None or score > best_score):
             best_md, best_v, best_engine, best_score = md, v, name, score
             best_lossless = lossless
             best_ocr = bool(meta.get("ocr"))
             if meta.get("pages"):
                 record.setdefault("pages", meta["pages"])
 
-        if _good_enough(name, meta, v, score):
+        if not retrocede and _good_enough(name, meta, v, score):
             break
 
     record["attempts"] = attempts
