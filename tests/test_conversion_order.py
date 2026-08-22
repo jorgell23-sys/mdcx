@@ -59,20 +59,34 @@ def test_a_document_that_needs_ocr_goes_to_the_model_first():
     assert nombres[0] == "docling-ocr"
 
 
-def test_the_cheap_result_stops_the_expensive_engine_when_nothing_is_missing():
-    """A document that announces no table and converted cleanly is finished."""
+def test_the_cheap_result_stops_the_expensive_engine_when_nothing_is_pending():
+    """A document that left no page unsettled and converted cleanly is finished."""
     v = {"status": "ok"}
     score = (1, 5, 1.0, 1000)
-    meta = {"tables": 0, "tables_announced": 0}
-    assert C._good_enough("nativo", meta, v, score) is True
+    assert C._good_enough("nativo", {"unresolved": []}, v, score) is True
 
 
-def test_a_missed_table_sends_the_document_on():
+def test_a_page_left_unsettled_sends_the_document_on():
     """Coverage cannot see a missing table: every word is still on the page."""
     v = {"status": "ok"}
     score = (1, 5, 1.0, 1000)
-    assert C._good_enough("nativo", {"tables": 0, "tables_announced": 4}, v, score) is False
-    assert C._good_enough("nativo", {"tables": 4, "tables_announced": 4}, v, score) is True
+    assert C._good_enough("nativo", {"unresolved": [7]}, v, score) is False
+    assert C._good_enough("nativo", {"unresolved": []}, v, score) is True
+
+
+def test_a_book_that_labels_its_tables_figure_is_not_given_up_on():
+    """A count of labels is not a census of tables.
+
+    A book that calls a screenshot of a spreadsheet "Figure 4.2" announces no
+    tables at all. Reading that zero as "there are none" left three books in
+    six without the model ever looking at them, so what counts now is the page
+    left unsettled -- ruled like a table and yielding none -- whatever the
+    author called it.
+    """
+    v = {"status": "ok"}
+    score = (1, 5, 1.0, 1000)
+    ninguna_rotulada = {"tables": 13, "tables_announced": 0, "unresolved": [3, 9]}
+    assert C._good_enough("nativo", ninguna_rotulada, v, score) is False
 
 
 def test_an_engine_that_cannot_answer_defers_to_the_model():

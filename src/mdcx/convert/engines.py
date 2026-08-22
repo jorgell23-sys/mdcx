@@ -199,10 +199,11 @@ def _native_pages(path: Path) -> tuple[list[str], dict]:
         for index, page in enumerate(doc):
             table = None
             says_so = False
+            ruled = False
             try:
                 textpage = page.get_textpage()
-                says_so = _tables.announces_a_table(textpage)
-                table = _tables.table_on_page(page, textpage)
+                seen = _tables.examine(page, textpage)
+                table, says_so, ruled = seen["table"], seen["announced"], seen["ruled"]
             except Exception:  # noqa: BLE001
                 table = None        # a page that resists is still prose
             if says_so:
@@ -223,7 +224,14 @@ def _native_pages(path: Path) -> tuple[list[str], dict]:
                     parts.extend(prose)
                 parts.append(table)
             else:
-                if says_so:
+                # A page is worth a second look either because the author said
+                # there was a table on it, or because it is ruled the way a
+                # table is ruled. The label is the stronger signal but it is
+                # not a census: a book that calls a screenshot of a spreadsheet
+                # "Figure 4.2" announces no tables at all, and counting zero as
+                # "there are none" leaves the whole document unexamined. The
+                # rules are drawn whatever the author chose to call it.
+                if says_so or ruled:
                     unresolved.append(index)
                 parts.extend(prose)
             pages.append("\n\n".join(parts))
@@ -237,6 +245,55 @@ def native_pdf(path: Path) -> tuple[str, dict, None]:
     """PDF to Markdown by layout blocks, preserving reading order and page separation."""
     pages, meta = _native_pages(path)
     return "\n\n".join(pages), meta, None
+
+def _read_shapes(path: Path, pages: list[str], meta: dict,
+                 pending: list[int]) -> tuple[str, dict, None]:
+    """Recover the tables of the pending pages by reading their shape.
+
+    Only the shape: where the rows and the columns run. The words come from the
+    text layer as everywhere else, so nothing is transcribed and nothing can be
+    invented into a cell -- and a page with no text layer gains nothing here,
+    which is what OCR is for.
+
+    The table replaces the page it was found on, the same way the cheap path
+    replaces a page its table dominates. A page that yields no table keeps the
+    prose already extracted from it.
+    """
+    from . import pdf as _pdf
+    from . import tatr as _tatr
+
+    recovered = 0
+    document = _pdf.open_document(path)
+    try:
+        targets = [document[index] for index in pending]
+        textpages = [page.get_textpage() for page in targets]
+        try:
+            found = _tatr.tables_on_pages(targets, textpages)
+        except Exception:  # noqa: BLE001
+            found = [None] * len(targets)
+        for position, (index, table) in enumerate(zip(pending, found)):
+            if not table:
+                continue
+            # The same rule the cheap path uses: a page that is a table becomes
+            # the table, and a page where the table is the smaller part keeps
+            # its prose as well. Replacing either way costs coverage on pages
+            # that are mostly text with a table in the corner.
+            prose = [t for t in _pdf.page_paragraphs_fast(targets[position]) if t]
+            written = sum(len(t) for t in prose)
+            parts = [f"\n<!-- page {index + 1} -->\n"]
+            if written and len(table) < written * TABLE_DOMINATES:
+                parts.extend(prose)
+            parts.append(table)
+            pages[index] = "\n\n".join(parts)
+            recovered += 1
+    finally:
+        document.close()
+
+    meta = dict(meta)
+    meta["engine"] = "pypdfium2+tatr" if recovered else "pypdfium2"
+    meta["pages_read_by_model"] = len(pending)
+    meta["tables_recovered"] = recovered
+    return "\n\n".join(p for p in pages if p), meta, None
 
 def hybrid_pdf(path: Path) -> tuple[str, dict, None]:
     """Extract the whole document, and read with the model only what needs it.
@@ -253,10 +310,22 @@ def hybrid_pdf(path: Path) -> tuple[str, dict, None]:
     import tempfile
 
     from . import pdf as _pdf
+    from . import tatr as _tatr
 
     pages, meta = _native_pages(path)
     pending = list(meta.get("unresolved") or [])
-    if not pending or not docling_available():
+    if not pending:
+        return "\n\n".join(pages), meta, None
+
+    # A model that reads the shape of a table is the cheap way to do this, and
+    # the right size for the job: twenty-nine million parameters against the
+    # hundreds of millions of a document-layout pipeline, and it is asked only
+    # where the table is, never what it says -- the words keep coming from the
+    # text layer. Layout analysis is the fallback for an installation that does
+    # not have it.
+    if _tatr.available():
+        return _read_shapes(path, pages, meta, pending)
+    if not docling_available():
         return "\n\n".join(pages), meta, None
 
     read_by_model = 0

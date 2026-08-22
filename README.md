@@ -97,6 +97,7 @@ orders of magnitude.
 | `pip install mdcx` | querying and reading `.mdcx` packages | 10 MB |
 | `pip install "mdcx[mcp]"` | the above and the MCP server | 50 MB |
 | `pip install "mdcx[convert]"` | document conversion (Docling, PyTorch) | 1.4 GB |
+| `pip install "mdcx[tables]"` | tables a page does not draw | 1.2 GB |
 | `pip install "mdcx[multilingual]"` | cross-language retrieval | 2.5 GB |
 | `pip install "mdcx[all]"` | all of the above, including OCR | 4 GB |
 
@@ -106,6 +107,15 @@ Conversion accounts for the heavy dependencies. A recipient who only queries an
 The `multilingual` extra is required for queries that cross languages. Most of
 its size is the embedding model, downloaded once on first use. A single-language
 corpus does not require it.
+
+The `tables` extra covers what a page does not draw. Tables in printed material
+are usually found from the rules drawn around them, which costs nothing and
+needs no extra; borderless ones -- a screenshot of a spreadsheet, a layout held
+together by alignment -- are read by a small model that reports where the rows
+and columns run. It reads the shape only: the words still come from the text
+layer of the document, so a cell cannot hold anything the page does not say.
+Without it those pages are read by Docling instead, which is slower but already
+present in the `convert` extra.
 
 ## Quick start
 

@@ -129,6 +129,158 @@ def _line_boxes(textpage) -> list[tuple]:
     return boxes
 
 
+def _slot(value: float, bounds: list[float]) -> int | None:
+    """Which interval of a sorted list of boundaries a value falls in."""
+    for i in range(len(bounds) - 1):
+        if bounds[i] <= value < bounds[i + 1]:
+            return i
+    if bounds and value == bounds[-1]:
+        return len(bounds) - 2      # the far edge belongs to the last interval
+    return None
+
+
+def _grid_cells(textpage, rows: list[float],
+                columns: list[float]) -> list[list[str]]:
+    """The cells of a drawn grid, each character counted in exactly one.
+
+    Cells cannot be cut out as rectangles here. Neighbouring cells share the
+    boundary between them, and PDFium returns every character whose box
+    *intersects* the rectangle asked for, so a character straddling a boundary
+    comes back in both -- and the row still has the right number of columns
+    with every cell filled, which is why nothing downstream notices. Measured
+    over 292 rows of drawn tables, 64 of them carried letters twice: a
+    concentration written 2.00x10-6 arrived as a column holding "2" and another
+    holding "2.00 10-6".
+
+    Shrinking each rectangle does not fix it. A character box can reach several
+    points into the next cell, and pulling the edge back far enough to exclude
+    it starts cutting characters that belong: at two points of margin the rows
+    with duplicated letters fall from 64 to 3, and 43 rows lose letters they
+    should have kept.
+
+    A character has one centre, and that centre falls in one column. Walking
+    the characters and placing each by its centre counts every one exactly
+    once -- measured on the same 292 rows, nothing duplicated and nothing lost.
+
+    This does not contradict what `_text_in` warns about rebuilding words from
+    character positions. That warning is about grouping by *row*, where a
+    descender drops a letter into the line below. Here the rows are already
+    fixed by the drawn rules and only the column is in question, and reading
+    order survives because the characters are walked in index order.
+    """
+    cells = [[[] for _ in columns[:-1]] for _ in rows[:-1]]
+    rows_ascending = sorted(rows)
+    try:
+        total = textpage.count_chars()
+    except Exception:  # noqa: BLE001
+        return [[""] * (len(columns) - 1) for _ in rows[:-1]]
+
+    for index in range(total):
+        try:
+            left, low, right, high = textpage.get_charbox(index, loose=False)
+        except Exception:  # noqa: BLE001
+            continue
+        middle_y = (low + high) / 2
+        middle_x = (left + right) / 2
+        if high < rows[-1] or low > rows[0]:
+            continue                        # above or below the grid entirely
+        if right <= columns[0] or left >= columns[-1]:
+            continue                        # outside it to the left or right
+
+        row_at = _slot(middle_y, rows_ascending)
+        column_at = _slot(middle_x, columns)
+        if row_at is None or column_at is None:
+            # The centre falls outside the grid although the character touches
+            # it: the outer rule cuts through the glyph. It belongs to the cell
+            # at that edge, which is where the rest of its word is -- the
+            # alternative is dropping the first letter of the line, which is
+            # what this cost before: "um Numbers" for "Quantum Numbers".
+            if row_at is None:
+                row_at = 0 if middle_y < rows[-1] else len(rows) - 2
+            if column_at is None:
+                column_at = 0 if middle_x < columns[0] else len(columns) - 2
+        try:
+            cells[len(rows) - 2 - row_at][column_at].append(
+                textpage.get_text_range(index, 1))
+        except Exception:  # noqa: BLE001
+            pass
+    return [[" ".join("".join(cell).split()) for cell in row] for row in cells]
+
+
+def cells_by_word(textpage, rows: list[float], columns: list[float]) -> list[list[str]]:
+    """The cells of a grid, placing whole words rather than single characters.
+
+    For a grid read off a rendering rather than off the drawn rules, the
+    boundaries are approximate: they come from pixels and land wherever the
+    model put them, which is often a point or two inside a word. Placing each
+    character by its own centre then splits that word across two cells, and
+    the row is well formed and wrong.
+
+    A word has one centre too. Grouping the characters into words first, and
+    placing each word whole, keeps the model's geometry -- which is right about
+    where the columns are -- while refusing to cut anywhere the text does not
+    already have a gap.
+    """
+    words = _words_of(textpage)
+    rows_ascending = sorted(rows)
+    cells = [[[] for _ in columns[:-1]] for _ in rows[:-1]]
+    for text, left, bottom, right, top in words:
+        if not text.strip():
+            continue
+        middle_y = (bottom + top) / 2
+        middle_x = (left + right) / 2
+        if top < rows[-1] or bottom > rows[0]:
+            continue
+        if right <= columns[0] or left >= columns[-1]:
+            continue
+        row_at = _slot(middle_y, rows_ascending)
+        column_at = _slot(middle_x, columns)
+        if row_at is None:
+            row_at = 0 if middle_y < rows[-1] else len(rows) - 2
+        if column_at is None:
+            column_at = 0 if middle_x < columns[0] else len(columns) - 2
+        cells[len(rows) - 2 - row_at][column_at].append(text)
+    return [[" ".join(cell) for cell in row] for row in cells]
+
+
+def _words_of(textpage) -> list[tuple]:
+    """The words of a page with the box each one occupies.
+
+    Built from the characters because PDFium reports boxes per character and
+    per line, and a word is what must not be cut in half. A run of characters
+    ends at whitespace.
+    """
+    out: list[tuple] = []
+    try:
+        total = textpage.count_chars()
+    except Exception:  # noqa: BLE001
+        return out
+
+    letters: list[str] = []
+    left = bottom = right = top = 0.0
+    for index in range(total):
+        try:
+            character = textpage.get_text_range(index, 1)
+            box = textpage.get_charbox(index, loose=False)
+        except Exception:  # noqa: BLE001
+            character, box = " ", None
+        if character.strip() and box:
+            if not letters:
+                left, bottom, right, top = box
+            else:
+                left = min(left, box[0])
+                bottom = min(bottom, box[1])
+                right = max(right, box[2])
+                top = max(top, box[3])
+            letters.append(character)
+        elif letters:
+            out.append(("".join(letters), left, bottom, right, top))
+            letters = []
+    if letters:
+        out.append(("".join(letters), left, bottom, right, top))
+    return out
+
+
 def _table_from_grid(textpage, rows: list[float],
                      columns: list[float]) -> str | None:
     """The table when it is drawn whole, or None if that grid is empty."""
@@ -140,17 +292,8 @@ def _table_from_grid(textpage, rows: list[float],
     if n_rows * n_columns > 400:        # an absurd grid is not a table
         return None
 
-    cells, filled = [], 0
-    for i in range(n_rows):
-        top, bottom = rows[i], rows[i + 1]
-        row = []
-        for j in range(n_columns):
-            value = " ".join(_text_in(textpage, columns[j], bottom,
-                                      columns[j + 1], top).split())
-            if value:
-                filled += 1
-            row.append(value)
-        cells.append(row)
+    cells = _grid_cells(textpage, rows, columns)
+    filled = sum(1 for row in cells for value in row if value)
 
     if filled < n_rows * n_columns * MIN_OCCUPANCY:
         return None
@@ -290,6 +433,37 @@ def announces_a_table(textpage) -> bool:
         return False
 
 
+# How many horizontal rules make a page look like it holds a table. Below this
+# a page may be ruled for other reasons -- a header, a footer, a box around a
+# note; at three or more the page is laid out the way a table is laid out.
+RULES_SUGGEST_A_TABLE = 3
+
+
+def examine(page, textpage=None) -> dict:
+    """What this page has to say about its own tables.
+
+    Returned together because finding out costs one walk over the objects of
+    the page, which is the expensive part of reading it, and the caller needs
+    all three: the table if there is one, whether the author labelled it, and
+    whether the page is ruled the way a table is ruled.
+
+    That last one matters because a caption count is not a census of tables.
+    A book that labels a screenshot of a spreadsheet "Figure 4.2" announces no
+    tables at all, and reading a count of zero as "there are none" leaves the
+    whole document without the model ever looking at it. The rules are drawn
+    whatever the author chose to call the thing.
+    """
+    if textpage is None:
+        textpage = page.get_textpage()
+    horizontals, verticals = _rules(page)
+    rows, columns = _cluster(horizontals), _cluster(verticals)
+    return {
+        "table": _find_table(page, textpage, rows, columns),
+        "announced": announces_a_table(textpage),
+        "ruled": len(rows) >= RULES_SUGGEST_A_TABLE,
+    }
+
+
 def table_on_page(page, textpage=None) -> str | None:
     """The table on this page as Markdown, or None if there is none to find.
 
@@ -301,6 +475,12 @@ def table_on_page(page, textpage=None) -> str | None:
         textpage = page.get_textpage()
     horizontals, verticals = _rules(page)
     rows, columns = _cluster(horizontals), _cluster(verticals)
+    return _find_table(page, textpage, rows, columns)
+
+
+def _find_table(page, textpage, rows: list[float],
+                columns: list[float]) -> str | None:
+    """The cascade itself, once the rules of the page have been read."""
 
     # Drawn whole: the grid is there to be read.
     if len(rows) >= 3 and len(columns) >= 3:

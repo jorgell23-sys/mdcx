@@ -189,12 +189,6 @@ def _score(md: str, v: dict) -> tuple:
     structure = len(_H_RE.findall(md)) * 2 + len(_TBL_RE.findall(md)) * 5 + len(_LI_RE.findall(md))
     return (usable, structure, cov or 0.0, len(md))
 
-# What fraction of the tables a document announces the cheap engine must have
-# found before the expensive one is skipped. Captions are the only count of
-# tables available without converting the document a second way, and they are
-# reliable in this material because the author writes them on purpose.
-MIN_TABLE_RECALL = 0.8
-
 def _good_enough(name: str, meta: dict, v: dict, score: tuple) -> bool:
     """Whether this result makes running the next engine pointless.
 
@@ -204,10 +198,12 @@ def _good_enough(name: str, meta: dict, v: dict, score: tuple) -> bool:
     quietly miss is a table, and a page whose table was read as running text
     still scores as covered -- the words are all there, in the wrong shape.
 
-    So it is asked the one question it can answer about its own blind spot: of
-    the pages that say they carry a table, how many did it find a table on. A
-    document that announces none and converted cleanly has nothing left for a
-    vision model to add.
+    So it is asked what it left unsettled: the pages that either announce a
+    table or are ruled like one, and yielded none. An earlier version asked
+    instead how many of the announced tables it had found, which counted labels
+    rather than tables -- a book that labels a screenshot of a spreadsheet
+    "Figure 4.2" announced nothing, so nothing was missing, so the whole
+    document went unexamined. Three books in six were skipped that way.
     """
     if v.get("status") != "ok" or score[0] != 1 or score[1] <= 0:
         return False
@@ -218,12 +214,10 @@ def _good_enough(name: str, meta: dict, v: dict, score: tuple) -> bool:
         # so converting the whole document again would read the same pages a
         # second way to no purpose.
         return True
-    announced = meta.get("tables_announced")
-    if announced is None:
+    pending = meta.get("unresolved")
+    if pending is None:
         return False        # an engine that cannot answer defers to the model
-    if not announced:
-        return True
-    return meta.get("tables", 0) >= announced * MIN_TABLE_RECALL
+    return not pending
 
 def convert_one(job: Job, output_root: Path, use_docling: bool = True,
                 save_lossless: bool = True, compact: bool = True) -> dict:
