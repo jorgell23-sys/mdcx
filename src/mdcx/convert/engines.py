@@ -290,15 +290,20 @@ def _read_shapes(path: Path, pages: list[str], meta: dict,
         for position, (index, table) in enumerate(zip(pending, found)):
             if not table:
                 continue
-            # The same rule the cheap path uses: a page that is a table becomes
-            # the table, and a page where the table is the smaller part keeps
-            # its prose as well. Replacing either way costs coverage on pages
-            # that are mostly text with a table in the corner.
+            # The prose is kept whatever the table covers, which is not what the
+            # cheap path does. There the table is drawn and takes up a part of
+            # the page, so replacing the page where it dominates costs nothing;
+            # here the table was found by a model that frames it generously, and
+            # dropping the page around it dropped text.
+            #
+            # Measured over chapters of a textbook: keeping the prose took
+            # coverage from 0.992 to 1.000 with exactly the same rows of table,
+            # for two and a half per cent more characters. The duplication is
+            # real -- a cell's words appear in the row and in the paragraph --
+            # and it is the cheaper of the two mistakes.
             prose = [t for t in _pdf.page_paragraphs_fast(targets[position]) if t]
-            written = sum(len(t) for t in prose)
             parts = [f"\n<!-- page {index + 1} -->\n"]
-            if written and len(table) < written * TABLE_DOMINATES:
-                parts.extend(prose)
+            parts.extend(prose)
             parts.append(table)
             pages[index] = "\n\n".join(parts)
             recovered += 1
