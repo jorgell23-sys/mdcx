@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mdcx"
-version = "1.6.8"
+version = "1.6.9"
 description = "Convert document collections to verified Markdown, package them encrypted, and expose them to agents over MCP"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Jorge Ellena G." }]
@@ -22,7 +22,6 @@ classifiers = [
     "Topic :: Office/Business",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

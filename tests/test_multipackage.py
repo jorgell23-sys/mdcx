@@ -52,9 +52,18 @@ def test_a_setting_names_several_packages():
 
     A comma is accepted too, since it is what people write, and a Windows drive
     letter survives either way.
+
+    The drive letter is only checked where a drive letter exists. On a system
+    whose path separator is the colon, "C:\\one.mdcx" is two paths and reading
+    it as one would be the error -- this test asserted otherwise and passed
+    only because it had never run anywhere but Windows.
     """
-    partes = mcp_server._split_setting(f"C:\\one.mdcx{os.pathsep}D:\\two.mdcx")
-    assert partes == ["C:\\one.mdcx", "D:\\two.mdcx"]
+    if os.pathsep == ";":
+        partes = mcp_server._split_setting(f"C:\\one.mdcx{os.pathsep}D:\\two.mdcx")
+        assert partes == ["C:\\one.mdcx", "D:\\two.mdcx"]
+    else:
+        partes = mcp_server._split_setting(f"/data/one.mdcx{os.pathsep}/data/two.mdcx")
+        assert partes == ["/data/one.mdcx", "/data/two.mdcx"]
     assert mcp_server._split_setting("a.mdcx, b.mdcx") == ["a.mdcx", "b.mdcx"]
     assert mcp_server._split_setting("only.mdcx") == ["only.mdcx"]
 

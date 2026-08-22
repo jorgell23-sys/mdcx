@@ -83,7 +83,12 @@ the first five results in 19 cases and within the first ten in all 20.
 
 ## Requirements
 
-Python 3.10 or later. No other component is required to query a package.
+Python 3.11 or later. No other component is required to query a package.
+
+The floor is 3.11 because a package is held as one SQLite database and
+serialised in memory to be encrypted, and `sqlite3` gained the call that
+does so in that version. Earlier interpreters were declared supported and
+were not: neither building a package nor opening one worked there.
 Conversion and cross-language retrieval each add dependencies, listed under
 [Installation](#installation).
 

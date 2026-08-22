@@ -24,7 +24,7 @@ jobs:
         # The oldest and the newest interpreter the package declares support
         # for. A syntax or standard-library difference between them is the kind
         # of thing that only shows up on the machine of whoever installs it.
-        python: ["3.10", "3.13"]
+        python: ["3.11", "3.13"]
         os: [ubuntu-latest, windows-latest]
 
     steps:
