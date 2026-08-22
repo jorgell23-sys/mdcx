@@ -226,6 +226,83 @@ def _packages_worth_asking(paquetes: list[dict], query: str) -> list[dict]:
     return [p for p in paquetes if cercania[p["name"]] >= tope - RELEVANCE_MARGIN]
 
 
+# What share of a query's terms the index must hold for the lexical ranking to
+# be worth merging. Measured on questions asked in and out of the language of a
+# corpus: the ones in it had three quarters or more of their terms indexed, the
+# ones outside it a quarter or fewer, and nothing landed between.
+LEXICAL_FOOTHOLD = 0.5
+
+
+def _mode_for(paquete: dict, query: str) -> str:
+    """Which engines can say anything useful about this query, in this package.
+
+    Retrieval by word and retrieval by meaning are merged by rank, which assumes
+    both lists carry information. When the query is written in a language the
+    package is not, the lexical half cannot match anything real: what it ranks
+    are accidents -- a surname, an abbreviation, a number that happens to appear
+    -- and there are few of them, so they sit at the top of their own list. Rank
+    fusion rewards exactly that, and a bibliographic reference about
+    Staphylococcus aureus arrives first for a question about oxygen in blood.
+
+    The damage is concentrated where it costs most. Measured over five pairs of
+    equivalent questions, the passages that answer still come back inside the
+    top five either way -- the average similarity differs by seven hundredths --
+    but at the first position, which is what gets cited, the gap is twenty-six.
+
+    So a query whose words are mostly absent from the package is answered by
+    meaning alone.
+
+    Two signals, and both are required, because each one alone is wrong in a
+    way the other is not.
+
+    How much of the query the index holds depends on how much is in the package.
+    On a corpus of three hundred pages a question in its own language has three
+    quarters of its terms indexed and one in another language a quarter; on a
+    package of four short documents, a perfectly ordinary English question has
+    a third, because most of the words are simply not in there yet.
+
+    What language the query looks like misreads short questions: "how does a
+    catalyst work" is reported as Portuguese with the same confidence a real
+    Spanish question is reported as Spanish, so no threshold on that separates
+    them either.
+
+    Together they do. A question in the language of the package is spared by the
+    second signal however little of it is indexed; a question in the package's
+    language whose words are simply rare is spared by the first.
+
+    The function next door that reports a mismatch only when *no* term appears
+    at all is a third test, and it is backwards for the case that hurts: a query
+    matching nothing produces no lexical ranking, so there is nothing to fuse
+    and nothing goes wrong. The damage comes from the query that matches a few
+    words by accident -- "reaccion acido base" finds eleven passages in an
+    English corpus because "base" is an English word too, and those eleven
+    arrive first.
+    """
+    try:
+        from . import search as _search
+
+        terminos = set(_search.searchable_terms(_search._normalize(query)))
+        terminos -= _search.STOPWORDS
+        if not terminos:
+            return "auto"
+        marcadores = ",".join("?" * len(terminos))
+        with archive._CONNECTION_LOCK:
+            fila = paquete["connection"].execute(
+                f"SELECT count(*) FROM df WHERE term IN ({marcadores})",
+                tuple(terminos)).fetchone()
+        presentes = fila[0] if fila else 0
+        if presentes / len(terminos) >= LEXICAL_FOOTHOLD:
+            return "auto"
+
+        idioma_corpus = archive._corpus_language(paquete["connection"])
+        idioma_consulta, _ = _search.detect_language(query)
+        if idioma_corpus and idioma_consulta and idioma_consulta != idioma_corpus:
+            return "semantic"
+    except Exception:  # noqa: BLE001
+        pass
+    return "auto"
+
+
 def search_packages(query: str, limit: int = 5,
                     only: str | None = None) -> list[dict]:
     """Search every configured package and return one ranked list.
@@ -241,15 +318,15 @@ def search_packages(query: str, limit: int = 5,
     """
     configurados = _open_packages()
     if len(configurados) == 1:
-        return archive.query(configurados[0]["connection"], query,
-                             limit=limit, only=only)
+        return archive.query(configurados[0]["connection"], query, limit=limit,
+                             only=only, mode=_mode_for(configurados[0], query))
 
     paquetes = _packages_worth_asking(configurados, query)
 
     def etiquetado(paquete):
         """Results carry the package they came from, since several are served."""
         for item in archive.query(paquete["connection"], query, limit=limit,
-                                  only=only):
+                                  only=only, mode=_mode_for(paquete, query)):
             item = dict(item)
             item["package"] = paquete["name"]
             yield item

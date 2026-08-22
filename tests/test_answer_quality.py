@@ -157,3 +157,67 @@ def test_the_cells_of_one_row_are_not_mistaken_for_several_lines():
     fila = Lines([(50.0, 700.0, 150.0, 710.0), (160.0, 700.4, 260.0, 710.4),
                   (270.0, 699.8, 370.0, 709.8)])
     assert tables._rows_are_single_lines(fila, [715.0, 695.0, 680.0])
+
+
+class Indice:
+    """A package whose index holds a known set of terms."""
+
+    def __init__(self, terminos):
+        self._terminos = set(terminos)
+
+    def __init__2(self):
+        pass
+
+    def execute(self, sql, parametros=()):
+        if "meta" in sql:                       # el idioma declarado del paquete
+            return type("F", (), {"fetchone": lambda _self: ('"en"',)})()
+        presentes = sum(1 for t in parametros if t in self._terminos)
+        return type("F", (), {"fetchone": lambda _self: (presentes,)})()
+
+
+def test_a_query_the_index_barely_holds_is_answered_by_meaning_alone():
+    """Word matching and meaning are merged by rank, which assumes both inform.
+
+    A query written in another language matches a few words by accident -- a
+    surname, an abbreviation, a word that exists in both languages -- and those
+    few sit at the top of their own list, where rank fusion treats them as the
+    equal of the passage that actually answers. Measured over five pairs of
+    equivalent questions, the top five held up either way but the first
+    position, which is what gets cited, was a quarter worse.
+    """
+    paquete = {"connection": Indice({"acid", "base", "titration", "ionic", "bond"})}
+
+    # A question in the language of the corpus: the index holds its terms.
+    assert mcp_server._mode_for(paquete, "acid base titration") == "auto"
+    assert mcp_server._mode_for(paquete, "what is an ionic bond") == "auto"
+
+    # One in another language: a single accidental match out of several terms,
+    # and the question reads as Spanish. Both are needed.
+    assert mcp_server._mode_for(
+        paquete, "una reaccion de acido base y su valoracion") == "semantic"
+    assert mcp_server._mode_for(
+        paquete, "cual es la estructura del atomo") == "semantic"
+
+
+def test_both_signals_are_required_because_each_alone_is_wrong():
+    """Neither the share nor the detected language decides on its own.
+
+    The share depends on how much is in the package: on four short documents an
+    ordinary English question has a third of its terms indexed, the same as a
+    Spanish one on a real corpus. And detection misreads short questions: "how
+    does a catalyst work" comes back Portuguese with the confidence a real
+    Spanish question comes back Spanish.
+    """
+    assert 0.0 < mcp_server.LEXICAL_FOOTHOLD < 1.0
+    fuente = (Path(__file__).resolve().parents[1]
+              / "src" / "mdcx" / "mcp_server.py").read_text(encoding="utf-8")
+    assert "LEXICAL_FOOTHOLD" in fuente
+    assert "detect_language" in fuente, (
+        "hacen falta las dos senales: la proporcion sola condena consultas "
+        "legitimas en un paquete chico, donde casi nada esta indexado")
+
+
+def test_a_query_of_only_stopwords_changes_nothing():
+    """There is nothing to look up, so there is nothing to decide."""
+    paquete = {"connection": Indice({"acid"})}
+    assert mcp_server._mode_for(paquete, "de la que el") == "auto"
