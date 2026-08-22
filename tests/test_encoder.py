@@ -33,6 +33,22 @@ necesita_modelo = pytest.mark.skipif(
     reason="needs the multilingual extra: pip install 'mdcx[multilingual]'")
 
 
+@pytest.fixture(autouse=True)
+def _forget_the_model():
+    """Drop the cached encoder around any test that alters how it is loaded.
+
+    The model is cached per process and its precision is decided when it is
+    first loaded, so a test that pretends there is no GPU can leave a
+    single-precision model behind for whatever runs next. The vectors then
+    differ in the last decimals, which is enough to swap two packages whose
+    scores are close and fail a retrieval test somewhere else -- intermittently,
+    and never when run on its own.
+    """
+    semantic._LOADED.clear()
+    yield
+    semantic._LOADED.clear()
+
+
 def test_reduced_precision_is_asked_for_only_where_it_helps(monkeypatch):
     """Half precision on a processor is slower, not faster.
 

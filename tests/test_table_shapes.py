@@ -86,7 +86,8 @@ def test_the_shape_is_read_in_the_coordinates_of_the_page():
     escala = tatr.DPI / 72.0
     assert tatr._to_pdf(0.0, escala, 800.0) == pytest.approx(800.0)   # top
     assert tatr._to_pdf(800.0 * escala, escala, 800.0) == pytest.approx(0.0)
-    assert tatr._to_pdf(150.0, escala) == pytest.approx(72.0)         # horizontal
+    # Horizontal: only the scale applies, whatever the rendering resolution is.
+    assert tatr._to_pdf(72.0 * escala, escala) == pytest.approx(72.0)
 
 
 def test_the_model_is_asked_for_the_shape_and_not_for_the_words():
