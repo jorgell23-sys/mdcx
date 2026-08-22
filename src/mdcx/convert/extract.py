@@ -24,6 +24,12 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 
+# What share of a document's pages must carry no text before it is treated as
+# a scan. A document below this is one with some blank or pictorial pages, which
+# is every book; a document above it is one that was photographed.
+OCR_SHARE = 0.5
+
+
 def _pdf_text(path: Path) -> tuple[str, dict]:
     from . import pdf as _pdf
 
@@ -38,11 +44,25 @@ def _pdf_text(path: Path) -> tuple[str, dict]:
                 pages_without_text += 1
             images += _pdf.count_images(page)
             parts.append(txt)
+        # Optical recognition is applied to the whole document, so it has to be
+        # decided about the whole document. A single page without text is
+        # ordinary -- a half-title, a blank verso, a page holding one figure --
+        # and a book of six hundred pages will nearly always have one. Asking
+        # for OCR on that basis sends the entire document down the most
+        # expensive path there is, to recover a page that has nothing on it.
+        # Measured on a real run: nine chapters in a hundred and seventy-seven
+        # were converted that way, each of them a document whose text the cheap
+        # extractor was already reading in full.
+        #
+        # What OCR is for is a document that was scanned, and there most of the
+        # pages carry no text rather than one of them.
+        empty = pages_without_text / len(doc) if len(doc) else 0.0
         meta = {
             "pages": len(doc),
             "pages_without_text": pages_without_text,
+            "pages_without_text_share": round(empty, 4),
             "embedded_images": images,
-            "needs_ocr": pages_without_text > 0,
+            "needs_ocr": empty >= OCR_SHARE,
         }
     finally:
         doc.close()

@@ -208,8 +208,19 @@ def encode(texts: list[str], role: str = "passage", name: str | None = None,
 
 
 def dimensions(name: str | None = None) -> int:
-    """The length of the vectors a model produces."""
-    return int(load(name).get_sentence_embedding_dimension())
+    """The length of the vectors a model produces.
+
+    The method was renamed and the old name still answers, with a warning that
+    says it will not answer forever. Asking for the new one first means the day
+    it is removed is a day nothing happens here.
+    """
+    model = load(name)
+    for asking in ("get_embedding_dimension", "get_sentence_embedding_dimension"):
+        method = getattr(model, asking, None)
+        if method is not None:
+            return int(method())
+    raise AttributeError(
+        f"{type(model).__name__} reports no embedding dimension")
 
 
 def fuse(rankings: list[list[str]], k: int = 60) -> list[str]:

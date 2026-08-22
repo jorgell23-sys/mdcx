@@ -129,6 +129,26 @@ def extract_pages(source: Path, first: int, last: int, target: Path) -> Path:
         src.close()
     return target
 
+def outline_for_range(source: Path, first: int, last: int) -> dict[int, list[tuple[int, str]]]:
+    """The bookmarks falling in a page range, keyed by page within that range.
+
+    A chapter is converted from a PDF cut out of the book, and cutting pages
+    does not carry the bookmarks with them: the extract comes out with none.
+    So the headings have to be fetched from the book and translated to where
+    the pages ended up.
+
+    They are worth fetching. A chapter of running prose extracted natively has
+    no headings at all, and its section titles -- "Osmosis and Osmotic Pressure
+    of Solutions" -- are among the best answers a search over the corpus can
+    return. The author already wrote them into the document as a table of
+    contents, with the hierarchy included, so there is nothing to infer.
+    """
+    found: dict[int, list[tuple[int, str]]] = {}
+    for level, title, page in outline(source):
+        if first <= page <= last:
+            found.setdefault(page - first + 1, []).append((level, title))
+    return found
+
 def extract_page_list(source: Path, pages: list[int], target: Path) -> Path:
     """Write a new PDF holding the given pages, zero-based, in order.
 

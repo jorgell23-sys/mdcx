@@ -166,7 +166,22 @@ def _candidates(job: Job, ref_meta: dict, use_docling: bool) -> list[tuple[str, 
             out.append(("nativo", native))
         return out
 
-    if native:
+    if native and job.kind == "pdf":
+        # A chapter is converted from pages cut out of the book, and cutting
+        # them leaves the bookmarks behind. The headings have to be fetched
+        # from the book itself, or the chapter arrives as a wall of prose with
+        # no section titles -- which are among the best answers a search can
+        # return, and which the author already wrote.
+        titulos = None
+        if job.is_chapter and job.page_range:
+            try:
+                from . import pdf as _pdf
+
+                titulos = _pdf.outline_for_range(job.source, *job.page_range)
+            except Exception:  # noqa: BLE001
+                titulos = None
+        out.append(("nativo", lambda p, t=titulos: engines.native_pdf(p, t)))
+    elif native:
         out.append(("nativo", native))
     if docling_ok and job.kind == "pdf":
         # Between the two extremes: everything extracted cheaply, and only the

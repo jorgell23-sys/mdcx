@@ -176,7 +176,7 @@ def docling_convert(path: Path, ocr: bool = False) -> tuple[str, dict, dict | No
 # small part of the page and dropping the rest loses more than it saves.
 TABLE_DOMINATES = 0.6
 
-def _native_pages(path: Path) -> tuple[list[str], dict]:
+def _native_pages(path: Path, headings: dict | None = None) -> tuple[list[str], dict]:
     """Each page as Markdown, and which pages this engine could not settle.
 
     Tables are located from what is drawn on the page and from the caption the
@@ -190,10 +190,22 @@ def _native_pages(path: Path) -> tuple[list[str], dict]:
     from . import pdf as _pdf
     from . import tables as _tables
 
+    # The section titles the author already wrote into the document. Extracting
+    # prose gives no headings at all, and a chapter without them is a wall of
+    # text: nothing to cite, and the titles themselves are among the best
+    # answers a search can return. Where the caller knows the document these
+    # pages were cut from, it passes them in, because cutting pages leaves the
+    # bookmarks behind.
+    if headings is None:
+        headings = {}
+        for level, title, page in _pdf.outline(path):
+            headings.setdefault(page, []).append((level, title))
+
     doc = _pdf.open_document(path)
     pages: list[str] = []
     found = 0
     announced = 0
+    titled = 0
     unresolved: list[int] = []
     try:
         for index, page in enumerate(doc):
@@ -210,6 +222,9 @@ def _native_pages(path: Path) -> tuple[list[str], dict]:
                 announced += 1
 
             parts = [f"\n<!-- page {index + 1} -->\n"]
+            for level, title in headings.get(index + 1, []):
+                parts.append("#" * min(max(level, 1), 6) + " " + title)
+                titled += 1
             prose = [t for t in _pdf.page_paragraphs_fast(page) if t]
             if table:
                 found += 1
@@ -236,14 +251,15 @@ def _native_pages(path: Path) -> tuple[list[str], dict]:
                 parts.extend(prose)
             pages.append("\n\n".join(parts))
         meta = {"engine": "pypdfium2", "pages": len(doc), "tables": found,
-                "tables_announced": announced, "unresolved": unresolved}
+                "tables_announced": announced, "unresolved": unresolved,
+                "headings": titled}
     finally:
         doc.close()
     return pages, meta
 
-def native_pdf(path: Path) -> tuple[str, dict, None]:
+def native_pdf(path: Path, headings: dict | None = None) -> tuple[str, dict, None]:
     """PDF to Markdown by layout blocks, preserving reading order and page separation."""
-    pages, meta = _native_pages(path)
+    pages, meta = _native_pages(path, headings)
     return "\n\n".join(pages), meta, None
 
 def _read_shapes(path: Path, pages: list[str], meta: dict,
@@ -295,7 +311,7 @@ def _read_shapes(path: Path, pages: list[str], meta: dict,
     meta["tables_recovered"] = recovered
     return "\n\n".join(p for p in pages if p), meta, None
 
-def hybrid_pdf(path: Path) -> tuple[str, dict, None]:
+def hybrid_pdf(path: Path, headings: dict | None = None) -> tuple[str, dict, None]:
     """Extract the whole document, and read with the model only what needs it.
 
     Deciding the engine once per document is what makes the expensive one
@@ -312,7 +328,7 @@ def hybrid_pdf(path: Path) -> tuple[str, dict, None]:
     from . import pdf as _pdf
     from . import tatr as _tatr
 
-    pages, meta = _native_pages(path)
+    pages, meta = _native_pages(path, headings)
     pending = list(meta.get("unresolved") or [])
     if not pending:
         return "\n\n".join(pages), meta, None

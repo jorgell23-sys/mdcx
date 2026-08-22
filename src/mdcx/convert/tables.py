@@ -281,6 +281,45 @@ def _words_of(textpage) -> list[tuple]:
     return out
 
 
+# How many of a grid's rows may hold more than one line of text before the
+# thing is read as prose. A cell running to two lines is ordinary; most of them
+# doing so means the horizontal rules were not row separators at all.
+MULTILINE_ROWS_ALLOWED = 0.4
+
+
+def _rows_are_single_lines(textpage, rows: list[float]) -> bool:
+    """Whether the rules separate rows of a table rather than blocks of prose.
+
+    A page can be ruled for reasons that have nothing to do with a table: a box
+    around a worked example, a header rule, a footer rule. The text between two
+    such rules is paragraphs, and cutting it into cells produces a well-formed
+    table of shredded sentences -- "tons in the nucleus of an atom is its
+    atomic number (Z)" arriving as four columns.
+
+    A row of a table is a line. A block of prose is many. Counting the lines
+    that fall between each pair of rules separates the two without needing to
+    understand either.
+    """
+    boxes = _line_boxes(textpage)
+    if not boxes:
+        return True             # nothing to judge by; the other checks decide
+    counted = crowded = 0
+    for i in range(len(rows) - 1):
+        top, bottom = rows[i], rows[i + 1]
+        inside = [b[1] for b in boxes if bottom <= (b[1] + b[3]) / 2 <= top]
+        if not inside:
+            continue
+        counted += 1
+        # The cells of one row are reported as one box each, sitting on bases a
+        # fraction of a point apart. Counting those as separate lines would call
+        # every table prose, so they are grouped the way rules are.
+        if len(_cluster(inside)) > 1:
+            crowded += 1
+    if not counted:
+        return True
+    return crowded <= counted * MULTILINE_ROWS_ALLOWED
+
+
 def _table_from_grid(textpage, rows: list[float],
                      columns: list[float]) -> str | None:
     """The table when it is drawn whole, or None if that grid is empty."""
@@ -290,6 +329,9 @@ def _table_from_grid(textpage, rows: list[float],
     columns = sorted(columns)
     n_rows, n_columns = len(rows) - 1, len(columns) - 1
     if n_rows * n_columns > 400:        # an absurd grid is not a table
+        return None
+
+    if not _rows_are_single_lines(textpage, rows):
         return None
 
     cells = _grid_cells(textpage, rows, columns)

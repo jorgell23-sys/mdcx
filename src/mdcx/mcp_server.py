@@ -108,6 +108,43 @@ def _connection():
 RELEVANCE_MARGIN = 0.10
 
 
+# How near the corpus must come before an answer is worth calling one. Cosine
+# is the only number here that means the same thing everywhere -- it is an angle
+# from one model, and owes nothing to the statistics of any corpus -- so it is
+# the only one a threshold can be set on.
+#
+# Measured over questions a corpus answers and questions it does not: the ones
+# it answers came no closer than 0.57 and the ones it does not reached 0.41.
+# This sits between them, low enough not to disparage a real answer. It marks
+# rather than hides: the passages are still returned, because the nearest
+# passage is worth seeing even when it is not an answer, and because a corpus
+# that answers in another language is a case this must not swallow.
+NOTHING_CLOSE = 0.45
+
+
+def _closest_to(query: str) -> float | None:
+    """How near the whole corpus comes to a question, or None if it cannot say.
+
+    A package that indexes words alone has no such number, and inventing one
+    from BM25 would be exactly the mistake this replaced.
+    """
+    paquetes = _open_packages()
+    if not all(archive._semantic_ready(p["connection"]) for p in paquetes):
+        return None
+    try:
+        import numpy as np
+
+        from . import semantic
+
+        vector = np.asarray(semantic.encode([query], role="query")[0],
+                            dtype=np.float32)
+    except Exception:  # noqa: BLE001
+        return None
+    cercanias = [_best_similarity(p["connection"], vector) for p in paquetes]
+    cercanias = [c for c in cercanias if c is not None]
+    return max(cercanias) if cercanias else None
+
+
 def _best_similarity(connection, vector) -> float | None:
     """How close this package comes to the query, at its closest passage.
 
@@ -245,6 +282,14 @@ def create_server():
         if scope not in ("received", "sent"):
             scope = None
         results = search_packages(query, top, scope)
+        # What comes back is a position, not a measurement. The two engines
+        # score on scales with nothing in common -- BM25 has no upper bound and
+        # depends on the corpus it was measured in, cosine runs from zero to one
+        # and does not -- and the list is ordered by neither: it is merged by
+        # rank, because that is the only thing the two agree on. Publishing a
+        # `score` beside the passage invited comparing, sorting and filtering by
+        # it, and none of the three was ever valid. A query the corpus cannot
+        # answer reached 14.65 while one it answers well sat at 0.65.
         respuesta = {
             "query": query,
             "found": len(results),
@@ -253,13 +298,21 @@ def create_server():
                     "document": item["document"],
                     "direction": item["source"].lower(),
                     "path": item["pseudopath"],
-                    "score": item.get("score"),
+                    "rank": position,
                     "text": item["passage"],
                     **({"package": item["package"]} if "package" in item else {}),
                 }
-                for item in results
+                for position, item in enumerate(results, start=1)
             ],
         }
+        cercania = _closest_to(query)
+        if cercania is not None:
+            respuesta["similarity"] = round(cercania, 4)
+            if cercania < NOTHING_CLOSE:
+                respuesta["warning"] = (
+                    "nothing in this corpus is close to the question; the "
+                    "passages below are the nearest there are, which is not "
+                    "the same as an answer")
         if not results:
             aviso = archive.language_mismatch(connection, query)
             if aviso:

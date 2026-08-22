@@ -9,9 +9,10 @@ Ordering them is only half of it. Trying the cheap engine first saves nothing
 if the expensive one runs anyway, so something has to decide that the cheap
 result is enough -- and the thing the cheap engine can quietly get wrong is a
 table. A page whose table was read as running text still scores as covered: the
-words are all there, in the wrong shape. So the decision rests on the one
-question it can answer about its own blind spot, which is how many of the pages
-that announce a table it found a table on.
+words are all there, in the wrong shape. So the decision rests on what it left
+unsettled: a page that announces a table, or is ruled like one, and yielded
+none. Counting captions instead was the earlier mistake -- a book that labels
+its tables "Figure" announced nothing, so nothing was missing.
 
 The other half is refusing a table that came out wrong. Where a column boundary
 falls inside a word the halves land in adjacent cells -- "subtracting" arrives
@@ -33,6 +34,18 @@ from mdcx.convert import convert as C  # noqa: E402
 from mdcx.convert import tables  # noqa: E402
 
 
+def _job(**cambios):
+    """A conversion job, with only what choosing an engine looks at.
+
+    A chapter carries the book it was cut from and the pages it covers, because
+    the headings have to be fetched from there: cutting pages leaves the
+    bookmarks behind.
+    """
+    campos = dict(kind="pdf", is_chapter=False, page_range=None, source=Path("libro.pdf"))
+    campos.update(cambios)
+    return SimpleNamespace(**campos)
+
+
 class Textpage:
     """A page that reports the text it holds, which is all a caption needs."""
 
@@ -45,8 +58,7 @@ class Textpage:
 
 def test_the_cheap_engine_is_tried_first():
     """A vision model is what the order exists to avoid paying for."""
-    job = SimpleNamespace(kind="pdf")
-    nombres = [n for n, _ in C._candidates(job, {}, use_docling=True)]
+    nombres = [n for n, _ in C._candidates(_job(), {}, use_docling=True)]
     assert nombres, "algun motor debe quedar"
     assert nombres[0] == "nativo"
     assert nombres.index("nativo") < nombres.index("docling")
@@ -54,8 +66,7 @@ def test_the_cheap_engine_is_tried_first():
 
 def test_a_document_that_needs_ocr_goes_to_the_model_first():
     """There is nothing to extract from a page with no text layer."""
-    job = SimpleNamespace(kind="pdf")
-    nombres = [n for n, _ in C._candidates(job, {"needs_ocr": True}, use_docling=True)]
+    nombres = [n for n, _ in C._candidates(_job(), {"needs_ocr": True}, use_docling=True)]
     assert nombres[0] == "docling-ocr"
 
 
