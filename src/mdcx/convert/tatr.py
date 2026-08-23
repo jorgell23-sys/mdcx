@@ -61,7 +61,58 @@ DPI = 110
 THRESHOLD = 0.7
 
 # How many pages go to the accelerator at once.
-BATCH = 8
+#
+# The cost of a page falls sharply with the size of the batch: measured, 150 ms
+# sending one, 82 sending two, 75 with eight and 46 with twenty-four. What is
+# being amortised is the fixed cost of the invocation, which is paid whole
+# however few pages are in it.
+#
+# So eight was a floor written for a 6 GB card, not a property of the work, and
+# a card with room to spare was being asked for eight pages at a time because
+# that is what fitted somewhere else. What each page in flight costs is roughly
+# what the models already hold divided by the batch they were measured with;
+# BATCH_MIB is that, rounded up, and the batch is whatever the free memory
+# allows between the floor and the ceiling.
+#
+# The ceiling exists because the curve flattens: past twenty-four the saving is
+# small and the memory is not, and a batch large enough to fail is worse than a
+# batch that leaves some of the card unused. The floor exists because a machine
+# that reports very little free memory is usually one where something else is
+# running, and a batch of one is the worst place on the curve.
+BATCH_FLOOR = 8
+BATCH_CEILING = 24
+BATCH_MIB = 150
+
+
+def _batch_size() -> int:
+    """How many pages to send at once, from the memory this machine has free.
+
+    A processor has no such limit worth reading, and no benefit from a larger
+    batch either, so it keeps the floor.
+    """
+    import os
+
+    declarado = os.environ.get("MDCX_TATR_BATCH")
+    if declarado:
+        try:
+            return max(1, int(declarado))
+        except ValueError:
+            pass
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return BATCH_FLOOR
+        libre, _total = torch.cuda.mem_get_info()
+        # Half of what is free, so that a second process arriving at the model
+        # finds room rather than a card someone else filled to the brim.
+        cabe = int(libre // (1024 * 1024) // 2 // BATCH_MIB)
+    except Exception:  # noqa: BLE001 - no card, no driver: the floor answers
+        return BATCH_FLOOR
+    return max(BATCH_FLOOR, min(BATCH_CEILING, cabe))
+
+
+BATCH = _batch_size()
 
 _LOADED: dict = {}
 _LOCK = threading.RLock()

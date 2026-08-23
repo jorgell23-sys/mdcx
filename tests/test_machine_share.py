@@ -142,6 +142,63 @@ def test_a_machine_with_no_card_is_not_measured_against_one(monkeypatch):
     assert gpu >= 1 and cpu >= 1
 
 
+def _lote(monkeypatch, libre_mib=None, hay_placa=True):
+    """The batch this machine would choose, with the card it is told it has."""
+    import types
+
+    from mdcx.convert import tatr
+
+    monkeypatch.delenv("MDCX_TATR_BATCH", raising=False)
+    falso = types.ModuleType("torch")
+    falso.cuda = types.SimpleNamespace(
+        is_available=lambda: hay_placa,
+        mem_get_info=lambda: ((libre_mib or 0) * 1024 * 1024, 0))
+    monkeypatch.setitem(sys.modules, "torch", falso)
+    return tatr._batch_size()
+
+
+def test_a_card_with_room_is_sent_more_pages_at_a_time(monkeypatch):
+    """The cost of a page falls with the batch: 150 ms sending one, 46 with 24.
+
+    Eight was a floor written for a 6 GB card, not a property of the work.
+    """
+    from mdcx.convert import tatr
+
+    assert _lote(monkeypatch, libre_mib=5100) > tatr.BATCH_FLOOR
+    assert _lote(monkeypatch, libre_mib=24000) == tatr.BATCH_CEILING
+
+
+def test_a_card_with_little_free_keeps_the_floor(monkeypatch):
+    """Little free memory usually means something else is running on it."""
+    from mdcx.convert import tatr
+
+    assert _lote(monkeypatch, libre_mib=500) == tatr.BATCH_FLOOR
+    assert _lote(monkeypatch, libre_mib=1500) == tatr.BATCH_FLOOR
+
+
+def test_the_batch_never_grows_past_where_the_curve_flattens(monkeypatch):
+    """Past twenty-four the saving is small and the memory is not."""
+    from mdcx.convert import tatr
+
+    for libre in (8000, 24000, 80000, 200000):
+        assert _lote(monkeypatch, libre_mib=libre) <= tatr.BATCH_CEILING
+
+
+def test_a_machine_with_no_card_keeps_the_floor(monkeypatch):
+    """Nothing to read, and nothing gained by a larger batch either."""
+    from mdcx.convert import tatr
+
+    assert _lote(monkeypatch, hay_placa=False) == tatr.BATCH_FLOOR
+
+
+def test_a_machine_can_say_otherwise(monkeypatch):
+    """Thousands of cards, and some of them will measure differently."""
+    from mdcx.convert import tatr
+
+    monkeypatch.setenv("MDCX_TATR_BATCH", "3")
+    assert tatr._batch_size() == 3
+
+
 def test_the_threads_a_worker_asks_for_are_the_ones_it_was_given(monkeypatch):
     """The budget is divided among the workers, and Docling is told its share.
 

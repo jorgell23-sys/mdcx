@@ -49,38 +49,7 @@ from .convert.paths import (  # noqa: E402
 ROOT = Path.cwd()
 CERT_BUNDLE = ROOT / "tool" / "certs" / "ca-bundle.pem"
 
-# What is left for whoever is using the machine, as a share of it rather than a
-# fixed number of processors. One free core is a different promise on a machine
-# of four than on one of thirty-two: on the first it is a quarter of the machine
-# and on the second it is nothing, and it is the second where a converting
-# library takes the desk away from its owner.
-RESERVED_SHARE = 0.20
-
-def _default_max_cores() -> int:
-    """How many processes to run at once unless told otherwise.
-
-    The whole of the machine less the reserve, and no fixed ceiling above that.
-    A number that does not grow with the machine is the same defect as a reserve
-    that does not: it was the bare constant 8, which asks for twice a machine of
-    four and for a quarter of a machine of thirty-two, and a converter that
-    cannot use a large machine is a converter that has to be told to, every
-    time, by someone who first has to notice.
-
-    That mattered little while almost every document queued in a lane of three
-    whatever the cap said. Now that the lanes are filled, this is what decides
-    the real concurrency.
-
-    For the record rather than as a rule: on the machine this was developed on,
-    twelve logical processors, eight was measured as comfortable and the share
-    here allows nine. --max-cores is how a machine says something different.
-    """
-    import os as _os
-
-    disponibles = _os.cpu_count() or 4
-    return max(1, int(disponibles * (1.0 - RESERVED_SHARE)))
-
-
-MAX_CORES_DEFAULT = _default_max_cores()
+MAX_CORES_DEFAULT = 8
 
 def _configure_tls() -> None:
     """Use the local CA bundle if present."""
@@ -153,104 +122,6 @@ def _error_record(job, exc: Exception) -> dict:
                          "coverage": None, "numeric_coverage": None},
         "errors": [f"{type(exc).__name__}: {exc}"],
     }
-
-
-# What one worker holds on the card once its batch is full: the models, plus the
-# images of a full batch. Measured on a 6 GB card as 206 MiB with the models
-# alone, 364 after two pages and 1,384 once the batch of eight is complete. The
-# peak is the number that matters; sizing on a sample taken before the batch
-# fills says more workers fit than do, and the run then spends itself competing
-# for memory rather than converting.
-#
-# This is a starting estimate and not a measurement taken here: measuring it
-# properly means loading the models and inferring a full batch before any work
-# begins, which costs more than the sizing saves. MDCX_VRAM_POR_PROCESO says
-# otherwise for a card whose models measure differently.
-VRAM_PER_WORKER_MIB = 1384
-
-
-def _vram_per_worker_mib() -> int:
-    try:
-        return max(1, int(os.environ.get("MDCX_VRAM_POR_PROCESO",
-                                         VRAM_PER_WORKER_MIB)))
-    except ValueError:
-        return VRAM_PER_WORKER_MIB
-
-
-def _free_vram_mib() -> int | None:
-    """Video memory available right now, or None where there is no card to ask."""
-    try:
-        import torch
-
-        if not torch.cuda.is_available():
-            return None
-        libre, _total = torch.cuda.mem_get_info()
-        return int(libre // (1024 * 1024))
-    except Exception:  # noqa: BLE001 - no card, no driver, no torch: same answer
-        return None
-
-
-def _lane_sizes(tope_total: int, fraccion_gpu: float, tiene_gpu: bool) -> tuple[int, int]:
-    """How many workers each lane gets, from the machine and from the work.
-
-    Three ceilings, and the smallest wins. All three are needed, and leaving any
-    of them out breaks the sizing somewhere:
-
-    The card. Free video memory divided by what a worker holds once its batch is
-    full. Without this, raising the count by hand does the opposite of what it
-    looks like: twelve workers on a 6 GB card ask for 15.7 GB and the run
-    measured three times slower than three workers.
-
-    The work. A lane sized for documents that never arrive is a lane of idle
-    processes. What genuinely needs the model is what has no text layer to read,
-    which is what the classification now separates -- and which it could not
-    have told us while it was sending everything to that lane.
-
-    The rest of the machine. Without a third ceiling the formula breaks exactly
-    where there is most to gain: a card of 11 GB would allow seven workers on the
-    card and leave one for everything else, which is backwards, the bulk of this
-    work being processor work.
-    """
-    import math
-
-    if tope_total <= 1:
-        return 1, 1
-
-    por_la_placa = tope_total
-    if tiene_gpu:
-        libre = _free_vram_mib()
-        if libre is not None:
-            por_la_placa = libre // _vram_per_worker_mib()
-
-    por_la_demanda = math.ceil(tope_total * max(0.0, min(1.0, fraccion_gpu)))
-    gpu = max(1, min(por_la_placa, por_la_demanda, tope_total - 1))
-    return gpu, max(1, tope_total - gpu)
-
-
-def _worker_budget(hilos: int, gate) -> None:
-    """Start a worker that keeps to its share of the machine.
-
-    Two shares, and they are not the same thing.
-
-    The processors: counting processes is not enough to know what a run will
-    take, because Docling asks for four threads of its own. Eight workers taking
-    that at face value ask for thirty-two threads on a machine of twelve, and
-    the reserve --max-cores was careful to leave is spent again inside the pool.
-    The cap is therefore divided among the workers and handed to each as a
-    budget. The variables are read by the numerical libraries when they first
-    load, and a worker loads them after this runs, which is why they are set
-    here rather than once the process is already busy.
-
-    The card: bounded by a gate every worker shares, rather than by which pool
-    the worker belongs to. Both lanes may use the card and both are counted
-    against the same limit, so the lane is left deciding what it is good at --
-    which documents are worth dispatching where -- and not, as it used to,
-    which engines a document is allowed to reach at all.
-    """
-    for variable in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
-                     "NUMEXPR_NUM_THREADS"):
-        os.environ[variable] = str(hilos)
-    engines.set_gpu_gate(gate)
 
 
 def _select_start_method() -> str:
@@ -344,9 +215,15 @@ def main() -> int:
     # context does not survive fork(), which silently disabled docling.
     start_method = _select_start_method()
 
-    # The lane sizes are settled further down, once the documents have been
-    # classified: how many of them need the card is one of the three things that
-    # decides, and it cannot be known before they are looked at.
+    if args.serial:
+        gpu_workers, cpu_workers = 1, 1
+        print("Serial mode: one document at a time (timings are comparable across runs)")
+    else:
+        gpu_workers = args.gpu_workers if args.gpu_workers is not None else (2 if tiene_gpu else 3)
+        gpu_workers = max(1, min(gpu_workers, args.max_cores - 1))
+        cpu_workers = args.cpu_workers if args.cpu_workers is not None else args.max_cores - gpu_workers
+        cpu_workers = max(1, min(cpu_workers, args.max_cores - gpu_workers))
+
     print(f"Source : {input_root}")
     print(f"Destino: {output_root}")
     print(f"Files to convert: {len(jobs)} | skipped por archive: {len(skipped)}")
@@ -468,28 +345,10 @@ def main() -> int:
     if args.serial:
         gpu_workers, cpu_workers = 1, 1
         print("Serial mode: one document at a time (timings are comparable across runs)")
-        hilos_por_worker = max(1, args.max_cores)
     else:
-        con_placa = len(lanes[LANE_GPU])
-        fraccion_gpu = con_placa / max(1, con_placa + len(lanes[LANE_CPU]))
-        gpu_workers, cpu_workers = _lane_sizes(args.max_cores, fraccion_gpu, tiene_gpu)
-        # The formula is the default, not a ruling: a machine that knows better
-        # says so, and is then held only to the total.
-        if args.gpu_workers is not None:
-            gpu_workers = max(1, min(args.gpu_workers, args.max_cores - 1))
-            cpu_workers = max(1, args.max_cores - gpu_workers)
-        if args.cpu_workers is not None:
-            cpu_workers = max(1, min(args.cpu_workers, args.max_cores - gpu_workers))
-
-        # The cap is a budget for the whole run, so it is divided among the
-        # workers rather than granted to each: otherwise the share it was
-        # careful to leave free is spent again inside every process.
-        hilos_por_worker = max(1, args.max_cores // max(1, gpu_workers + cpu_workers))
         print(f"Carril GPU: {len(lanes[LANE_GPU])} documents en {gpu_workers} procesos | "
               f"Carril CPU: {len(lanes[LANE_CPU])} documents en {cpu_workers} procesos | "
-              f"tope {args.max_cores} de {os.cpu_count() or '?'} cores, "
-              f"{hilos_por_worker} hilo(s) cada uno | "
-              f"placa: hasta {gpu_workers} proceso(s) a la vez")
+              f"tope {args.max_cores} cores")
         if start_method == "spawn" and sys.platform != "win32":
             print("Workers start with spawn: a CUDA context does not survive fork, "
                   "which would disable docling in every child.")
@@ -517,9 +376,7 @@ def main() -> int:
         if args.serial:
             for lane in (LANE_GPU, LANE_CPU):
                 for job in lanes[lane]:
-                    # One process, so there is nothing to contend for and no
-                    # reason to withhold the engine from either lane.
-                    permitir_docling = use_docling
+                    permitir_docling = use_docling and lane == LANE_GPU
                     try:
                         rec = convert_one_safe(
                             (job, output_root, permitir_docling, not args.no_lossless,
@@ -532,19 +389,8 @@ def main() -> int:
                     done += 1
                     _print_progress(done, total, lane, rec)
         else:
-            import multiprocessing
-
-            # How many processes may hold the card at once. The GPU lane used to
-            # be this number by being the only lane with the engines; now it is
-            # said once and applies to every worker, whichever lane it is in.
-            puerta = multiprocessing.Semaphore(gpu_workers)
-
-            with ProcessPoolExecutor(
-                    max_workers=gpu_workers, initializer=_worker_budget,
-                    initargs=(hilos_por_worker, puerta)) as gpu_pool, \
-                 ProcessPoolExecutor(
-                    max_workers=cpu_workers, initializer=_worker_budget,
-                    initargs=(hilos_por_worker, puerta)) as cpu_pool:
+            with ProcessPoolExecutor(max_workers=gpu_workers) as gpu_pool, \
+                 ProcessPoolExecutor(max_workers=cpu_workers) as cpu_pool:
                 futures = {}
                 for job in lanes[LANE_GPU]:
                     fut = gpu_pool.submit(
@@ -553,8 +399,7 @@ def main() -> int:
                     futures[fut] = (job, LANE_GPU)
                 for job in lanes[LANE_CPU]:
                     fut = cpu_pool.submit(
-                        convert_one_safe,
-                        (job, output_root, use_docling, not args.no_lossless, not args.no_compact)
+                        convert_one_safe, (job, output_root, False, not args.no_lossless, not args.no_compact)
                     )
                     futures[fut] = (job, LANE_CPU)
 

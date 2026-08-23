@@ -210,30 +210,15 @@ def plan_jobs(input_root: Path) -> tuple[list[Job], list[Path]]:
 
     return jobs, skipped
 
-LANE_GPU = "gpu"   # will need the card: no text to read, so a model must read it
-LANE_CPU = "cpu"   # reads its own text; a model here, if reached, runs on the processor
+LANE_GPU = "gpu"   # requiere modelos de layout/tables/OCR
+LANE_CPU = "cpu"   # extractor determinista, sin modelos
 
 def classify_lane(job: "Job") -> str:
-    """Choose the execution lane from a cheap inspection of the original.
-
-    The lane is about the card, not about the engines. Both lanes may reach the
-    structured engine; what the GPU lane holds is the right to use the GPU, and
-    it is kept small because the card is what runs out first.
-
-    It used to hold everything, which was right when every document went through
-    layout analysis. It no longer does -- most are read from their own text
-    layer -- so the general case stopped needing the card and went on queueing
-    for it: measured on 22 books, 22 landed in a lane of three processes and
-    none in the lane of thirteen. Raising --max-cores did nothing, because it
-    was enlarging the empty lane.
-    """
+    """Choose the execution lane from a cheap inspection of the original."""
     if job.kind in ("text", "html"):
         return LANE_CPU
     if job.kind != "pdf":
-        # DOCX/XLSX/PPTX still want the structured engine for their tables and
-        # headings, and now get it in either lane, so they no longer compete for
-        # the card they were never going to use.
-        return LANE_CPU
+        return LANE_GPU  # DOCX/XLSX/PPTX: the structured engine adds tables and headings
 
     try:
         from . import pdf as _pdf
@@ -252,13 +237,10 @@ def classify_lane(job: "Job") -> str:
 
     cpp = chars / max(1, muestra)
     if cpp < 60:
-        # Nothing to read. Optical recognition has to read it, and that is the
-        # one thing here that genuinely wants the card: measured on this corpus,
-        # such documents are 14.8% of the pages and 31% of the processor time.
         return LANE_GPU
     if pages <= 2 and imagenes >= 1:
         return LANE_CPU  # drawing or diagram: measured, the heavy engine performs worse
-    return LANE_CPU
+    return LANE_GPU
 
 def estimated_cost(job: "Job") -> float:
     """Estimated conversion cost for this job, in equivalent pages."""
