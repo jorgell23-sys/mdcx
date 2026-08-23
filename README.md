@@ -181,31 +181,51 @@ whose content identifies no known format is skipped rather than assumed.
 ### How much of the machine it uses
 
 Converting a library is the heaviest thing this package does, and it runs on a
-machine somebody is working at. A fifth of the processors are left free and the
-rest are used, so the figure follows the machine rather than a constant: nine
-processes on twelve processors, three on four.
+machine somebody is working at. Nothing here is a constant: every figure is
+derived from the machine it finds, because the same number cannot be right on
+four processors and on thirty-two.
 
 ```
 mdcx-convert --input ./Documents --output ./Documents_md --max-cores 4
 ```
 
-The cap is a budget for the whole run rather than a grant to each process. It is
-divided among the workers and each is told its share, because the structured
-engine asks for four threads of its own: eight workers taking that at face value
-would ask for thirty-two threads on a machine of twelve, and the share that was
-carefully left free would be spent again inside the pool.
+**Processors.** A fifth are left free and the rest are used: nine on twelve,
+three on four. The cap is a budget for the whole run rather than a grant to
+each process, so it is divided among the workers and each is told its share.
+Without that division the structured engine asks for four threads of its own
+and eight workers ask for thirty-two on a machine of twelve, spending inside the
+pool the share that was carefully left outside it.
 
-Documents are dispatched to two lanes. The GPU lane is small on purpose and is
-the only one allowed to use the card, because video memory is what runs out
-first: twelve processes each loading the table models reached 5,893 MiB of 6,144
-and ran three times slower than three processes did. It receives the documents
-that expose no text, which have nothing to extract and must be read by optical
-recognition.
+**The card.** How many processes may use it at once is decided by three
+ceilings, the smallest winning: the free video memory divided by what a worker
+holds with a full batch; how much of the material actually needs a model, which
+is the documents that expose no text and have nothing to extract; and leaving
+something for the processor. All three are needed. Without the first, asking for
+more workers by hand does the opposite of what it looks like — twelve on a 6 GB
+card ask for 15.7 GB and measured three times slower than three. Without the
+last, a large card takes every worker and leaves one for the bulk of the work,
+which is processor work.
 
-Everything else goes to the larger lane and runs on the processor, with the same
-engines available to it. The lane decides which device the work runs on, not
-which engines exist: a document that needs layout analysis gets it in either
-lane, on the card in one and on the processor in the other.
+That limit is then held by a gate every worker shares, taken around the model
+call rather than around the document, so a process reading text is not occupying
+a place on the card while it does.
+
+**The batch.** What a page costs falls with the number of pages it travels
+with — 150 ms sending one, 75 with eight, 46 with twenty-four — so the batch is
+as large as the card allows once every worker is seated on it, and no larger.
+It is decided where both halves are known, because how much of the card a worker
+may hold depends on how many may hold it; a worker deciding for itself reads the
+free memory as though nobody else would.
+
+**Lanes.** Documents are dispatched to two of them. Both may reach every engine
+and both are counted against the same limit on the card: the lane decides what
+is worth dispatching where, not what a document is allowed to reach. The lane
+used to decide both, which meant that moving a document out of the crowded lane
+also took away its structured engine.
+
+Every one of these can be overridden — `--max-cores`, `--gpu-workers`,
+`--cpu-workers`, and `MDCX_TATR_BATCH` — and the derived figure is the default
+rather than a ruling. A machine that measures differently says so.
 
 ### Checking a conversion before packaging
 

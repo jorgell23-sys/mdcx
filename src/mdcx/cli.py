@@ -304,11 +304,11 @@ def main() -> int:
     ap.add_argument("--input", default=str(ROOT / "Input"), help="source folder")
     ap.add_argument("--output", default=str(ROOT / "Output"), help="target folder")
     ap.add_argument("--max-cores", type=int, default=MAX_CORES_DEFAULT,
-                    help=f"tope de procesos concurrentes (por defecto {MAX_CORES_DEFAULT})")
+                    help=f"cap on concurrent processes; the default leaves {int(RESERVED_SHARE * 100)}%% of the machine free ({MAX_CORES_DEFAULT} here)")
     ap.add_argument("--gpu-workers", type=int, default=None,
-                    help="GPU lane workers (default 2 with a card, 3 without)")
+                    help="workers allowed on the card; the default is the smallest of what the video memory fits, what the material asks for, and leaving one elsewhere")
     ap.add_argument("--cpu-workers", type=int, default=None,
-                    help="CPU lane workers (default: the remainder of the cap)")
+                    help="workers in the other lane (default: the remainder of the cap)")
     ap.add_argument("--serial", action="store_true",
                     help="one document at a time, without parallelism (for clean measurement)")
     ap.add_argument("--only", default=None, help="glob pattern over the file name")
@@ -486,6 +486,19 @@ def main() -> int:
         if args.gpu_workers is not None:
             gpu_workers = max(1, min(args.gpu_workers, args.max_cores - 1))
             cpu_workers = max(1, args.max_cores - gpu_workers)
+            # Raising this by hand is the first thing anyone tries, and it does
+            # the opposite of what it looks like when the card cannot hold them:
+            # measured, twelve workers on a 6 GB card ran three times slower
+            # than three, because the resource running out was not the one being
+            # raised. Saying so costs a line and saves the measurement.
+            libre = _free_vram_mib() if tiene_gpu else None
+            caben = (libre // _vram_per_worker_mib()) if libre else None
+            if caben is not None and gpu_workers > max(1, caben):
+                print(f"Aviso: se pidieron {gpu_workers} procesos en la placa y "
+                      f"entran {max(1, caben)} ({libre} MiB libres, "
+                      f"{_vram_per_worker_mib()} por proceso). Por encima de eso "
+                      f"compiten por memoria y la corrida se hace mas lenta, no "
+                      f"mas rapida.")
         if args.cpu_workers is not None:
             cpu_workers = max(1, min(args.cpu_workers, args.max_cores - gpu_workers))
 
