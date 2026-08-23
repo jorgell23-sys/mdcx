@@ -15,6 +15,7 @@ encrypted file, and query it from an agent through the Model Context Protocol.
 - [Quick start](#quick-start)
 - [Conversion](#conversion)
 - [Packaging and querying](#packaging-and-querying)
+- [Sent and received](#sent-and-received)
 - [Working incrementally](#working-incrementally)
 - [MCP server](#mcp-server)
 - [Language support](#language-support)
@@ -33,13 +34,59 @@ encrypted file, and query it from an agent through the Model Context Protocol.
 
 ## Overview
 
-An agent answering questions about a document collection can either receive the
-documents in its context window, which is bounded by the size of that window, or
-query a component that holds an index of them.
+mdcx converts a collection of documents to Markdown, verifies each conversion
+against its original, packages the corpus with its index and provenance into a
+single encrypted file, and serves that file to agents over the Model Context
+Protocol.
 
-The following measurement covers one query — where the minimum pipe diameter to
-be modelled in 3D is stated — over a collection of 99 documents and 180 MB, using
-the `cl100k_base` tokenizer.
+It addresses one constraint. An agent asked a question about a document
+collection must either receive the documents in its context window, which is
+bounded in size and billed per token, or query a component that holds an index
+and returns only the passages that bear on the question. mdcx implements the
+second. Three properties distinguish it from an extraction script:
+
+- **Fidelity is measured, not assumed.** Every conversion is checked against the
+  text the original exposes, read by a library independent of the engine that
+  produced the conversion, and the coverage achieved is recorded per file.
+- **The corpus is a single encrypted artefact.** Passages, index and provenance
+  are held in one AES-256-GCM file whose header can be read without the key.
+- **Every passage carries its source.** An answer can be cited against a
+  document and a location rather than recalled.
+
+### Pipeline
+
+**Conversion.** Each document is attempted by the least expensive engine capable
+of reading it and escalated only where that engine falls short: direct text
+extraction, then a pass that recovers the tables a page draws, then full layout
+analysis. Documents exposing no text are read by optical character recognition.
+Content the selected engine omitted is appended verbatim rather than reported as
+lost.
+
+Over the collection used during development — 99 documents, 1,144,553 reference
+tokens — 594 tokens were not recovered, a coverage of 99.948%. Of the 95
+documents that expose text, 70 were recovered in full and none fell below 99.5%.
+The remaining four are scanned drawings holding no text in the file; they are
+marked unverifiable, as no text original exists to measure them against.
+
+**Packaging.** The corpus, its search index and the provenance of every passage
+are written to a single `.mdcx` file. The development collection produced 3.9 MB
+from 8.8 MB of Markdown. A growing collection is not rebuilt from the start:
+vectors already computed are reused, and a corpus exceeding what can be
+decrypted into memory is held as several packages queried as one.
+
+**Retrieval.** A query returns the passages that answer it, each with its source
+document and its position in the ranking. Word matching and dense retrieval are
+merged by reciprocal rank, so a query reaches a document whether it shares that
+document's vocabulary or only its subject, including where the two are written
+in different languages. Over a corpus of 136 documents in 34 languages, the
+merged engines rank the expected document first for 135 of the 136 queries.
+Where no document in the corpus is about the question, the reply states this
+rather than presenting its nearest passage as an answer.
+
+### Measured cost
+
+One query over the development collection — 99 documents, 180 MB — counted with
+the `cl100k_base` tokenizer:
 
 | Method | Model tokens | Local tokens |
 |---|---|---|
@@ -50,36 +97,13 @@ The 435 model tokens comprise 20 for the question, 274 for the retrieved passage
 and 141 for the answer.
 
 Reading the originals costs the whole collection because a PDF is a binary
-format: without prior conversion there is no way to determine which of the 99
+format: absent prior conversion there is no way to determine which of the 99
 documents holds the answer, so all of them are extracted and read.
 
-This is a single measurement rather than an average, and the saving depends on
-how much text an answer requires. The work is not eliminated; it moves from the
+This is a single measurement, not an average, and the saving depends on how much
+text an answer requires. The work is not eliminated but relocated, from the
 context window, which is billed and finite, to local processing, which is
 neither. The local column rises for that reason.
-
-The package operates in three stages.
-
-**Conversion.** Each document is converted to Markdown and checked against the
-text the original exposes, read with a library independent from the engine that
-performed the conversion. Content omitted by the structured engine is appended
-verbatim rather than reported as lost.
-
-Over the collection used during development — 99 documents, 1,144,553 reference
-words — 594 words were not recovered, a global coverage of 99.948%. Of the 184
-documents exposing text, 116 reached 100% and none fell below 99.5%. The
-remaining four are scanned drawings containing no text in the file; they were
-read by optical character recognition and are marked as unverifiable, since no
-text original exists to measure them against.
-
-**Packaging.** The corpus, its search index and the provenance of every passage
-are written to a single `.mdcx` file, encrypted with AES-256-GCM, whose header
-can be read without the key. The development collection produced 3.9 MB from
-8.8 MB of Markdown.
-
-**Retrieval.** A query returns the passages that answer it together with their
-source. Over the 20 queries used for tuning, the expected document appears within
-the first five results in 19 cases and within the first ten in all 20.
 
 ## Requirements
 
@@ -115,8 +139,8 @@ corpus does not require it.
 
 The `tables` extra covers what a page does not draw. Tables in printed material
 are usually found from the rules drawn around them, which costs nothing and
-needs no extra; borderless ones -- a screenshot of a spreadsheet, a layout held
-together by alignment -- are read by a small model that reports where the rows
+needs no extra; borderless ones — a screenshot of a spreadsheet, a layout held
+together by alignment — are read by a small model that reports where the rows
 and columns run. It reads the shape only: the words still come from the text
 layer of the document, so a cell cannot hold anything the page does not say.
 Without it those pages are read by Docling instead, which is slower but already
@@ -129,7 +153,7 @@ pip install "mdcx[convert]"
 
 mdcx-convert --input ./Documents --output ./Documents_md
 mdcx pack --output ./Documents_md --target corpus.mdcx --key "passphrase"
-mdcx search corpus.mdcx "where is the minimum diameter stated" --key "passphrase"
+mdcx search corpus.mdcx "where is the storage temperature stated" --key "passphrase"
 ```
 
 ## Conversion
@@ -154,18 +178,63 @@ it, and the resulting failure is indistinguishable from a damaged document.
 Plain text carries no signature, so its extension determines the format. A file
 whose content identifies no known format is skipped rather than assumed.
 
+### Checking a conversion before packaging
+
+`mdcx-search` searches the converted Markdown directly, before there is a
+package, and quotes each passage with the document and pseudopath it came from.
+It is how a conversion is inspected while the folder is still open to
+correction.
+
+```
+mdcx-search "movable type" --output ./Documents_md
+mdcx-search --phrases ./questions.txt --output ./Documents_md --json found.json
+```
+
+Passages are ranked with BM25 aggregated per document rather than in isolation,
+so a long document that covers a subject across several fragments is not beaten
+by a short unrelated one that repeats a term. `--literal` requires the exact
+phrase and nothing else; `--bm25` ranks by relevance without literal matching.
+
+This engine reads the Markdown folder. Retrieval over a built package, with
+meaning and across languages, is `mdcx search` and the MCP server.
+
 ## Packaging and querying
 
 ```
 mdcx pack --output ./Documents_md --target corpus.mdcx --key "passphrase"
 mdcx info corpus.mdcx
-mdcx search corpus.mdcx "where is the minimum diameter stated" --key "passphrase"
+mdcx search corpus.mdcx "where is the storage temperature stated" --key "passphrase"
 mdcx export corpus.mdcx --target ./restored --key "passphrase"
 ```
 
 `info` reads the header without the key, so the issuer and the integrity of a
 file can be checked before it is opened. `export` reconstructs the original
 folder, so a collection can be moved out of the format at any time.
+
+## Sent and received
+
+Correspondence has a direction, and a question about it is usually about one
+side: what was asked of us, or what we answered. Where the top-level folder of
+a collection states that direction, it is recorded per document and a query can
+be restricted to it.
+
+| Top-level folder contains | Direction |
+|---|---|
+| `sent`, `emitido`, `outgoing` | sent |
+| `received`, `recibido`, `incoming` | received |
+| anything else | unclassified |
+
+The names are recognised in English and Spanish, since a collection may be
+organised in either, and only the top-level folder is examined, so a subfolder
+named after a correspondent does not reclassify what it holds.
+
+```
+mdcx search corpus.mdcx "what was agreed about the schedule"     --key "passphrase" --only received
+```
+
+The MCP `search` tool takes the same restriction as its `direction` argument.
+A collection organised in any other way is unaffected: every document is
+unclassified, and a query that names no direction is not narrowed.
 
 ## Working incrementally
 
@@ -301,7 +370,7 @@ Three tools are exposed:
 
 | Tool | Returns |
 |---|---|
-| `search` | passages answering a question, each with its source document, portable path and rank |
+| `search` | passages answering a question, each with its source document, portable path and rank; `direction` restricts it to one side of a correspondence |
 | `info` | the corpus record, including the fidelity of its conversion |
 | `document` | a complete document, when passages are insufficient |
 
@@ -490,10 +559,17 @@ equivalent to searching over encrypted data without decryption, which is a
 distinct field with documented leakage attacks and per-query costs measured in
 seconds.
 
-The key is derived with scrypt at approximately 8 attempts per second, each
-requiring 32 MB of memory, which prevents parallelisation on a GPU. The strength
-of the encryption depends on the passphrase; a dictionary passphrase is
-recoverable within a day.
+The key is derived with scrypt at N = 2^15, r = 8, p = 1. Those parameters
+require 32 MB of memory per attempt, which is what resists the parallelisation a
+GPU would otherwise bring to a search: memory, unlike arithmetic, does not
+become cheap by adding cores. One derivation takes 286 ms single-threaded on the
+development machine, approximately 3.5 attempts per second per core.
+
+That cost falls on an attacker and on the legitimate opening of a package alike.
+It multiplies the work of a search; it does not make a weak passphrase safe. The
+strength of the encryption is the strength of the passphrase, and one drawn from
+a dictionary stays within reach of an offline search whatever the derivation
+costs.
 
 ## Limitations
 
@@ -509,6 +585,15 @@ raises nor lowers it.
 Coverage measures the tokens preserved by a conversion. It does not measure the
 preservation of table structure, which is reported separately.
 
+Deciding that a grid of drawn rules is a table, rather than prose someone framed
+for emphasis, is done by how many of its rows run to more than one line. That
+test is not exact in either direction: prose laid out in short lines can pass it,
+and a table whose cells wrap can fail it. A separating signal was looked for in
+the material at hand and not found — the longest cell in the sample belongs to a
+legitimate table, so cell length does not divide them — and no further threshold
+was added on the strength of one collection. Where the decision goes wrong, the
+text is still present and still counted in coverage; what is lost is its shape.
+
 A package is decrypted in full when it is opened, so its size is bounded by the
 memory available. A corpus larger than that is held as several packages and
 queried together, as described under
@@ -521,30 +606,59 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-120 tests in eight groups.
+206 tests. Most of them exist because something failed once; the file that
+covers it says which, so a correction that is undone is noticed.
+
+**Retrieval**
+
+| File | Scope |
+|---|---|
+| `test_languages.py` | retrieval in 34 languages across 11 writing systems, and the requirement that a term shared by several languages returns the documents of all of them |
+| `test_multilingual.py` | retrieval across languages, and the requirement that merging engines preserves the precision of the lexical engine |
+| `test_multipackage.py` | querying several packages as one corpus, including key configuration and the reporting of a missing package |
+| `test_relevance.py` | that serving several packages does not bury the answer among the ones that hold nothing about it |
+| `test_direction.py` | restricting a search to one side of a correspondence, and the requirement that both engines filter by the same form of the value |
+| `test_answer_quality.py` | what the server says when it cannot answer, and the places where a number meant something other than it appeared to |
+| `test_describes_itself.py` | that every field a reply carries and every argument a tool accepts are accounted for in the description the caller reads, and that no field is promised after it stopped arriving |
+| `test_encoder.py` | how the encoder spends the accelerator, and that batching leaves the vectors unchanged |
+| `test_package_identity.py` | that a cache belongs to a package rather than to a memory address, so a package cannot answer with the vectors or the corpus statistics of one that was closed |
+
+**Conversion**
+
+| File | Scope |
+|---|---|
+| `test_formats.py` | identification of a file by content rather than extension, in both directions, and the extraction of reference text from EPUB |
+| `test_conversion_order.py` | which engine reads a document, when the search for a better one stops, and what rejects a table that is not one |
+| `test_table_cells.py` | that a character of a drawn table lands in exactly one cell, including a glyph the outer rule cuts |
+| `test_table_shapes.py` | the reading of a table the page does not draw, where the model supplies the shape and the text layer the words |
+| `test_headings.py` | that a chapter keeps the section titles its book already carried, whichever engine converted it |
+| `test_reporting.py` | that the summary separates a document measured and found short from one that could not be measured at all |
+| `test_incremental.py` | reuse of vectors between packages: that unchanged passages are not encoded again, that an edited one is, and that reuse produces the same ranking |
+
+**The package as it is installed**
 
 | File | Scope |
 |---|---|
 | `test_stress.py` | hostile inputs: empty and corrupted files, names in other alphabets, malformed queries including SQL injection, truncated and tampered packages, concurrent access, and compaction against content loss |
-| `test_languages.py` | retrieval in 34 languages across 11 writing systems, and the requirement that a term shared by several languages returns the documents of all of them |
-| `test_formats.py` | identification of a file by content rather than extension, in both directions, and the extraction of reference text from EPUB |
-| `test_multilingual.py` | retrieval across languages, and the requirement that merging engines preserves the precision of the lexical engine |
-| `test_incremental.py` | reuse of vectors between packages: that unchanged passages are not encoded again, that an edited one is, and that reuse produces the same ranking |
-| `test_multipackage.py` | querying several packages as one corpus, including key configuration and the reporting of a missing package |
-| `test_reporting.py` | that the summary separates a document measured and found short from one that could not be measured at all |
+| `test_entrypoints.py` | that every command the package declares can be started and can report its version, and that every MCP tool publishes the signature of the function that answers it |
 | `test_console.py` | that a document name the console cannot represent does not stop the conversion, in the parent process and in the workers |
 
-`test_multilingual.py` is skipped when the `multilingual` extra is not installed,
-which is a supported configuration.
+Tests that need a model skip themselves when it is absent, so the suite passes
+on a plain `pip install mdcx` as well as on `[all]`. Seven files depend on the
+`multilingual` extra and one on `tables`.
+
+Continuous integration runs the suite on Python 3.11 and 3.13, on Linux and
+Windows.
 
 ## Contributing
 
 Issues and pull requests are accepted at
 [github.com/jorgell23-sys/mdcx](https://github.com/jorgell23-sys/mdcx).
 
-A change to retrieval or conversion should be accompanied by the measurement that
-justifies it, run against the test corpora in `tests/data/`. A pull request is
-expected to leave the existing test suite passing.
+A change needs a test that has been seen to fail without it, and a change about
+cost or quality needs the measurement that justifies it. [CONTRIBUTING.md](CONTRIBUTING.md)
+sets out what makes a report act on itself and what a pull request is expected
+to carry; [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) covers the rest.
 
 ## Security
 
@@ -571,9 +685,11 @@ Conceived and directed by Jorge Ellena G., implemented with the assistance of
 Claude (Anthropic).
 
 Design decisions in this package are recorded alongside the measurements that
-justify them, including those that were rejected. Reducing the candidate pool
-during retrieval, for example, was measured as approximately ten times faster and
-was rejected because it lowered accuracy from 19 to 17 of 20 queries.
+justify them, including the ones that were rejected. Several constants here are
+the third value that was tried, and the two that failed are written down beside
+them so the next attempt starts somewhere new. Where no measurement separated
+two options, that is recorded too, rather than settled by a heuristic that
+happened to fit the material at hand.
 
 ## Citation
 

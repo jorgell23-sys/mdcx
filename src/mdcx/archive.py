@@ -67,10 +67,23 @@ KEY_BYTES = 32
 # a wrong row without raising.
 _CONNECTION_LOCK = threading.RLock()
 
-# Maps a connection to the digest of the package it holds, so cached statistics
-# are keyed by content rather than by id(), which Python recycles after garbage
-# collection and could alias a stale entry from a closed package.
-_CONNECTION_KEYS: dict[int, str] = {}
+class _Package(sqlite3.Connection):
+    """A connection that carries the identity of the package it holds.
+
+    The identity has to live on the connection rather than in a table keyed by
+    its address. An address is reused as soon as the object at it is collected,
+    and the caches here are never invalidated -- correctly, since a package is
+    immutable once written -- so one keyed by an address hands a newly opened
+    package whatever a closed one left behind. Held here it cannot outlive the
+    connection, and a side table that grew for the life of the process goes with
+    it.
+
+    sqlite3.Connection is a C type: it takes no attributes and no weak
+    references. A subclass declared in Python takes both, and connect() accepts
+    it as a factory.
+    """
+
+    digest: str | None = None
 
 def _derive_key(key: str, salt: bytes) -> bytes:
     memory = 128 * SCRYPT_N * SCRYPT_R
@@ -446,25 +459,53 @@ def has_vectors(connection: sqlite3.Connection) -> bool:
     return connection.execute("SELECT 1 FROM passage_vector LIMIT 1").fetchone() is not None
 
 
-_VECTOR_CACHE: dict[int, tuple] = {}
+_VECTOR_CACHE: dict[str, tuple] = {}
+
+
+def _cache_key(connection: sqlite3.Connection) -> str | None:
+    """What identifies the package a connection holds, or None when unknown.
+
+    Never id(connection). An address is reused as soon as a connection is
+    dropped and collected, so a cache keyed by one hands a newly opened package
+    whatever a closed one left behind -- and none of these caches is ever
+    invalidated, because a package is immutable once written.
+
+    That is not hypothetical. The vector cache was keyed this way, and a package
+    opened at a recycled address answered with the vectors of the package that
+    had been there before. The reply looked correct: the passage text is fetched
+    from this connection by passage id, so the document names and pseudopaths
+    were its own. Only the ranking and the cosine belonged to another corpus,
+    which is the one thing nothing on the reply shows.
+
+    open_package records the digest of the body it decrypted on the connection
+    itself. Equal digest means equal content, so it is a key that means the same
+    thing for two connections onto the same package and cannot mean anything for
+    two different ones.
+    """
+    return getattr(connection, "digest", None)
 
 
 def _vectors(connection: sqlite3.Connection):
-    """The matrix of passage vectors, read once per connection.
+    """The matrix of passage vectors, read once per package.
 
     Reading and assembling them takes long enough to be felt on a corpus of many
     passages, and a server answers many queries against the same package.
+
+    A connection this module did not open carries no digest, and is read every
+    time rather than cached under a key that cannot distinguish it from another.
     """
     import numpy as np
 
-    clave = id(connection)
-    if clave in _VECTOR_CACHE:
+    clave = _cache_key(connection)
+    if clave is not None and clave in _VECTOR_CACHE:
         return _VECTOR_CACHE[clave]
     filas = connection.execute(
         "SELECT passage_id, vector FROM passage_vector ORDER BY passage_id").fetchall()
     identificadores = [f[0] for f in filas]
     matriz = np.frombuffer(b"".join(f[1] for f in filas), dtype=np.float16)
     matriz = matriz.reshape(len(filas), -1).astype(np.float32)
+    if clave is None:
+        return identificadores, matriz
     _VECTOR_CACHE[clave] = (identificadores, matriz)
     return _VECTOR_CACHE[clave]
 
@@ -608,9 +649,10 @@ def open_package(path: Path, key: str) -> tuple[sqlite3.Connection, dict]:
     # running the same statement can collide on the per-connection prepared
     # statement cache and return a wrong row without raising. Every access is
     # therefore serialised through _CONNECTION_LOCK.
-    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection = sqlite3.connect(":memory:", check_same_thread=False,
+                                 factory=_Package)
     connection.deserialize(lzma.decompress(compressed))
-    _CONNECTION_KEYS[id(connection)] = header["body_digest"]
+    connection.digest = header["body_digest"]
     return connection, header
 
 _SQL_TEMPLATE = """
@@ -627,14 +669,15 @@ def document_column(connection: sqlite3.Connection) -> str:
     Packages written before 1.0.3 use a Spanish column name. Reading it from the
     table definition keeps those packages usable instead of failing on a name.
     """
-    key = _CONNECTION_KEYS.get(id(connection), id(connection))
-    cached = _COLUMN_CACHE.get(key)
+    key = _cache_key(connection)
+    cached = _COLUMN_CACHE.get(key) if key is not None else None
     if cached:
         return cached
     with _CONNECTION_LOCK:
         names = [row[1] for row in connection.execute("PRAGMA table_info(passage)")]
     name = "document_id" if "document_id" in names else "documento_id"
-    _COLUMN_CACHE[key] = name
+    if key is not None:
+        _COLUMN_CACHE[key] = name
     return name
 
 
@@ -752,6 +795,15 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
     if mode not in ("auto", "lexical", "semantic"):
         raise ValueError(f"mode must be auto, lexical or semantic, not {mode!r}")
 
+    # The direction is stored uppercase and arrives lowercase: the CLI declares
+    # its choices that way and the MCP server lowercases whatever it is handed.
+    # The lexical engine folded it and the dense one compared it raw, so a
+    # restricted query silently discarded every dense result -- and with it the
+    # only engine that reaches a document written in another language. It looked
+    # like a corpus with nothing to say rather than a filter that matched
+    # nothing. Folding it once here leaves both engines comparing the same form.
+    only = only.upper() if only else None
+
     lexical = [] if mode == "semantic" else lexical_query(
         connection, query_text, limit * 3, only)
     if mode == "lexical":
@@ -818,18 +870,25 @@ _STATS_CACHE: dict = {}
 _COLUMN_CACHE: dict = {}
 
 def _corpus_statistics(connection: sqlite3.Connection) -> tuple[dict, int, float]:
-    """Document frequency per term and mean passage length, as packed."""
-    key = _CONNECTION_KEYS.get(id(connection), id(connection))
-    if key not in _STATS_CACHE:
-        with _CONNECTION_LOCK:
-            df = {t: n for t, n in connection.execute("SELECT term, passages FROM df")}
-            row = connection.execute(
-                "SELECT value FROM meta WHERE key='passages'").fetchone()
-        n = int(json.loads(row[0])) if row else max(len(df), 1)
+    """Document frequency per term and mean passage length, as packed.
+
+    These feed BM25 directly, so reading them from another package does not
+    fail: it reweights every term against a corpus the passages were not in.
+    """
+    key = _cache_key(connection)
+    if key is not None and key in _STATS_CACHE:
+        return _STATS_CACHE[key]
+    with _CONNECTION_LOCK:
+        df = {t: n for t, n in connection.execute("SELECT term, passages FROM df")}
         row = connection.execute(
-            "SELECT value FROM meta WHERE key='largo_medio_pasaje'").fetchone()
-        lm = float(json.loads(row[0])) if row else 60.0
-        _STATS_CACHE[key] = (df, n, lm)
+            "SELECT value FROM meta WHERE key='passages'").fetchone()
+    n = int(json.loads(row[0])) if row else max(len(df), 1)
+    row = connection.execute(
+        "SELECT value FROM meta WHERE key='largo_medio_pasaje'").fetchone()
+    lm = float(json.loads(row[0])) if row else 60.0
+    if key is None:
+        return df, n, lm
+    _STATS_CACHE[key] = (df, n, lm)
     return _STATS_CACHE[key]
 
 def export(path: Path, key: str, target: Path) -> dict:
@@ -864,6 +923,12 @@ def main() -> int:
     console.configure()
 
     ap = argparse.ArgumentParser(description="The .mdcx format: an indexed, encrypted, portable corpus")
+    # The version, from the installed metadata. SECURITY.md asks a reporter to
+    # quote it, and until now the command it names for that errored out. The
+    # import is local because __init__ imports this module, and a module-level
+    # import would close the circle.
+    from . import __version__
+    ap.add_argument("--version", action="version", version=f"mdcx {__version__}")
     sub = ap.add_subparsers(dest="action", required=True)
 
     e = sub.add_parser("pack")
@@ -962,9 +1027,16 @@ def main() -> int:
     connection, header = open_package(Path(args.path), args.key)
     results = query(connection, args.query_text, args.limit, args.only, args.mode)
     print(f"{len(results)} passage(s)\n")
-    for r in results:
+    # The position, not the score. The list is merged by reciprocal rank, and
+    # the numbers behind it share no scale: a BM25 score is unbounded and
+    # depends on the corpus it was measured in, a cosine runs from zero to one
+    # and does not. Printed in one column they invited exactly the comparison
+    # they cannot support -- 3.589 above 0.344 reads as far better and means
+    # nothing of the sort. The MCP reply dropped the score for this reason;
+    # this surface went on printing it.
+    for posicion, r in enumerate(results, start=1):
         print("-" * 96)
-        print(f"[{r['source']}] {r['document']}   [score {r['score']}]")
+        print(f"{posicion}. [{r['source']}] {r['document']}")
         print(f"{r['pseudopath']}")
         print(r["passage"][:1200])
     return 0

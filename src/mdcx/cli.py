@@ -162,6 +162,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Convert documents to Markdown with fidelity verification."
     )
+    from . import __version__
+    ap.add_argument("--version", action="version", version=f"mdcx {__version__}")
     ap.add_argument("--input", default=str(ROOT / "Input"), help="source folder")
     ap.add_argument("--output", default=str(ROOT / "Output"), help="target folder")
     ap.add_argument("--max-cores", type=int, default=MAX_CORES_DEFAULT,

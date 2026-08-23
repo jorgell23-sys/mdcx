@@ -95,6 +95,28 @@ def test_every_field_of_a_reply_is_accounted_for(served):
             f"un pasaje trae '{campo}' y la descripcion no lo menciona")
 
 
+def test_every_argument_a_tool_accepts_is_explained(served):
+    """A parameter the caller can see but cannot understand is worse than none.
+
+    The schema publishes the name and the type; neither says what values are
+    accepted. `direction` was declared, took exactly two words, silently ignored
+    everything else, and appeared in no description -- so a caller could only
+    guess, and a wrong guess widened the search without saying so.
+
+    The name alone in the description is the bar here. What the values are is
+    prose, and prose is not something a test can judge; that a caller is told
+    the parameter exists at all is.
+    """
+    tools = asyncio.run(served.list_tools())
+    assert tools, "the server publishes no tools"
+    for tool in tools:
+        texto = f"{tool.title or ''} {tool.description or ''}".lower()
+        declarados = (tool.input_schema or {}).get("properties", {})
+        for nombre in declarados:
+            assert nombre.lower() in texto, (
+                f"{tool.name} accepts {nombre!r} and never mentions it")
+
+
 def test_the_description_does_not_promise_a_field_that_stopped_arriving(served):
     """The score was replaced by a rank, and saying otherwise invites sorting by it."""
     respuesta = _replied(served, "search", {"query": "what is an acid"})

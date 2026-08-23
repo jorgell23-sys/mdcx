@@ -8,12 +8,17 @@ authors:
 repository-code: "https://github.com/jorgell23-sys/mdcx"
 doi: 10.5281/zenodo.22015991
 abstract: >-
-  Converts complete document collections to Markdown, checking each file against
-  the text the original actually exposes, packages the resulting corpus with its
-  index and provenance into a single encrypted file, and exposes it to agents
-  through the Model Context Protocol. Over a collection of 99 documents, answering
-  one query through the package costs 435 model tokens against the 2,265,488
-  required to read the originals.
+  Converts complete document collections to Markdown and measures each conversion
+  against the text the original exposes, read with a library independent from the
+  engine that produced it, so that fidelity is reported rather than assumed; over
+  the collection used during development, 99 documents and 1,144,553 reference
+  tokens, coverage reached 99.948%. The corpus is packaged with its index and the
+  provenance of every passage into a single file encrypted with AES-256-GCM, and
+  served to agents through the Model Context Protocol. Retrieval merges word
+  matching with a multilingual embedding model by reciprocal rank, which reaches
+  documents that share the subject of a query without sharing its vocabulary or
+  its language. Answering one query through the package cost 435 model tokens
+  against the 2,265,488 required to read the same collection in full.
 keywords:
   - document conversion
   - markdown
@@ -21,5 +26,5 @@ keywords:
   - model context protocol
   - provenance
 license: Apache-2.0
-version: 1.7.0
+version: 1.7.1
 date-released: "2026-08-22"

@@ -1,8 +1,8 @@
-"""Checks what the server says about an answer it cannot give, and three
-related places where a number meant something other than it appeared to.
+"""Checks what the server says about an answer it cannot give, and the places
+where a number meant something other than it appeared to.
 
 The MCP exists so a source can be cited instead of recalled, which only works
-if the person asking can tell an answer from the nearest thing to one. Four
+if the person asking can tell an answer from the nearest thing to one. Five
 things stood in the way, and they share a shape: a figure that looks like a
 measurement and is not.
 
@@ -18,6 +18,9 @@ measurement and is not.
   text -- a half-title, a blank verso -- which is every book.
 - A page ruled for other reasons was read as a table, and its paragraphs came
   back cut into cells.
+- The same mixed score went on being printed by `mdcx search` after the MCP
+  reply had stopped carrying it. One surface was corrected and the other was
+  not, which is the ordinary way a fix half survives.
 """
 from __future__ import annotations
 
@@ -50,6 +53,39 @@ def test_a_passage_carries_its_position_and_not_a_score():
     assert '"rank": position' in fuente
     assert '"score": item.get("score")' not in fuente, (
         "publicar el score invita a ordenar y filtrar por el, y no es valido")
+
+
+def test_the_command_line_prints_a_position_and_not_a_score(tmp_path, capsys):
+    """The correction has to hold on every surface, not only on the MCP reply.
+
+    Run rather than read: the number was printed by the command, so the command
+    is what has to be checked. A lexical result and a dense one arrive in the
+    same list with scores of 3.589 and 0.344, which are not on one scale and are
+    not what the list is ordered by.
+    """
+    from mdcx import archive
+
+    recibidos = tmp_path / "src" / "Received"
+    recibidos.mkdir(parents=True)
+    (recibidos / "printing.md").write_text(
+        "---\nsource_format: pdf\n---\n\n# Printing\n\n"
+        "Gutenberg built the printing press with movable type in Mainz.\n",
+        encoding="utf-8")
+    paquete = tmp_path / "corpus.mdcx"
+    archive.pack(tmp_path / "src", paquete, "k")
+
+    argv = sys.argv
+    sys.argv = ["mdcx", "search", str(paquete), "printing press", "--key", "k"]
+    try:
+        assert archive.main() == 0
+    finally:
+        sys.argv = argv
+
+    salida = capsys.readouterr().out
+    assert "printing" in salida, "the passage should have been found"
+    assert "score" not in salida.lower(), (
+        "a score printed over a merged list invites a comparison it cannot support")
+    assert "1. " in salida, "the position is what the merge establishes"
 
 
 def test_both_conditions_are_required_because_each_alone_was_wrong():

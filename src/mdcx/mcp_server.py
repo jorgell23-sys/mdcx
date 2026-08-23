@@ -378,7 +378,13 @@ def create_server():
             "When the package was built with meaning indexed, a query reaches "
             "documents written in other languages as well; use info to see "
             "whether it was. Without that, matching is by word and the query "
-            "should be written in the language of the documents."
+            "should be written in the language of the documents. "
+            "`limit` is how many passages to return, from 1 to 20; a value "
+            "outside that range is brought within it rather than refused. "
+            "Set `direction` to `received` or `sent` to restrict the search to "
+            "one side of a correspondence; omit it to search all of them. Any "
+            "other value is treated as omitted, so a search is never narrowed "
+            "by a word this tool does not recognise."
         ),
     )
     async def search(query: str, limit: int = 5,

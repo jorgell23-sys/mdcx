@@ -70,6 +70,26 @@ def test_every_console_script_starts(script):
     assert "usage" in done.stdout.lower()
 
 
+@pytest.mark.parametrize("script", SCRIPTS)
+def test_every_console_script_reports_its_version(script):
+    """SECURITY.md asks a reporter to quote the version, so it has to be gettable.
+
+    It asked for `mdcx --version`, which parsed as a missing subcommand and
+    exited 2. A policy that names a command is a promise that the command
+    exists, and nothing here was checking that one did.
+    """
+    module, function = _declared_scripts()[script].split(":")
+    done = subprocess.run(
+        [sys.executable, "-c",
+         f"import sys; sys.argv = ['{script}', '--version']\n"
+         f"from {module} import {function}\n"
+         f"raise SystemExit({function}())"],
+        capture_output=True, text=True, timeout=180,
+        env=dict(os.environ, PYTHONPATH=str(SRC), PYTHONIOENCODING="utf-8"))
+    assert done.returncode == 0, f"{script} --version exited {done.returncode}: {done.stderr}"
+    assert "mdcx" in done.stdout.lower()
+
+
 @pytest.fixture
 def one_package(tmp_path, monkeypatch):
     """A package with a single document, configured as the served corpus."""

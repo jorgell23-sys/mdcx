@@ -1,103 +1,96 @@
-# Publishing mdcx to PyPI
+# Releasing mdcx
 
-Everything is prepared. Two things need a person: creating the account and
-generating a token. The rest is one command.
+A release goes to four places. They are not interchangeable, and a release that
+reaches only some of them is a release that reports its version differently
+depending on where it is asked.
 
-## Why publish here
+| Channel | What it carries | How it gets there |
+|---|---|---|
+| PyPI | the wheel and the source distribution — what `pip install` fetches | `twine upload` |
+| MCP Registry | metadata only, so MCP clients can discover the server | `mcp-publisher publish` |
+| GitHub Releases | the tag, the notes, and the artefacts | `gh release create` |
+| Zenodo | the archived copy and the DOI | automatically, from the GitHub release |
 
-Today someone has to clone the repository and point pip at the folder. After
-publishing, anyone runs:
+Zenodo is the only one that happens on its own, and only because the repository
+is connected to it. The concept DOI `10.5281/zenodo.22015991` always resolves to
+the newest version, so it is the one to cite.
 
-    pip install mdcx
+## The version lives in three files
 
-It is also a prerequisite for the MCP Registry, which stores only metadata and
-requires the package to exist in an index first.
+A release begins by moving all of them together. They disagree silently, and
+each is read by a different audience:
 
-## Step 1: create the account
+    pyproject.toml    version = "1.7.0"          what pip reports
+    server.json       "version" twice            the registry entry and its package reference
+    CITATION.cff      version, date-released     what a citation quotes
 
-Go to https://pypi.org/account/register/ and create an account. Two-factor
-authentication is mandatory; an authenticator application on the phone is enough.
+`src/mdcx/__init__.py` deliberately does **not** carry a version. It reads the
+installed metadata instead, because a number written in two places is a number
+that will disagree with itself — this one had already drifted three releases
+behind what the package actually was.
 
-## Step 2: generate a token
+## Checklist
 
-At https://pypi.org/manage/account/token/ create an API token.
+1. **Bump** the three files above. `date-released` in `CITATION.cff` is the day
+   of the release, not the day the work started.
+2. **Test.** `python -m pytest tests/ -q`, with the extras installed, so nothing
+   skips silently. Continuous integration runs the same suite on Python 3.11 and
+   3.13 across Linux and Windows, and has caught things one machine cannot.
+3. **Build.** `python -m build` then `python -m twine check dist/*`. The check
+   is what says the README will render on PyPI rather than appear as raw text.
+4. **Upload.** `python -m twine upload dist/*`, with `__token__` as the username
+   and the API token as the password.
+5. **Verify against what was published**, not against the working copy: install
+   the version from PyPI into a clean interpreter and run the commands. A local
+   tree passing proves the tree, not the artefact.
+6. **Register.** `mcp-publisher login github` then `mcp-publisher publish`.
+7. **Release on GitHub.** `gh release create` with the tag and the notes. Zenodo
+   picks it up from there.
 
-Scope: choose "Entire account" for the first upload. The project does not exist
-yet, so a project-scoped token cannot be created until after the first release.
-Once uploaded, replace it with a token scoped to `mdcx` alone and delete the
-account-wide one.
+The index can lag. A version that uploads successfully and does not appear in
+the simple index for a few minutes is usually CDN caching rather than a rejected
+upload — that has happened here and resolved itself.
 
-The token is shown once. It begins with `pypi-`.
+## A published version cannot be replaced
 
-## Step 3: test upload (recommended)
+It can be deleted from PyPI, but the number can never be reused. If 1.7.0 has a
+defect, the fix is 1.7.1. This is why a rehearsal on TestPyPI is worth the extra
+minutes for anything that changes packaging rather than code:
 
-TestPyPI is a separate copy of PyPI meant for rehearsal. It needs its own account
-at https://test.pypi.org/account/register/ and its own token.
+    python -m twine upload --repository testpypi dist/*
 
-    cd publicar
-    ..\.venv\Scripts\python.exe -m twine upload --repository testpypi dist/*
+TestPyPI is a separate service with its own account and its own token.
 
-It will ask for a username, which is `__token__` literally, and the token as
-password.
+## Ownership of the registry name
 
-Then check the result at https://test.pypi.org/project/mdcx/ and install it in a
-clean environment:
+The registry verifies ownership by looking for a marker in the published package
+description. The README carries
 
-    pip install --index-url https://test.pypi.org/simple/ \
-                --extra-index-url https://pypi.org/simple/ "mdcx[mcp]"
+    <!-- mcp-name: io.github.jorgell23-sys/markdown-document-search -->
 
-The second index is required because TestPyPI does not host the dependencies.
-
-## Step 4: real upload
-
-    cd publicar
-    ..\.venv\Scripts\python.exe -m twine upload dist/*
-
-Same credentials: `__token__` as username, the token as password.
-
-## What is uploaded
-
-    dist/mdcx-1.0.0-py3-none-any.whl    the wheel, what pip installs
-    dist/mdcx-1.0.0.tar.gz              the source distribution, which anyone
-                                        can inspect and rebuild
-
-Both passed `twine check`. Verified by installing the wheel in a clean
-interpreter: the three commands appear, and packing, signing and verification
-work.
-
-## Irreversible
-
-A version published to PyPI cannot be replaced. It can be deleted, but that
-number can never be reused: if 1.0.0 has a defect, the fix is 1.0.1.
-
-This is why the rehearsal on TestPyPI is worth the extra ten minutes.
-
-## After publishing
-
-The README installation table becomes true as written. Then the MCP Registry
-becomes possible, which is what puts the server in the catalogue that Claude,
-ChatGPT and the other clients consult.
-
-## Step 5: the MCP Registry
-
-Once the package is on PyPI, the server can be listed in the official registry at
-`registry.modelcontextprotocol.io`, which is the catalogue MCP clients consult to
-discover available servers.
-
-The registry stores metadata only, which is why PyPI comes first. Ownership is
-verified by looking for a marker inside the package description: this repository
-carries `<!-- mcp-name: io.github.jorgell23-sys/markdown-document-search -->` at the top of the
-README, and `server.json` declares the same name. Both must match, and the marker
-must already be in the published version: adding it later would require a new
-release.
-
-Publishing uses the official CLI:
-
-    mcp-publisher login github
-    mcp-publisher publish
+at the top, and `server.json` declares the same name. Both must match, and the
+marker must already be present **in the published version** — adding it
+afterwards would need a further release.
 
 The `io.github.jorgell23-sys/*` namespace is granted by authenticating with that
-GitHub account, so no separate ownership claim is needed.
+GitHub account, so there is no separate ownership claim to file.
 
-The registry is in preview: breaking changes or data resets may occur before
-general availability.
+The registry is in preview; breaking changes or data resets may still occur.
+
+## First-time setup
+
+Only needed once, and only these two steps need a person.
+
+**PyPI account and token.** Register at https://pypi.org/account/register/;
+two-factor authentication is mandatory. Create an API token at
+https://pypi.org/manage/account/token/. Scope it to the `mdcx` project — an
+account-wide token is only necessary before the project exists. The token is
+shown once and begins with `pypi-`.
+
+**GitHub authentication** for `mcp-publisher login github` and for `gh`, which
+use a device flow: the command prints a code, and a person enters it in the
+browser. The code expires; if it does, ask for another rather than reusing it.
+
+Tokens belong outside the repository. Check `.gitignore` before putting a
+credential anywhere near the working tree, and never in a tracked file — a file
+listing ignore rules does not ignore itself.

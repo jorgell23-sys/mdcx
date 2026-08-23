@@ -50,3 +50,22 @@ jobs:
           mdcx --help
           mdcx-convert --help
           mdcx-search --help
+          mdcx --version
+
+      - name: Check that the installed version is the declared one
+        # --version reads the installed metadata, which is the one thing a test
+        # running from the source tree cannot exercise: there the metadata
+        # belongs to whatever happens to be installed, not to the code under
+        # test. Here the package is installed from this checkout, so the two
+        # must agree.
+        shell: python
+        run: |
+          import subprocess, sys, tomllib
+          with open("pyproject.toml", "rb") as handle:
+              declarada = tomllib.load(handle)["project"]["version"]
+          salida = subprocess.run(["mdcx", "--version"],
+                                  capture_output=True, text=True)
+          if declarada not in salida.stdout:
+              sys.exit(f"pyproject declares {declarada}, the command reports "
+                       f"{salida.stdout.strip()!r}")
+          print(f"version {declarada} agrees")

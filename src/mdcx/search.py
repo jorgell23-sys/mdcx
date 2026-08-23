@@ -520,13 +520,22 @@ def search_literal(docs: list[dict], frase: str, context: int = 1,
 def main() -> int:
     console.configure()
 
-    ap = argparse.ArgumentParser(description="Busqueda con cita exacta sobre los .md convertidos.")
-    ap.add_argument("frase", nargs="?", help="text a search_literal")
+    ap = argparse.ArgumentParser(
+        description="Search the converted .md files, quoting each passage exactly.")
+    from . import __version__
+    ap.add_argument("--version", action="version", version=f"mdcx {__version__}")
+    ap.add_argument("frase", metavar="PHRASE", nargs="?",
+                    help="the phrase or question to search for")
     ap.add_argument("--output", default="Output", help="folder holding the .md files")
-    ap.add_argument("--context", type=int, default=1, help="parrafos vecinos a incluir")
+    ap.add_argument("--context", type=int, default=1,
+                    help="neighbouring paragraphs to include with each passage")
     ap.add_argument("--only", choices=["sent", "received"], help="restrict by direction")
     ap.add_argument("--limit", type=int, default=12, help="maximum passages")
-    ap.add_argument("--frases", help="file with one phrase per line")
+    # --frases was the original spelling and is kept so a script written against
+    # it keeps working; the error message already pointed at --phrases, which is
+    # the name a reader of the help would look for.
+    ap.add_argument("--phrases", "--frases", dest="frases", metavar="FILE",
+                    help="file with one phrase per line")
     ap.add_argument("--json", help="write the result to a JSON file")
     ap.add_argument("--literal", action="store_true",
                     help="require the exact phrase only, without relevance fallback")
