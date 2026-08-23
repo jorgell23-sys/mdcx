@@ -635,7 +635,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-245 tests. Most of them exist because something failed once; the file that
+254 tests. Most of them exist because something failed once; the file that
 covers it says which, so a correction that is undone is noticed.
 
 **Retrieval**
@@ -671,7 +671,7 @@ covers it says which, so a correction that is undone is noticed.
 |---|---|
 | `test_stress.py` | hostile inputs: empty and corrupted files, names in other alphabets, malformed queries including SQL injection, truncated and tampered packages, concurrent access, and compaction against content loss |
 | `test_entrypoints.py` | that every command the package declares can be started and can report its version, and that every MCP tool publishes the signature of the function that answers it |
-| `test_machine_share.py` | that a conversion leaves a share of the machine free, on machines from one processor to a hundred and twenty-eight, counting threads as well as processes |
+| `test_machine_share.py` | that a conversion leaves a share of the machine free, counting threads as well as processes; that the lanes are sized from the video memory, the work and the processors rather than from constants; and that a turn on the card is given back even when the model raises |
 | `test_console.py` | that a document name the console cannot represent does not stop the conversion, in the parent process and in the workers |
 
 Tests that need a model skip themselves when it is absent, so the suite passes

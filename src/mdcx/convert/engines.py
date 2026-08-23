@@ -31,6 +31,55 @@ _CONVERTERS: dict = {}
 
 _DEVICE_CACHE: dict = {}
 
+# How many processes may use the card at once. Video memory is what runs out
+# first here: a process holding the table models with a full batch takes around
+# 1,384 MiB, so eight of them ask for 11 GB of a card that has 6. Measured, the
+# run does not fail -- it stalls, at 100% utilisation and 5,714 MiB of 6,144,
+# with nine documents of twelve done after eight minutes and no further
+# progress. With three processes allowed on the card the same twelve finish in
+# 72 seconds.
+#
+# The lane used to be what bounded this, by being small and being the only lane
+# whose workers were given the engines at all. That made the lane decide two
+# separate things -- which documents may use the card, and which may use the
+# structured engine -- and the second was never what anyone wanted: it cost the
+# CPU lane a third of its table rows and every list item.
+#
+# So the bound is stated here instead, where the card is actually used, and the
+# lane goes back to being about scheduling. Set per worker; where it is not set,
+# as in a single process or a test, there is nothing to contend for and nothing
+# to wait on.
+_GPU_GATE = None
+
+
+def set_gpu_gate(gate) -> None:
+    """Give this worker the gate that limits how many processes use the card."""
+    global _GPU_GATE
+    _GPU_GATE = gate
+
+
+class _Turn:
+    """The right to use the card, released as soon as the model is done with it.
+
+    Held around the model call rather than around the document, so a process
+    that spends most of its time extracting text is not occupying a place on
+    the card while it does.
+    """
+
+    def __enter__(self):
+        if _GPU_GATE is not None:
+            _GPU_GATE.acquire()
+        return self
+
+    def __exit__(self, *excepcion) -> bool:
+        if _GPU_GATE is not None:
+            _GPU_GATE.release()
+        return False
+
+
+def gpu_turn() -> "_Turn":
+    return _Turn()
+
 def gpu_available() -> bool:
     if "gpu" not in _DEVICE_CACHE:
         try:
@@ -168,7 +217,10 @@ def _full_export_kwargs() -> dict:
 def docling_convert(path: Path, ocr: bool = False) -> tuple[str, dict, dict | None]:
     """Devuelve (markdown, metadatos, documento_json_sin_perdida)."""
     conv = _get_docling_converter(ocr)
-    result = conv.convert(str(path))
+    # Layout analysis is the other thing here that reserves the card, and the
+    # heaviest: a document without a text layer is read page by page by a model.
+    with gpu_turn():
+        result = conv.convert(str(path))
     doc = result.document
     try:
         md = doc.export_to_markdown(**_full_export_kwargs())
@@ -334,7 +386,8 @@ def _read_shapes(path: Path, pages: list[str], meta: dict,
         targets = [document[index] for index in pending]
         textpages = [page.get_textpage() for page in targets]
         try:
-            found = _tatr.tables_on_pages(targets, textpages)
+            with gpu_turn():
+                found = _tatr.tables_on_pages(targets, textpages)
         except Exception:  # noqa: BLE001
             found = [None] * len(targets)
         for position, (index, table) in enumerate(zip(pending, found)):
