@@ -178,6 +178,35 @@ it, and the resulting failure is indistinguishable from a damaged document.
 Plain text carries no signature, so its extension determines the format. A file
 whose content identifies no known format is skipped rather than assumed.
 
+### How much of the machine it uses
+
+Converting a library is the heaviest thing this package does, and it runs on a
+machine somebody is working at. A fifth of the processors are left free and the
+rest are used, so the figure follows the machine rather than a constant: nine
+processes on twelve processors, three on four.
+
+```
+mdcx-convert --input ./Documents --output ./Documents_md --max-cores 4
+```
+
+The cap is a budget for the whole run rather than a grant to each process. It is
+divided among the workers and each is told its share, because the structured
+engine asks for four threads of its own: eight workers taking that at face value
+would ask for thirty-two threads on a machine of twelve, and the share that was
+carefully left free would be spent again inside the pool.
+
+Documents are dispatched to two lanes. The GPU lane is small on purpose and is
+the only one allowed to use the card, because video memory is what runs out
+first: twelve processes each loading the table models reached 5,893 MiB of 6,144
+and ran three times slower than three processes did. It receives the documents
+that expose no text, which have nothing to extract and must be read by optical
+recognition.
+
+Everything else goes to the larger lane and runs on the processor, with the same
+engines available to it. The lane decides which device the work runs on, not
+which engines exist: a document that needs layout analysis gets it in either
+lane, on the card in one and on the processor in the other.
+
 ### Checking a conversion before packaging
 
 `mdcx-search` searches the converted Markdown directly, before there is a
@@ -606,7 +635,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-206 tests. Most of them exist because something failed once; the file that
+245 tests. Most of them exist because something failed once; the file that
 covers it says which, so a correction that is undone is noticed.
 
 **Retrieval**
@@ -629,6 +658,7 @@ covers it says which, so a correction that is undone is noticed.
 |---|---|
 | `test_formats.py` | identification of a file by content rather than extension, in both directions, and the extraction of reference text from EPUB |
 | `test_conversion_order.py` | which engine reads a document, when the search for a better one stops, and what rejects a table that is not one |
+| `test_single_extraction.py` | that a document is extracted once however many engines read it, and that what each is given is its own to edit |
 | `test_table_cells.py` | that a character of a drawn table lands in exactly one cell, including a glyph the outer rule cuts |
 | `test_table_shapes.py` | the reading of a table the page does not draw, where the model supplies the shape and the text layer the words |
 | `test_headings.py` | that a chapter keeps the section titles its book already carried, whichever engine converted it |
@@ -641,6 +671,7 @@ covers it says which, so a correction that is undone is noticed.
 |---|---|
 | `test_stress.py` | hostile inputs: empty and corrupted files, names in other alphabets, malformed queries including SQL injection, truncated and tampered packages, concurrent access, and compaction against content loss |
 | `test_entrypoints.py` | that every command the package declares can be started and can report its version, and that every MCP tool publishes the signature of the function that answers it |
+| `test_machine_share.py` | that a conversion leaves a share of the machine free, on machines from one processor to a hundred and twenty-eight, counting threads as well as processes |
 | `test_console.py` | that a document name the console cannot represent does not stop the conversion, in the parent process and in the workers |
 
 Tests that need a model skip themselves when it is absent, so the suite passes

@@ -49,8 +49,22 @@ def device_name() -> str:
     gpu_available()
     return _DEVICE_CACHE.get("name", "CPU")
 
-def _accelerator_options(threads: int = 4):
-    """Configure Docling to use CUDA when available, falling back cleanly to CPU."""
+def _accelerator_options(threads: int | None = None):
+    """Configure Docling to use CUDA when available, falling back cleanly to CPU.
+
+    The thread count is the budget this worker was started with, not a constant.
+    Four apiece was the constant, and eight workers asking for four threads each
+    is thirty-two threads on a machine of twelve: the share the process cap was
+    careful to leave free was spent again inside the pool, and the machine
+    stopped being usable while a library converted.
+    """
+    import os as _os
+
+    if threads is None:
+        try:
+            threads = max(1, int(_os.environ.get("OMP_NUM_THREADS", "4")))
+        except ValueError:
+            threads = 4
     try:
         from docling.datamodel.pipeline_options import AcceleratorDevice, AcceleratorOptions
 
@@ -176,7 +190,7 @@ def docling_convert(path: Path, ocr: bool = False) -> tuple[str, dict, dict | No
 # small part of the page and dropping the rest loses more than it saves.
 TABLE_DOMINATES = 0.6
 
-def _native_pages(path: Path, headings: dict | None = None) -> tuple[list[str], dict]:
+def _extract_pages(path: Path, headings: dict | None = None) -> tuple[list[str], dict]:
     """Each page as Markdown, and which pages this engine could not settle.
 
     Tables are located from what is drawn on the page and from the caption the
@@ -256,6 +270,42 @@ def _native_pages(path: Path, headings: dict | None = None) -> tuple[list[str], 
     finally:
         doc.close()
     return pages, meta
+
+# The extraction of the document being converted, kept only until another one
+# starts.
+#
+# Both cheap engines begin here, and the pipeline offers them one after the
+# other: the native attempt extracts the document, and the hybrid -- which is
+# the native engine plus a second look at the pages it could not settle -- used
+# to extract it again. Same path, same headings, nothing in between, so by
+# construction the same result. Measured at 3.0 ms a page, on every document
+# that reaches the hybrid: 208 of 292 chapters in one run, about a tenth of it.
+#
+# One entry, because the repeat is immediate. Keeping more would hold whole
+# books in memory for a saving that has already been taken.
+_LAST_EXTRACTION: dict = {}
+
+
+def _native_pages(path: Path, headings: dict | None = None) -> tuple[list[str], dict]:
+    """The extraction, done once per document however many engines ask for it."""
+    if (_LAST_EXTRACTION.get("path") == str(path)
+            and _LAST_EXTRACTION.get("headings") == headings):
+        pages, meta = _LAST_EXTRACTION["result"]
+    else:
+        pages, meta = _extract_pages(path, headings)
+        _LAST_EXTRACTION.clear()
+        _LAST_EXTRACTION.update(path=str(path), headings=headings,
+                                result=(pages, meta))
+
+    # A copy, because a caller edits what it is given: _read_shapes replaces,
+    # in place, each page it recovered a table from. Sharing the list would
+    # hand the next engine a document the previous one had already rewritten,
+    # which is the same class of fault as sharing it between packages.
+    copia = dict(meta)
+    if isinstance(copia.get("unresolved"), list):
+        copia["unresolved"] = list(copia["unresolved"])
+    return list(pages), copia
+
 
 def native_pdf(path: Path, headings: dict | None = None) -> tuple[str, dict, None]:
     """PDF to Markdown by layout blocks, preserving reading order and page separation."""
