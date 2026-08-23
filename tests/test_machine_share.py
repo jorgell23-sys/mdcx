@@ -157,23 +157,52 @@ def _lote(monkeypatch, libre_mib=None, hay_placa=True):
     return tatr._batch_size()
 
 
-def test_a_card_with_room_is_sent_more_pages_at_a_time(monkeypatch):
-    """The cost of a page falls with the batch: 150 ms sending one, 46 with 24.
+def test_a_worker_alone_does_not_size_its_own_batch(monkeypatch):
+    """It cannot: what is free is free for every worker that may reach the model.
 
-    Eight was a floor written for a 6 GB card, not a property of the work.
+    Sizing it from the free memory looks careful and is not. Done that way on a
+    6 GB card, three workers each took a batch of seventeen -- some 2,756 MiB
+    apiece against a budget of 1,384 -- and the card reached 96% at full
+    utilisation, which is the state the batching was meant to avoid.
     """
     from mdcx.convert import tatr
 
-    assert _lote(monkeypatch, libre_mib=5100) > tatr.BATCH_FLOOR
-    assert _lote(monkeypatch, libre_mib=24000) == tatr.BATCH_CEILING
+    assert _lote(monkeypatch, libre_mib=24000) == tatr.BATCH_FLOOR, (
+        "a worker sized the batch from memory it does not have to itself")
 
 
-def test_a_card_with_little_free_keeps_the_floor(monkeypatch):
-    """Little free memory usually means something else is running on it."""
+def test_the_batch_fits_once_every_worker_is_seated(monkeypatch):
+    """Whoever can see the whole run decides, and what it decides has to fit."""
     from mdcx.convert import tatr
 
-    assert _lote(monkeypatch, libre_mib=500) == tatr.BATCH_FLOOR
-    assert _lote(monkeypatch, libre_mib=1500) == tatr.BATCH_FLOOR
+    for libre, procesos in ((5113, 3), (5113, 1), (2000, 1), (11000, 4),
+                            (24000, 5), (80000, 8), (1000, 2)):
+        lote = tatr.batch_for(libre, procesos)
+        pedido = procesos * (tatr.MODELS_MIB + lote * tatr.BATCH_MIB)
+        asentados = procesos * (tatr.MODELS_MIB + tatr.BATCH_FLOOR * tatr.BATCH_MIB)
+        if asentados <= libre:
+            assert pedido <= libre, (
+                f"{procesos} workers with a batch of {lote} ask for {pedido} MiB "
+                f"of the {libre} free")
+
+
+def test_room_left_over_buys_a_larger_batch(monkeypatch):
+    """The cost of a page falls with the batch: 150 ms sending one, 46 with 24."""
+    from mdcx.convert import tatr
+
+    apretado = tatr.batch_for(5113, 3)
+    holgado = tatr.batch_for(5113, 1)
+    assert holgado > apretado, "the room left by fewer workers bought nothing"
+    assert tatr.batch_for(80000, 2) == tatr.BATCH_CEILING
+
+
+def test_a_card_with_no_room_left_keeps_the_floor(monkeypatch):
+    """Nothing over means nothing to spend, and the floor is what was budgeted."""
+    from mdcx.convert import tatr
+
+    assert tatr.batch_for(1000, 4) == tatr.BATCH_FLOOR
+    assert tatr.batch_for(None, 3) == tatr.BATCH_FLOOR
+    assert tatr.batch_for(5113, 0) == tatr.BATCH_FLOOR
 
 
 def test_the_batch_never_grows_past_where_the_curve_flattens(monkeypatch):
@@ -181,7 +210,7 @@ def test_the_batch_never_grows_past_where_the_curve_flattens(monkeypatch):
     from mdcx.convert import tatr
 
     for libre in (8000, 24000, 80000, 200000):
-        assert _lote(monkeypatch, libre_mib=libre) <= tatr.BATCH_CEILING
+        assert tatr.batch_for(libre, 1) <= tatr.BATCH_CEILING
 
 
 def test_a_machine_with_no_card_keeps_the_floor(monkeypatch):

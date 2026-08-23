@@ -81,14 +81,36 @@ THRESHOLD = 0.7
 # running, and a batch of one is the worst place on the curve.
 BATCH_FLOOR = 8
 BATCH_CEILING = 24
+
+# What the models hold before any page is sent, and what each page in flight
+# adds. Measured on a 6 GB card: 206 MiB with the models alone, 1,384 once the
+# batch of eight is complete, which is 147 MiB a page.
+MODELS_MIB = 206
 BATCH_MIB = 150
+
+# How much of the memory left over after seating the workers goes to larger
+# batches. Half, because what a worker holds is an estimate and being wrong
+# about it costs the whole run rather than one page.
+SPARE_SHARE = 0.5
 
 
 def _batch_size() -> int:
-    """How many pages to send at once, from the memory this machine has free.
+    """How many pages to send at once.
 
-    A processor has no such limit worth reading, and no benefit from a larger
-    batch either, so it keeps the floor.
+    The floor, unless someone who can see the whole run says otherwise.
+
+    A worker cannot size this by itself, and trying was a mistake worth writing
+    down. Reading the free memory and taking a share of it looks careful and is
+    not: what is free is free for every process that may reach the model, not
+    for this one, and the number of those is decided elsewhere. Sized that way
+    on a 6 GB card, three workers each took a batch of seventeen -- some 2,756
+    MiB apiece against a budget of 1,384 -- and the card went to 96% at 100%
+    utilisation, which is the state this batching was meant to avoid.
+
+    So the decision belongs where both halves of it are known: cli.py seats the
+    workers on the card, then divides what is left over among them, and hands
+    each the answer. MDCX_TATR_BATCH is how it is handed over, and also how a
+    machine whose models measure differently says so.
     """
     import os
 
@@ -98,18 +120,26 @@ def _batch_size() -> int:
             return max(1, int(declarado))
         except ValueError:
             pass
-    try:
-        import torch
+    return BATCH_FLOOR
 
-        if not torch.cuda.is_available():
-            return BATCH_FLOOR
-        libre, _total = torch.cuda.mem_get_info()
-        # Half of what is free, so that a second process arriving at the model
-        # finds room rather than a card someone else filled to the brim.
-        cabe = int(libre // (1024 * 1024) // 2 // BATCH_MIB)
-    except Exception:  # noqa: BLE001 - no card, no driver: the floor answers
+
+def batch_for(libre_mib: int | None, procesos: int) -> int:
+    """The batch that fits once `procesos` workers are seated on the card.
+
+    Each worker is first guaranteed the floor, which is what the per-worker
+    budget was measured with. Only what is left after seating all of them buys
+    larger batches, and only half of that, because the measurement of what a
+    worker holds is an estimate and the cost of being wrong is the whole run
+    slowing down rather than one page.
+    """
+    if not libre_mib or procesos < 1:
         return BATCH_FLOOR
-    return max(BATCH_FLOOR, min(BATCH_CEILING, cabe))
+    asentados = procesos * (MODELS_MIB + BATCH_FLOOR * BATCH_MIB)
+    sobrante = libre_mib - asentados
+    if sobrante <= 0:
+        return BATCH_FLOOR
+    extra = int(sobrante * SPARE_SHARE / procesos / BATCH_MIB)
+    return max(BATCH_FLOOR, min(BATCH_CEILING, BATCH_FLOOR + extra))
 
 
 BATCH = _batch_size()
