@@ -213,6 +213,34 @@ def plan_jobs(input_root: Path) -> tuple[list[Job], list[Path]]:
 LANE_GPU = "gpu"   # will need the card: no text to read, so a model must read it
 LANE_CPU = "cpu"   # reads its own text; a model here, if reached, runs on the processor
 
+SAMPLE_PAGES = 5
+
+
+def _pages_to_sample(total: int, cuantas: int = SAMPLE_PAGES) -> list[int]:
+    """Which pages to look at when deciding whether a document has text.
+
+    Not the first ones. A book opens with a cover, a blank verso and a title
+    page: no text, no text, and one line. A sample taken there describes the
+    front matter of a document rather than the document, and the thing being
+    decided is whether every page of it has to be read by a model.
+
+    Measured on this corpus, that is not a small error. Three volumes of one
+    physics textbook were sent to optical recognition on the strength of a title
+    page 146 characters long, while the English edition of the same book, whose
+    title page runs to 200, was read from its text layer. Both have some 2,700
+    characters a page in the body. Fifty-four characters on the third page
+    decided between reading 581 pages in seconds and reading them at 85 seconds
+    apiece, which is about fourteen hours.
+
+    Spreading the sample through the document costs the same handful of page
+    reads and cannot be fooled by what a publisher puts at the front.
+    """
+    if total <= cuantas:
+        return list(range(total))
+    paso = total / (cuantas + 1)
+    return sorted({min(total - 1, int(paso * (i + 1))) for i in range(cuantas)})
+
+
 def classify_lane(job: "Job") -> str:
     """Choose the execution lane from a cheap inspection of the original.
 
@@ -241,10 +269,10 @@ def classify_lane(job: "Job") -> str:
         doc = _pdf.open_document(job.source)
         try:
             pages = len(doc)
-            muestra = min(pages, 3)
-            chars = sum(len(_pdf.page_text(doc[i]).strip())
-                        for i in range(muestra))
-            imagenes = sum(_pdf.count_images(doc[i]) for i in range(muestra))
+            elegidas = _pages_to_sample(pages)
+            muestra = len(elegidas)
+            chars = sum(len(_pdf.page_text(doc[i]).strip()) for i in elegidas)
+            imagenes = sum(_pdf.count_images(doc[i]) for i in elegidas)
         finally:
             doc.close()
     except Exception:
