@@ -54,19 +54,19 @@ def _front_matter(job: Job, record: dict) -> str:
         f"markdown_pseudopath: {_yaml_escape(job.pseudopath)}",
         f"folder: {_yaml_escape(job.rel_source.parent.as_posix() or '.')}",
         f"source_format: {job.kind}",
-        f"bytes_origen: {job.size}",
-        f"sha256_origen: {record['digest']}",
+        f"bytes_source: {job.size}",
+        f"sha256_source: {record['digest']}",
         f"engine: {record['engine']}",
         f"ocr: {str(record.get('ocr', False)).lower()}",
-        f"convertido_utc: {record['converted_at']}",
-        f"fidelity: {v.get('coverage') if v.get('coverage') is not None else 'no-medible'}",
-        f"numeric_fidelity: {v.get('numeric_coverage') if v.get('numeric_coverage') is not None else 'no-medible'}",
+        f"converted_utc: {record['converted_at']}",
+        f"fidelity: {v.get('coverage') if v.get('coverage') is not None else 'not-measurable'}",
+        f"numeric_fidelity: {v.get('numeric_coverage') if v.get('numeric_coverage') is not None else 'not-measurable'}",
         f"verification_status: {v.get('status')}",
     ]
     if record.get("pages"):
         lines.append(f"pages: {record['pages']}")
     if record.get("recovered_lines"):
-        lines.append(f"lineas_recuperadas: {record['recovered_lines']}")
+        lines.append(f"recovered_lines: {record['recovered_lines']}")
     lines.append("---")
     return "\n".join(lines)
 
@@ -112,7 +112,7 @@ def _recovery_block(reference: str, markdown: str) -> tuple[str, int]:
 
     parts = [
         "\n\n---\n\n",
-        "## Anexo de recuperacion\n\n",
+        "## Recovery appendix\n\n",
         "> Content present in the source document that the structured conversion "
         "engine did not include. Appended verbatim, without reformatting, so that "
         "the Markdown loses no information relative to the source.\n\n",
@@ -349,7 +349,7 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
         "title": job.chapter_title,
         "outline": job.chapter_index,
         "pages": list(job.page_range),
-        "documento_pseudopath": to_pseudopath(job.parent_target) if job.parent_target else None,
+        "document_pseudopath": to_pseudopath(job.parent_target) if job.parent_target else None,
     } if job.is_chapter else None
 
     reference, ref_meta = extract.reference_text(source, job.kind)
@@ -445,7 +445,7 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
     if best_v.get("status") == "no-reference":
         content = len(verify.tokenize(best_md))
         if content < MIN_TOKENS_WITHOUT_REFERENCE:
-            record["verification"]["status"] = "sin-lectura"
+            record["verification"]["status"] = "unreadable"
             record["verification"]["note"] = (
                 "the original exposes no text and optical recognition produced no "
                 "content: the document requires manual review"

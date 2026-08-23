@@ -81,13 +81,13 @@ def test_what_a_caller_is_given_is_its_own_to_edit(counter, tmp_path):
     between two packages, and as quiet.
     """
     document = tmp_path / "book.pdf"
-    first, meta_primero = engines._native_pages(document, None)
+    first, meta_first = engines._native_pages(document, None)
     first[0] = "REWRITTEN BY THE FIRST ENGINE"
-    meta_primero["unresolved"].append(99)
+    meta_first["unresolved"].append(99)
 
-    second, meta_segundo = engines._native_pages(document, None)
+    second, meta_second = engines._native_pages(document, None)
     assert len(counter) == 1, "it should still have been extracted only once"
     assert second[0] != "REWRITTEN BY THE FIRST ENGINE", (
         "the second engine was handed the first engine's edits")
-    assert meta_segundo["unresolved"] == [], (
+    assert meta_second["unresolved"] == [], (
         "the second engine was handed the first engine's pending pages")

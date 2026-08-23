@@ -210,8 +210,8 @@ def _build_database(folder: Path, semantic: bool = False,
         "passages": n_passages,
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source_folder": folder.name,
-        "largo_medio_pasaje": round(avg_length, 2),
-        "terminos_indexados": len(df_count),
+        "mean_passage_length": round(avg_length, 2),
+        "indexed_terms": len(df_count),
     }
     manifest = folder / "_manifest.json"
     if manifest.exists():
@@ -675,7 +675,7 @@ def document_column(connection: sqlite3.Connection) -> str:
         return cached
     with _CONNECTION_LOCK:
         names = [row[1] for row in connection.execute("PRAGMA table_info(passage)")]
-    name = "document_id" if "document_id" in names else "documento_id"
+    name = "document_id" if "document_id" in names else "document_id"
     if key is not None:
         _COLUMN_CACHE[key] = name
     return name
@@ -766,7 +766,7 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
         for score, passages in ranking:
             if round_index < len(passages):
                 r = dict(passages[round_index])
-                r["score_documento"] = round(score, 3)
+                r["document_score"] = round(score, 3)
                 out.append(r)
                 if len(out) >= limit:
                     return out
@@ -884,7 +884,7 @@ def _corpus_statistics(connection: sqlite3.Connection) -> tuple[dict, int, float
             "SELECT value FROM meta WHERE key='passages'").fetchone()
     n = int(json.loads(row[0])) if row else max(len(df), 1)
     row = connection.execute(
-        "SELECT value FROM meta WHERE key='largo_medio_pasaje'").fetchone()
+        "SELECT value FROM meta WHERE key='mean_passage_length'").fetchone()
     lm = float(json.loads(row[0])) if row else 60.0
     if key is None:
         return df, n, lm

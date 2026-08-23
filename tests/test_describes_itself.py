@@ -82,15 +82,15 @@ def test_every_field_of_a_reply_is_accounted_for(served):
     """A caller cannot use what it was never told arrives."""
     answer = _replied(served, "search", {"query": "what is a saturated solution"})
     text = _described(served, "search").lower()
-    assert answer["passages"], "hace falta al menos un pasaje para comprobarlo"
+    assert answer["passages"], "at least one passage is needed to check this"
 
     for field in IN_THE_ANSWER:
-        assert field in answer, f"la respuesta ya no trae {field}"
+        assert field in answer, f"the answer no longer carries {field}"
         assert field in text, (
-            f"la respuesta trae '{field}' y la descripcion no lo menciona")
+            f"the answer carries '{field}' and the description does not mention it")
 
     for field in IN_EACH_PASSAGE:
-        assert field in answer["passages"][0], f"un pasaje ya no trae {field}"
+        assert field in answer["passages"][0], f"a passage no longer carries {field}"
         assert field in text, (
             f"un pasaje trae '{field}' y la descripcion no lo menciona")
 
@@ -132,7 +132,7 @@ def test_the_warning_is_described_where_it_can_appear(served):
     text = _described(served, "search").lower()
     if "warning" in answer:
         assert "warning" in text, (
-            "la respuesta puede traer un aviso que la descripcion no anuncia")
+            "the answer may carry a warning the description does not announce")
 
 
 def test_info_describes_what_it_answers(served):
@@ -153,4 +153,4 @@ def test_the_server_instructions_name_the_tools_they_send_you_to(served):
     instructions = source[start:start + 600].lower()
     for name in ("search", "info"):
         assert name in instructions
-        assert name in published, f"las instrucciones mandan a {name}, que no existe"
+        assert name in published, f"the instructions send the reader to {name}, which does not exist"

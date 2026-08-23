@@ -107,13 +107,13 @@ def test_both_conditions_are_required_because_each_alone_was_wrong():
         return sim < mcp_server.NOTHING_NEAR and clear < mcp_server.STANDS_CLEAR
 
     # Large corpus: answered questions from 0.6427, unanswered up to 0.6320.
-    assert not mark(0.6427, 0.2235), "la peor respuesta buena no debe marcarse"
-    assert mark(0.6320, 0.1347), "la mejor sin respuesta debe marcarse"
+    assert not mark(0.6427, 0.2235), "the worst good answer must not be marked"
+    assert mark(0.6320, 0.1347), "the best unanswered one must be marked"
     assert mark(0.5452, 0.1150), "recipe for neapolitan pizza dough"
 
     # Small corpus: answered questions from 0.566, and they stand well clear.
-    assert not mark(0.566, 0.331), "una respuesta buena de un corpus chico"
-    assert mark(0.327, 0.172), "una consulta ajena en un corpus chico"
+    assert not mark(0.566, 0.331), "a good answer from a small corpus"
+    assert mark(0.327, 0.172), "an unrelated query in a small corpus"
 
 
 def test_relevance_is_judged_against_the_corpus_and_not_against_a_constant():
@@ -161,8 +161,8 @@ def test_the_tail_is_what_the_best_passage_is_compared_against():
     source = (Path(__file__).resolve().parents[1]
               / "src" / "mdcx" / "mcp_server.py").read_text(encoding="utf-8")
     assert 'answer["stands_clear"]' in source
-    assert "despegue < STANDS_CLEAR" in source, (
-        "el aviso debe decidirse por el despegue, no por el coseno absoluto")
+    assert "clearance < STANDS_CLEAR" in source, (
+        "the warning must rest on the clearance, not on the raw cosine")
 
 
 def test_one_blank_page_does_not_send_a_book_to_optical_recognition():
@@ -249,8 +249,8 @@ def test_both_signals_are_required_because_each_alone_is_wrong():
               / "src" / "mdcx" / "mcp_server.py").read_text(encoding="utf-8")
     assert "LEXICAL_FOOTHOLD" in source
     assert "detect_language" in source, (
-        "hacen falta las dos senales: la proporcion sola condena consultas "
-        "legitimas en un paquete chico, donde casi nada esta indexado")
+        "both signals are needed: the share alone condemns legitimate "
+        "queries in a small package, where almost nothing is indexed")
 
 
 def test_a_query_of_only_stopwords_changes_nothing():

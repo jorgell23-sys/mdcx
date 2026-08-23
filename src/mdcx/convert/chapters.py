@@ -51,7 +51,7 @@ class Chapter:
         if len(clean) > 70:
             clean = clean[:70].rstrip()
         if not clean:
-            clean = f"Paginas {self.first_page}-{self.last_page}"
+            clean = f"Pages {self.first_page}-{self.last_page}"
         return f"{self.index:02d} - {clean}"
 
 def _toc_chapters(toc: list, page_count: int) -> list[Chapter]:
@@ -97,7 +97,7 @@ def _block_chapters(page_count: int, block: int = FALLBACK_BLOCK_PAGES) -> list[
     while start <= page_count:
         end = min(start + block - 1, page_count)
         chapters.append(
-            Chapter(len(chapters) + 1, f"Paginas {start} a {end}", start, end, False)
+            Chapter(len(chapters) + 1, f"Pages {start} a {end}", start, end, False)
         )
         start = end + 1
     return chapters

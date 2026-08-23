@@ -42,7 +42,7 @@ def test_bookmarks_are_translated_to_where_the_pages_ended_up():
         pdf.outline = original
 
     assert found == {1: [(1, "Chapter 3")], 3: [(2, "Solutions")], 6: [(2, "Osmosis")]}
-    assert 100 not in found, "lo de otro capitulo no debe entrar"
+    assert 100 not in found, "what belongs to another chapter must not come in"
 
 
 def test_a_range_with_no_bookmarks_is_empty_rather_than_wrong():
@@ -55,7 +55,7 @@ def test_a_range_with_no_bookmarks_is_empty_rather_than_wrong():
         try:
             pdf.outline_for_range(Path("x.pdf"), 1, 10)
         except RuntimeError:
-            pass        # el llamador decide; lo que no debe es inventar titulos
+            pass        # the caller decides; what it must not do is invent titles
     finally:
         pdf.outline = original
 

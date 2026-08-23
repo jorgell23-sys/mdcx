@@ -70,7 +70,7 @@ def page_blocks(page) -> list[Block]:
                 blocks.append(Block(text, round(left, 1), round(top, 1)))
     finally:
         tp.close()
-    # Mayor coordenada superior primero: en PDF, mas top es un valor mas alto.
+    # Highest top coordinate first: in a PDF, further up is a larger value.
     blocks.sort(key=lambda b: (-b.top, b.left))
     return blocks
 

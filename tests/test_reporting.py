@@ -41,7 +41,7 @@ def record(name: str, ok: bool, status: str, coverage: float | None = None,
 
 def summarise(records: list[dict]) -> dict:
     manifest = index.build_manifest(records, Path("."), [], 1.0)
-    return manifest["resumen"]
+    return manifest["summary"]
 
 
 def test_a_measured_document_that_meets_its_original_is_conforming():
@@ -71,7 +71,7 @@ def test_a_document_with_no_text_is_unverifiable_rather_than_failing():
 
 
 def test_an_unreadable_document_is_unverifiable_too():
-    res = summarise([record("blank.pdf", False, "sin-lectura")])
+    res = summarise([record("blank.pdf", False, "unreadable")])
     assert res["with_findings"] == 0
     assert res["unverifiable"] == 1
 
@@ -82,7 +82,7 @@ def test_the_three_counts_partition_the_collection():
         record("good.pdf", True, "ok", 1.0, 100, 0),
         record("short.pdf", False, "warn", 0.7, 100, 30),
         record("scan.pdf", False, "no-reference"),
-        record("blank.pdf", False, "sin-lectura"),
+        record("blank.pdf", False, "unreadable"),
     ])
     assert res["documents"] == 4
     assert res["converted_ok"] == 1

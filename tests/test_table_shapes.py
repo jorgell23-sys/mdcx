@@ -94,7 +94,7 @@ def test_the_model_is_asked_for_the_shape_and_not_for_the_words():
     """The words come from the PDF, so nothing can be invented into a cell."""
     source = (Path(__file__).resolve().parents[1]
               / "src" / "mdcx" / "convert" / "tatr.py").read_text(encoding="utf-8")
-    assert "cells_by_word" in source, "las celdas deben salir del texto del PDF"
+    assert "cells_by_word" in source, "the cells must come from the text of the PDF"
     for transcribe in ("generate(", "decode(", "ocr"):
         assert transcribe not in source, f"no debe transcribir: {transcribe}"
 

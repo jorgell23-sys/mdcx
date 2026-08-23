@@ -92,7 +92,11 @@ def _configure_tls() -> None:
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-PROGRESS_FILENAME = "_progreso.jsonl"
+PROGRESS_FILENAME = "_progress.jsonl"
+
+# What the file was called before. A run interrupted under the old name is
+# still picked up, so the work already done is not repeated.
+LEGACY_PROGRESS_FILENAME = "_progreso.jsonl"
 
 def _load_cache(output_root: Path) -> dict:
     """Previous work, indexed by the pseudopath of the target Markdown."""
@@ -108,8 +112,10 @@ def _load_cache(output_root: Path) -> dict:
         except Exception:
             pass
 
-    progress = output_root / PROGRESS_FILENAME
-    if progress.exists():
+    for filename in (LEGACY_PROGRESS_FILENAME, PROGRESS_FILENAME):
+        progress = output_root / filename
+        if not progress.exists():
+            continue
         try:
             with progress.open("r", encoding="utf-8") as fh:
                 for line in fh:
@@ -130,7 +136,7 @@ def _load_cache(output_root: Path) -> dict:
 def _print_progress(done: int, total: int, lane: str, rec: dict) -> None:
     v = rec.get("verification") or {}
     cov = v.get("coverage")
-    cov_s = f"{cov * 100:6.2f}%" if cov is not None else "  n/d "
+    cov_s = f"{cov * 100:6.2f}%" if cov is not None else "  n/a "
     flag = "ok " if rec.get("ok") else "!! "
     console.safe_print(
         f"[{done:>3}/{total}] {lane.upper():<3} {flag} {cov_s} "
@@ -164,17 +170,25 @@ def _error_record(job, exc: Exception) -> dict:
 #
 # This is a starting estimate and not a measurement taken here: measuring it
 # properly means loading the models and inferring a full batch before any work
-# begins, which costs more than the sizing saves. MDCX_VRAM_POR_PROCESO says
+# begins, which costs more than the sizing saves. MDCX_VRAM_PER_PROCESS says
 # otherwise for a card whose models measure differently.
 VRAM_PER_WORKER_MIB = 1384
 
+# The former spelling. It is still read so that a machine that already sets it
+# keeps the sizing it was given.
+VRAM_ENV_VARS = ("MDCX_VRAM_PER_PROCESS", "MDCX_VRAM_POR_PROCESO")
+
 
 def _vram_per_worker_mib() -> int:
-    try:
-        return max(1, int(os.environ.get("MDCX_VRAM_POR_PROCESO",
-                                         VRAM_PER_WORKER_MIB)))
-    except ValueError:
-        return VRAM_PER_WORKER_MIB
+    for name in VRAM_ENV_VARS:
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return VRAM_PER_WORKER_MIB
+    return VRAM_PER_WORKER_MIB
 
 
 def _free_vram_mib() -> int | None:
@@ -323,7 +337,7 @@ def main() -> int:
     ap.add_argument("--no-split", action="store_true",
                     help="do not split long documents into chapters")
     ap.add_argument("--split-threshold", type=int, default=chapters.SPLIT_THRESHOLD_PAGES,
-                    help=f"page count above which to split (por defecto {chapters.SPLIT_THRESHOLD_PAGES})")
+                    help=f"page count above which to split (default {chapters.SPLIT_THRESHOLD_PAGES})")
     args = ap.parse_args()
 
     _configure_tls()
@@ -356,9 +370,9 @@ def main() -> int:
     # classified: how many of them need the card is one of the three things that
     # decides, and it cannot be known before they are looked at.
     print(f"Source : {input_root}")
-    print(f"Destino: {output_root}")
-    print(f"Files to convert: {len(jobs)} | skipped por archive: {len(skipped)}")
-    print(f"Engine estructurado (Docling): {'si' if use_docling else 'no'} | "
+    print(f"Target : {output_root}")
+    print(f"Files to convert: {len(jobs)} | skipped by archive: {len(skipped)}")
+    print(f"Structured engine (Docling): {'si' if use_docling else 'no'} | "
           f"inference: {device}")
 
     cache = {} if args.force else _load_cache(output_root)
@@ -410,17 +424,17 @@ def main() -> int:
                 continue
             documents_split[to_pseudopath(job.rel_target)] = {
                 "document": job.rel_source.name,
-                "pseudopath_indice": to_pseudopath(job.rel_target),
-                "carpeta_chapters": to_pseudopath(job.rel_target.with_suffix("")),
+                "pseudopath_index": to_pseudopath(job.rel_target),
+                "chapters_folder": to_pseudopath(job.rel_target.with_suffix("")),
                 "chapters": len(caps),
                 "from_pdf_outline": caps[0].from_toc,
                 "rel_target": job.rel_target,
                 "rel_source": job.rel_source,
-                "hijos": [],
+                "children": [],
             }
             units.extend(make_chapter_jobs(job, caps))
         if documents_split:
-            print(f"Documentos divididos por chapters: {len(documents_split)} "
+            print(f"Documents split into chapters: {len(documents_split)} "
                   f"-> {sum(d['chapters'] for d in documents_split.values())} chapters")
     else:
         units = list(jobs)
@@ -494,11 +508,11 @@ def main() -> int:
             free = _free_vram_mib() if has_gpu else None
             fit = (free // _vram_per_worker_mib()) if free else None
             if fit is not None and gpu_workers > max(1, fit):
-                print(f"Aviso: se pidieron {gpu_workers} procesos en la placa y "
-                      f"entran {max(1, fit)} ({free} MiB libres, "
-                      f"{_vram_per_worker_mib()} por proceso). Por encima de eso "
-                      f"compiten por memoria y la corrida se hace mas lenta, no "
-                      f"mas rapida.")
+                print(f"Warning: {gpu_workers} processes were asked of the card "
+                      f"and {max(1, fit)} fit ({free} MiB free, "
+                      f"{_vram_per_worker_mib()} per process). Past that they "
+                      f"compete for memory and the run gets slower, not "
+                      f"faster.")
         if args.cpu_workers is not None:
             cpu_workers = max(1, min(args.cpu_workers, args.max_cores - gpu_workers))
 
@@ -514,11 +528,11 @@ def main() -> int:
         # workers rather than granted to each: otherwise the share it was
         # careful to leave free is spent again inside every process.
         threads_per_worker = max(1, args.max_cores // max(1, gpu_workers + cpu_workers))
-        print(f"Carril GPU: {len(lanes[LANE_GPU])} documents en {gpu_workers} procesos | "
-              f"Carril CPU: {len(lanes[LANE_CPU])} documents en {cpu_workers} procesos | "
-              f"tope {args.max_cores} de {os.cpu_count() or '?'} cores, "
-              f"{threads_per_worker} hilo(s) cada uno | "
-              f"placa: hasta {gpu_workers} proceso(s) a la vez, lote {batch}")
+        print(f"GPU lane: {len(lanes[LANE_GPU])} documents in {gpu_workers} processes | "
+              f"CPU lane: {len(lanes[LANE_CPU])} documents in {cpu_workers} processes | "
+              f"cap {args.max_cores} of {os.cpu_count() or '?'} cores, "
+              f"{threads_per_worker} thread(s) each | "
+              f"card: up to {gpu_workers} process(es) at a time, batch {batch}")
         if start_method == "spawn" and sys.platform != "win32":
             print("Workers start with spawn: a CUDA context does not survive fork, "
                   "which would disable docling in every child.")
@@ -602,9 +616,9 @@ def main() -> int:
         by_document: dict[str, list[dict]] = {}
         for rec in records:
             cap = rec.get("chapter")
-            if cap and cap.get("documento_pseudopath"):
-                rec["es_capitulo"] = True
-                by_document.setdefault(cap["documento_pseudopath"], []).append(rec)
+            if cap and cap.get("document_pseudopath"):
+                rec["is_chapter"] = True
+                by_document.setdefault(cap["document_pseudopath"], []).append(rec)
         for pseudo, info in documents_split.items():
             caps = by_document.get(pseudo, [])
             if not caps:
@@ -621,28 +635,28 @@ def main() -> int:
 
     elapsed = time.time() - started
     manifest = index.build_manifest(records, input_root, skipped, elapsed)
-    manifest["ejecucion"] = {
-        "modo": "serial" if args.serial else "parallel",
-        "dispositivo": device,
-        "procesos_gpu": gpu_workers,
-        "procesos_cpu": cpu_workers,
-        "tope_cores": args.max_cores,
-        "documents_carril_gpu": len(lanes[LANE_GPU]),
-        "documents_carril_cpu": len(lanes[LANE_CPU]),
+    manifest["run"] = {
+        "mode": "serial" if args.serial else "parallel",
+        "device": device,
+        "gpu_processes": gpu_workers,
+        "cpu_processes": cpu_workers,
+        "core_cap": args.max_cores,
+        "documents_gpu_lane": len(lanes[LANE_GPU]),
+        "documents_cpu_lane": len(lanes[LANE_CPU]),
     }
     index_path = index.write_index(records, output_root, manifest)
     results_path = index.write_results_txt(records, output_root, manifest, elapsed, input_root)
 
-    res = manifest["resumen"]
+    res = manifest["summary"]
     print("\n" + "=" * 72)
-    print(f"Documentos      : {res['documents']}")
+    print(f"Documents       : {res['documents']}")
     print(f"Conforming      : {res['converted_ok']}")
     print(f"With findings   : {res['with_findings']}")
     if res.get('unverifiable'):
         print(f"Unverifiable    : {res['unverifiable']} "
               "(no text in the original to measure against)")
     cg = res["global_token_coverage"]
-    print(f"Global coverage : {cg * 100:.3f}%" if cg is not None else "Global coverage : n/d")
+    print(f"Global coverage : {cg * 100:.3f}%" if cg is not None else "Global coverage : n/a")
     print(f"Tokens not recovered: {res['tokens_not_recovered']} of {res['reference_tokens']}")
     print(f"Elapsed         : {elapsed / 60:.1f} min ({'serial' if args.serial else 'parallel'})")
     print(f"Index           : {index_path}")

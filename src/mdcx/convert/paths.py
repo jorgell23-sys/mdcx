@@ -150,10 +150,10 @@ class Job:
     index grouping them, so the correspondence with the original stays traceable.
     """
 
-    source: Path                 # ruta absoluta al original
-    rel_source: Path             # ruta relativa a Input/
-    rel_target: Path             # ruta relativa a Output/ (termina en .md)
-    kind: str                    # familia de engine: pdf | docx | xlsx | text | ...
+    source: Path                 # absolute path to the original
+    rel_source: Path             # path relative to Input/
+    rel_target: Path             # path relative to Output/ (ends in .md)
+    kind: str                    # engine family: pdf | docx | xlsx | text | ...
     size: int
     digest: str = ""
     meta: dict = field(default_factory=dict)
@@ -304,7 +304,7 @@ def estimated_cost(job: "Job") -> float:
 
 def make_chapter_jobs(job: "Job", chapters: list) -> list["Job"]:
     """Expand a long document into one job per chapter."""
-    folder = job.rel_target.with_suffix("")   # .../Documento/  (sin extension)
+    folder = job.rel_target.with_suffix("")   # .../Document/  (no extension)
     out: list["Job"] = []
     for cap in chapters:
         out.append(

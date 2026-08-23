@@ -191,8 +191,8 @@ def test_room_left_over_buys_a_larger_batch(monkeypatch):
     from mdcx.convert import tatr
 
     tight = tatr.batch_for(5113, 3)
-    holgado = tatr.batch_for(5113, 1)
-    assert holgado > tight, "the room left by fewer workers bought nothing"
+    roomy = tatr.batch_for(5113, 1)
+    assert roomy > tight, "the room left by fewer workers bought nothing"
     assert tatr.batch_for(80000, 2) == tatr.BATCH_CEILING
 
 

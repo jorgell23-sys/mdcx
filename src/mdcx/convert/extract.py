@@ -80,7 +80,7 @@ def _docx_text(path: Path) -> tuple[str, dict]:
         for row in table.rows:
             for cell in row.cells:
                 parts.append(cell.text)
-    # Encabezados y pies suelen contener codigo de document y revision: no perderlos.
+    # Headers and footers usually carry the document code and revision: keep them.
     for section in d.sections:
         for container in (section.header, section.footer):
             for p in container.paragraphs:

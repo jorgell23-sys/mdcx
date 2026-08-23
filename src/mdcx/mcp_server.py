@@ -425,10 +425,10 @@ def create_server():
         }
         measured = _closest_to(query)
         if measured is not None:
-            closeness, despegue = measured
+            closeness, clearance = measured
             answer["similarity"] = round(closeness, 4)
-            answer["stands_clear"] = round(despegue, 4)
-            if closeness < NOTHING_NEAR and despegue < STANDS_CLEAR:
+            answer["stands_clear"] = round(clearance, 4)
+            if closeness < NOTHING_NEAR and clearance < STANDS_CLEAR:
                 answer["warning"] = (
                     "nothing in this corpus is about the question: the best "
                     "passage is no nearer than the rest, so the passages below "

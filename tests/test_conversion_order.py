@@ -59,7 +59,7 @@ class Textpage:
 def test_the_cheap_engine_is_tried_first():
     """A vision model is what the order exists to avoid paying for."""
     names = [n for n, _ in C._candidates(_job(), {}, use_docling=True)]
-    assert names, "algun motor debe quedar"
+    assert names, "some engine must remain"
     assert names[0] == "nativo"
     assert names.index("nativo") < names.index("docling")
 

@@ -35,10 +35,10 @@ INDEX_FILENAME = "00_INDEX.md"
 _STATUS_LABEL = {
     "ok": "OK",
     "warn": "REVISAR",
-    "fail": "INCOMPLETO",
+    "fail": "INCOMPLETE",
     "no-reference": "NO TEXT",
-    "sin-lectura": "UNREADABLE",
-    "only-ocr": "REVISION VISUAL",
+    "unreadable": "UNREADABLE",
+    "only-ocr": "VISUAL REVIEW",
     "error": "ERROR",
 }
 
@@ -61,17 +61,17 @@ def _fmt_size(n: int) -> str:
 
 def build_manifest(records: list[dict], input_root: Path, skipped: list[Path],
                    elapsed: float) -> dict:
-    main = [r for r in records if not r.get("es_capitulo")]
-    chapters = [r for r in records if r.get("es_capitulo")]
+    main = [r for r in records if not r.get("is_chapter")]
+    chapters = [r for r in records if r.get("is_chapter")]
     ok = sum(1 for r in main if r.get("ok"))
     measurable = [r for r in records
                   if (r.get("verification") or {}).get("measurable")
-                  and not r.get("es_indice_de_documento")]
+                  and not r.get("is_document_index")]
     # Verification could not be performed, as against performed and not met.
     unverifiable = sum(
         1 for r in main
         if not r.get("ok")
-        and (r.get("verification") or {}).get("status") in ("no-reference", "sin-lectura"))
+        and (r.get("verification") or {}).get("status") in ("no-reference", "unreadable"))
 
     coverages = [r["verification"]["coverage"] for r in measurable
                  if r["verification"].get("coverage") is not None]
@@ -85,7 +85,7 @@ def build_manifest(records: list[dict], input_root: Path, skipped: list[Path],
             "'@/' denotes the root of this output folder. Resolve against the current "
             "location of the folder; it never contains absolute paths or drive letters."
         ),
-        "resumen": {
+        "summary": {
             "documents": len(main),
             "chapters": len(chapters),
             "converted_ok": ok,
@@ -96,7 +96,7 @@ def build_manifest(records: list[dict], input_root: Path, skipped: list[Path],
             # the documents that could be measured at all.
             "unverifiable": unverifiable,
             "with_findings": len(main) - ok - unverifiable,
-            "skipped_archive_no_soportado": len(skipped),
+            "skipped_unsupported_archive": len(skipped),
             "global_token_coverage": (
                 round((total_ref - total_missing) / total_ref, 5) if total_ref else None
             ),
@@ -112,12 +112,12 @@ def build_manifest(records: list[dict], input_root: Path, skipped: list[Path],
 def write_index(records: list[dict], output_root: Path, manifest: dict) -> Path:
     # Chapters are not listed separately in the global index: they appear inside
     # their own document, which appears here as a single entry.
-    main = [r for r in records if not r.get("es_capitulo")]
+    main = [r for r in records if not r.get("is_chapter")]
     by_folder: dict[str, list[dict]] = defaultdict(list)
     for r in main:
         by_folder[r.get("folder", ".")].append(r)
 
-    res = manifest["resumen"]
+    res = manifest["summary"]
     lines: list[str] = [
         "# Index of converted documents",
         "",
@@ -150,7 +150,7 @@ def write_index(records: list[dict], output_root: Path, manifest: dict) -> Path:
         "",
         "---",
         "",
-        "## Documentos por folder",
+        "## Documents by folder",
         "",
     ]
 
@@ -159,7 +159,7 @@ def write_index(records: list[dict], output_root: Path, manifest: dict) -> Path:
         title = "(raiz)" if folder == "." else folder
         lines.append(f"### {title}")
         lines.append("")
-        lines.append("| Documento | Source | Formato | Tam. | Fidelity | Status | Engine |")
+        lines.append("| Document | Source | Format | Size | Fidelity | Status | Engine |")
         lines.append("|---|---|---|---|---|---|---|")
         for r in rows:
             v = r.get("verification") or {}
@@ -178,21 +178,21 @@ def write_index(records: list[dict], output_root: Path, manifest: dict) -> Path:
               "| Source pseudopath | Markdown pseudopath |", "|---|---|"]
     for r in sorted(main, key=lambda r: r["source_pseudopath"].lower()):
         target = r["markdown_pseudopath"]
-        if r.get("es_indice_de_documento"):
+        if r.get("is_document_index"):
             target += f"  (+ {r.get('chapters', 0)} chapters)"
         lines.append(f"| `{r['source_pseudopath']}` | `{target}` |")
 
     problems = [r for r in records if not r.get("ok")]
     if problems:
         lines += ["", "---", "", "## Documents requiring attention", "",
-                  "| Documento | Status | Fidelity | Detalle |", "|---|---|---|---|"]
+                  "| Document | Status | Fidelity | Detail |", "|---|---|---|---|"]
         for r in sorted(problems, key=lambda r: (r.get("verification") or {}).get("coverage") or 0):
             v = r.get("verification") or {}
             detail = []
             if r.get("recovered_lines"):
-                detail.append(f"{r['recovered_lines']} lines en anexo de recuperacion")
+                detail.append(f"{r['recovered_lines']} lines in the recovery appendix")
             if v.get("missing_sample"):
-                detail.append("faltan p.ej.: " + ", ".join(v["missing_sample"][:6]))
+                detail.append("missing e.g.: " + ", ".join(v["missing_sample"][:6]))
             if r.get("errors"):
                 detail.append(str(r["errors"][0])[:120])
             lines.append(
@@ -201,12 +201,12 @@ def write_index(records: list[dict], output_root: Path, manifest: dict) -> Path:
             )
 
     if manifest.get("skipped"):
-        lines += ["", "---", "", "## Archivos no convertidos (archive no soportado)", ""]
+        lines += ["", "---", "", "## Files not converted (unsupported archive)", ""]
         for name in manifest["skipped"]:
             lines.append(f"- `{name}`")
 
     lines += ["", "---", "",
-              "Datos estructurados equivalentes: `@/_manifest.json`.",
+              "Equivalent structured data: `@/_manifest.json`.",
               "Lossless per-document backup (full structure): `@/_lossless/`.", ""]
 
     path = output_root / INDEX_FILENAME
@@ -249,25 +249,25 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
         f'source: "{rel_source.name}"',
         f'source_pseudopath: "{to_pseudopath(rel_source)}"',
         f'markdown_pseudopath: "{to_pseudopath(rel_target)}"',
-        "tipo: indice_de_documento",
+        "type: document_index",
         f"chapters: {len(chapters)}",
         f"pages: {pages}",
-        f"fidelity: {round(coverage, 5) if coverage is not None else 'no-medible'}",
+        f"fidelity: {round(coverage, 5) if coverage is not None else 'not-measurable'}",
         f"split: {'document outline' if info.get('from_pdf_outline') else 'page ranges'}",
         "---",
         "",
         f"# {rel_source.stem}",
         "",
-        f"Documento de **{pages} pages**, dividido en **{len(chapters)} chapters** "
+        f"Document of **{pages} pages**, split into **{len(chapters)} chapters** "
         + ("following the document's own outline." if info.get("from_pdf_outline")
            else "in page ranges, because the original has no outline."),
         "",
         f"Overall fidelity: **{_fmt_pct(coverage)}** "
         f"({conforming} of {len(chapters)} chapters conforming).",
         "",
-        "## Capitulos",
+        "## Chapters",
         "",
-        "| # | Capitulo | Paginas | Fidelity | Status |",
+        "| # | Chapter | Pages | Fidelity | Status |",
         "|---|---|---|---|---|",
     ]
 
@@ -292,7 +292,7 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
         "---",
         "",
         f"Original: `{to_pseudopath(rel_source)}`  ",
-        f"Capitulos en: `{to_pseudopath(rel_target.with_suffix(''))}/`",
+        f"Chapters in: `{to_pseudopath(rel_target.with_suffix(''))}/`",
         "",
     ]
 
@@ -307,7 +307,7 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
     non_conforming = [c for c in chapters if not c.get("ok")]
     not_measurable = [c for c in non_conforming
                    if (c.get("verification") or {}).get("status")
-                   in ("no-reference", "sin-lectura")]
+                   in ("no-reference", "unreadable")]
     if not non_conforming:
         status = "ok"
     elif len(not_measurable) == len(non_conforming):
@@ -321,17 +321,17 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
         "folder": rel_source.parent.as_posix() or ".",
         "format": rel_source.suffix.lower().lstrip("."),
         "bytes": chapters[0].get("bytes", 0) if chapters else 0,
-        "engine": "division en chapters",
+        "engine": "split into chapters",
         "pages": pages,
-        "es_indice_de_documento": True,
+        "is_document_index": True,
         "chapters": len(chapters),
         "chapters_pseudopaths": [c["markdown_pseudopath"] for c in chapters],
-        "chapters_con_observacion": [
+        "chapters_with_findings": [
             {
                 "outline": (c.get("chapter") or {}).get("outline"),
                 "title": (c.get("chapter") or {}).get("title"),
                 "pages": (c.get("chapter") or {}).get("pages"),
-                "estado": (c.get("verification") or {}).get("status"),
+                "status": (c.get("verification") or {}).get("status"),
                 "coverage": (c.get("verification") or {}).get("coverage"),
                 "pseudopath": c["markdown_pseudopath"],
             }
@@ -354,13 +354,13 @@ RESULTS_FILENAME = "00_RESULTS.txt"
 def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
                       elapsed: float, input_root: Path) -> Path:
     """Plain-text report: which documents converted cleanly and which need attention."""
-    main = [r for r in records if not r.get("es_capitulo")]
+    main = [r for r in records if not r.get("is_chapter")]
     succeeded = [r for r in main if r.get("ok")]
-    fallidos = [r for r in main if not r.get("ok")]
-    res = manifest["resumen"]
+    failing = [r for r in main if not r.get("ok")]
+    res = manifest["summary"]
 
     def _pct(v):
-        return f"{v * 100:6.2f}%" if v is not None else "   n/d"
+        return f"{v * 100:6.2f}%" if v is not None else "   n/a"
 
     L: list[str] = []
     L.append("=" * 78)
@@ -369,10 +369,10 @@ def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
     L.append(f"Date (UTC)        : {manifest['generado_utc']}")
     L.append(f"Source folder     : {input_root}")
     L.append(f"Output folder     : {output_root}")
-    ejec = manifest.get("ejecucion") or {}
+    ejec = manifest.get("run") or {}
     if ejec:
-        L.append(f"Execution         : modo {ejec.get('modo')} | inference {ejec.get('dispositivo')} "
-                 f"| GPU workers {ejec.get('procesos_gpu')} + CPU {ejec.get('procesos_cpu')}")
+        L.append(f"Execution         : modo {ejec.get('mode')} | inference {ejec.get('device')} "
+                 f"| GPU workers {ejec.get('gpu_processes')} + CPU {ejec.get('cpu_processes')}")
     L.append(f"Duration          : {elapsed / 60:.1f} minutes ({elapsed:.0f} s)")
     L.append("")
     L.append("-" * 78)
@@ -380,10 +380,10 @@ def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
     L.append("-" * 78)
     L.append(f"Documents processed    : {res['documents']}")
     if res.get("chapters"):
-        L.append(f"  (divididos en)      : {res['chapters']} chapters")
+        L.append(f"  (split into)        : {res['chapters']} chapters")
     L.append(f"Converted successfully : {len(succeeded)}")
-    L.append(f"Requiring attention    : {len(fallidos)}")
-    L.append(f"Skipped by format      : {res['skipped_archive_no_soportado']}")
+    L.append(f"Requiring attention    : {len(failing)}")
+    L.append(f"Skipped by format      : {res['skipped_unsupported_archive']}")
     cg = res["global_token_coverage"]
     L.append(f"Global fidelity        : {_pct(cg)}  "
              f"({res['tokens_not_recovered']} of {res['reference_tokens']} tokens not recovered)")
@@ -406,11 +406,11 @@ def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
     L.append(f"Table rows preserved   : {rows} across {with_tables} document(s)")
     L.append("")
 
-    if fallidos:
+    if failing:
         L.append("-" * 78)
-        L.append(f"REQUIEREN ATENCION ({len(fallidos)})")
+        L.append(f"REQUIRING ATTENTION ({len(failing)})")
         L.append("-" * 78)
-        for r in sorted(fallidos, key=lambda x: (x.get("verification") or {}).get("coverage") or 0):
+        for r in sorted(failing, key=lambda x: (x.get("verification") or {}).get("coverage") or 0):
             v = r.get("verification") or {}
             L.append(f"[{_STATUS_LABEL.get(v.get('status'), '?'):<10}] {_pct(v.get('coverage'))}  "
                      f"{r['source_name']}")
@@ -418,21 +418,21 @@ def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
             L.append(f"             out : {r['markdown_pseudopath']}")
             if v.get("status") == "no-reference":
                 L.append("             reason : the original exposes no text (raster drawing); "
-                         "no es medible por tokens")
-            elif v.get("status") == "sin-lectura":
-                L.append("             reason : the original exposes no text and recognition "
-                         "optico no produjo contenido; requiere revision manual")
+                         "not measurable by tokens")
+            elif v.get("status") == "unreadable":
+                L.append("             reason : the original exposes no text and optical "
+                         "recognition produced nothing; needs manual review")
             elif v.get("status") == "only-ocr":
                 L.append("             reason : text comes from optical recognition only "
                          "(raster drawing); there is no original to verify it against")
             if r.get("recovered_lines"):
-                L.append(f"             nota   : {r['recovered_lines']} lines anexadas por recuperacion")
-            for cap in r.get("chapters_con_observacion") or []:
+                L.append(f"             nota   : {r['recovered_lines']} lines appended by recovery")
+            for cap in r.get("chapters_with_findings") or []:
                 pg = cap.get("pages") or ["?", "?"]
                 cob = cap.get("coverage")
                 L.append(f"             chapter {cap.get('outline')}: "
-                         f"{_STATUS_LABEL.get(cap.get('estado'), '?')} "
-                         f"{_pct(cob) if cob is not None else '   n/d'} "
+                         f"{_STATUS_LABEL.get(cap.get('status'), '?')} "
+                         f"{_pct(cob) if cob is not None else '   n/a'} "
                          f"(pages {pg[0]}-{pg[1]}) {str(cap.get('title') or '')[:50]}")
             if r.get("errors"):
                 L.append(f"             error  : {str(r['errors'][0])[:160]}")
@@ -446,13 +446,13 @@ def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
     L.append("-" * 78)
     for r in sorted(succeeded, key=lambda x: x["source_pseudopath"].lower()):
         v = r.get("verification") or {}
-        extra = f" [{r.get('chapters')} chapters]" if r.get("es_indice_de_documento") else ""
+        extra = f" [{r.get('chapters')} chapters]" if r.get("is_document_index") else ""
         L.append(f"{_pct(v.get('coverage'))}  {r.get('engine', '?'):<22} {r['source_name']}{extra}")
 
     if manifest.get("skipped"):
         L.append("")
         L.append("-" * 78)
-        L.append(f"NO CONVERTIDOS: FORMATO NO SOPORTADO ({len(manifest['skipped'])})")
+        L.append(f"NOT CONVERTED: UNSUPPORTED FORMAT ({len(manifest['skipped'])})")
         L.append("-" * 78)
         for n in manifest["skipped"]:
             L.append(f"  {n}")
@@ -460,7 +460,7 @@ def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
     L.append("")
     L.append("=" * 78)
     L.append(f"Navigable index of the content: {INDEX_FILENAME}")
-    L.append("Detalle estructurado por document: _manifest.json")
+    L.append("Structured detail per document: _manifest.json")
     L.append("=" * 78)
     L.append("")
 

@@ -169,9 +169,13 @@ def _get_docling_converter(ocr: bool):
     try:
         from docling.datamodel.pipeline_options import TableFormerMode
 
-        mode = _os.environ.get("PDFTOMD_TABLAS", "rapido").strip().lower()
+        # MDCX_TABLES is the name; PDFTOMD_TABLAS is what it used to be called
+        # and is still honoured, as is the Spanish spelling of its value.
+        mode = (_os.environ.get("MDCX_TABLES")
+                or _os.environ.get("PDFTOMD_TABLAS")
+                or "fast").strip().lower()
         popts.table_structure_options.mode = (
-            TableFormerMode.ACCURATE if mode in ("exacto", "accurate")
+            TableFormerMode.ACCURATE if mode in ("accurate", "exacto")
             else TableFormerMode.FAST)
         popts.table_structure_options.do_cell_matching = True
     except Exception:
@@ -215,7 +219,7 @@ def _full_export_kwargs() -> dict:
     return kwargs
 
 def docling_convert(path: Path, ocr: bool = False) -> tuple[str, dict, dict | None]:
-    """Devuelve (markdown, metadatos, documento_json_sin_perdida)."""
+    """Returns (markdown, metadata, lossless_document_json)."""
     conv = _get_docling_converter(ocr)
     # Layout analysis is the other thing here that reserves the card, and the
     # heaviest: a document without a text layer is read page by page by a model.
@@ -497,12 +501,12 @@ def native_xlsx(path: Path) -> tuple[str, dict, None]:
     try:
         for ws in wb.worksheets:
             sheets.append(ws.title)
-            out.append(f"\n## Hoja: {ws.title}\n")
+            out.append(f"\n## Sheet: {ws.title}\n")
             rows = [list(r) for r in ws.iter_rows(values_only=True)]
             while rows and all(c is None for c in rows[-1]):
                 rows.pop()
             if not rows:
-                out.append("_(hoja vacia)_")
+                out.append("_(empty sheet)_")
                 continue
             width = max(len(r) for r in rows)
             header = [_md_escape_cell(c) for c in rows[0]] + [""] * (width - len(rows[0]))
@@ -516,7 +520,7 @@ def native_xlsx(path: Path) -> tuple[str, dict, None]:
     return "\n".join(out), {"engine": "openpyxl", "sheets": sheets}, None
 
 def native_docx(path: Path) -> tuple[str, dict, None]:
-    """DOCX -> Markdown respetando niveles de title, listas y tables."""
+    """DOCX -> Markdown, keeping heading levels, lists and tables."""
     import docx
     from docx.table import Table
     from docx.text.paragraph import Paragraph
@@ -565,7 +569,7 @@ def native_docx(path: Path) -> tuple[str, dict, None]:
             out.extend(render_table(Table(child, d)))
 
     for section in d.sections:
-        for name, container in (("Encabezado", section.header), ("Pie", section.footer)):
+        for name, container in (("Header", section.header), ("Footer", section.footer)):
             texts = [p.text.strip() for p in container.paragraphs if p.text.strip()]
             if texts:
                 out.append("\n<!-- " + name + ": " + " / ".join(texts) + " -->")

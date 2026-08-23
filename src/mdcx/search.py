@@ -273,15 +273,15 @@ def _bm25_index(docs: list[dict], only: str | None) -> dict:
         if only and d["source"] != only.upper():
             continue
         blocks = d.setdefault("blocks", _paragraphs(d["text"]))
-        rules = d.setdefault("bloques_norm", [_normalize(b) for b in blocks])
+        rules = d.setdefault("normalised_blocks", [_normalize(b) for b in blocks])
         for i, bn in enumerate(rules):
             tk = tokenize_text(bn)
-            passages.append({"doc": d, "i": i, "frec": Counter(tk), "largo": len(tk)})
+            passages.append({"doc": d, "i": i, "freq": Counter(tk), "length": len(tk)})
     df = Counter()
     for p in passages:
-        for t in p["frec"]:
+        for t in p["freq"]:
             df[t] += 1
-    avg_length = (sum(p["largo"] for p in passages) / len(passages)) if passages else 1.0
+    avg_length = (sum(p["length"] for p in passages) / len(passages)) if passages else 1.0
     idx = {"passages": passages, "df": df, "n": len(passages), "avg_length": avg_length}
     _BM25_CACHE[key] = idx
     return idx
@@ -424,15 +424,15 @@ def rank_passages(docs: list[dict], query_text: str, context: int = 1,
 
     by_document: dict[str, list[dict]] = {}
     for p in idx["passages"]:
-        present = [t for t in query_tokens if p["frec"].get(t)]
+        present = [t for t in query_tokens if p["freq"].get(t)]
         if len(present) < min(min_terms, len(query_tokens)):
             continue
         score = 0.0
         for t in present:
             idf = math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5))
-            f = p["frec"][t]
+            f = p["freq"][t]
             score += idf * (f * (BM25_K1 + 1)) / (
-                f + BM25_K1 * (1 - BM25_B + BM25_B * p["largo"] / lm))
+                f + BM25_K1 * (1 - BM25_B + BM25_B * p["length"] / lm))
         d, i = p["doc"], p["i"]
         ini = max(0, i - context)
         by_document.setdefault(d["name"], []).append({
@@ -459,7 +459,7 @@ def rank_passages(docs: list[dict], query_text: str, context: int = 1,
         for doc_score, passages in ranking:
             if round_no < len(passages):
                 r = dict(passages[round_no])
-                r["score_documento"] = round(doc_score, 3)
+                r["document_score"] = round(doc_score, 3)
                 out.append(r)
                 if len(out) >= limit:
                     return out
@@ -500,7 +500,7 @@ def search_literal(docs: list[dict], phrase: str, context: int = 1,
         if only and d["source"] != only.upper():
             continue
         blocks = d.setdefault("blocks", _paragraphs(d["text"]))
-        rules = d.setdefault("bloques_norm", [_normalize(b) for b in blocks])
+        rules = d.setdefault("normalised_blocks", [_normalize(b) for b in blocks])
         for i, bn in enumerate(rules):
             if needle not in bn:
                 continue
@@ -524,7 +524,7 @@ def main() -> int:
         description="Search the converted .md files, quoting each passage exactly.")
     from . import __version__
     ap.add_argument("--version", action="version", version=f"mdcx {__version__}")
-    ap.add_argument("frase", metavar="PHRASE", nargs="?",
+    ap.add_argument("phrase", metavar="PHRASE", nargs="?",
                     help="the phrase or question to search for")
     ap.add_argument("--output", default="Output", help="folder holding the .md files")
     ap.add_argument("--context", type=int, default=1,
@@ -534,7 +534,7 @@ def main() -> int:
     # --frases was the original spelling and is kept so a script written against
     # it keeps working; the error message already pointed at --phrases, which is
     # the name a reader of the help would look for.
-    ap.add_argument("--phrases", "--frases", dest="frases", metavar="FILE",
+    ap.add_argument("--phrases", "--frases", dest="phrases", metavar="FILE",
                     help="file with one phrase per line")
     ap.add_argument("--json", help="write the result to a JSON file")
     ap.add_argument("--literal", action="store_true",

@@ -124,7 +124,7 @@ def test_a_query_on_one_subject_is_answered_by_that_package(three_subjects):
     assert results
     on_topic = [r for r in results if r["package"].startswith("anatomy")]
     assert len(on_topic) > len(results) / 2, (
-        f"solo {len(on_topic)} de {len(results)} salieron del paquete del tema: "
+        f"only {len(on_topic)} of {len(results)} came from the package on topic: "
         f"{[r['package'] for r in results]}")
 
 
