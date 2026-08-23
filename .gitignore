@@ -1,15 +1,19 @@
-# Paquetes de corpus: llevan documentos dentro, cifrados, y no se versionan.
+# Corpus packages: they carry documents inside, encrypted, and are not versioned.
 *.mdcx
 
-# Carpetas de trabajo.
+# Working folders.
 Input/
 Output/
 
+# Build and environment.
 __pycache__/
 *.pyc
 .venv/
-dist/
 build/
-*.egg-info/
 dist/
+*.egg-info/
+
+# Local publishing tools: they depend on this machine's layout, not the project's.
 mcp-publisher.exe
+publish-mcp.bat
+publish-pypi.bat

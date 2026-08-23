@@ -62,10 +62,10 @@ jobs:
         run: |
           import subprocess, sys, tomllib
           with open("pyproject.toml", "rb") as handle:
-              declarada = tomllib.load(handle)["project"]["version"]
-          salida = subprocess.run(["mdcx", "--version"],
-                                  capture_output=True, text=True)
-          if declarada not in salida.stdout:
-              sys.exit(f"pyproject declares {declarada}, the command reports "
-                       f"{salida.stdout.strip()!r}")
-          print(f"version {declarada} agrees")
+              declared = tomllib.load(handle)["project"]["version"]
+          reported = subprocess.run(["mdcx", "--version"],
+                                    capture_output=True, text=True)
+          if declared not in reported.stdout:
+              sys.exit(f"pyproject declares {declared}, the command reports "
+                       f"{reported.stdout.strip()!r}")
+          print(f"version {declared} agrees")
