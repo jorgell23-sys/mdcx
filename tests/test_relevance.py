@@ -96,11 +96,11 @@ def build(folder: Path, target: Path, documents: dict, semantic_index: bool) -> 
 
 def serve(tmp_path, monkeypatch, semantic_index: bool = True) -> None:
     """Three packages on separate subjects, served as one corpus."""
-    rutas = []
-    for tema, documentos in SUBJECTS.items():
-        rutas.append(build(tmp_path / tema, tmp_path / f"{tema}.mdcx",
-                           documentos, semantic_index))
-    monkeypatch.setenv("MDCX_FILE", os.pathsep.join(str(r) for r in rutas))
+    paths = []
+    for topic, documents in SUBJECTS.items():
+        paths.append(build(tmp_path / topic, tmp_path / f"{topic}.mdcx",
+                           documents, semantic_index))
+    monkeypatch.setenv("MDCX_FILE", os.pathsep.join(str(r) for r in paths))
     monkeypatch.setenv("MDCX_KEY", "k")
     mcp_server._STATE.clear()
 
@@ -119,20 +119,20 @@ def test_a_query_on_one_subject_is_answered_by_that_package(three_subjects):
     passage per package in turn, whatever the query: the share from the package
     that could answer converged on one in N.
     """
-    resultados = mcp_server.search_packages(
+    results = mcp_server.search_packages(
         "autonomic nervous system sympathetic chain ganglia", limit=5)
-    assert resultados
-    del_tema = [r for r in resultados if r["package"].startswith("anatomy")]
-    assert len(del_tema) > len(resultados) / 2, (
-        f"solo {len(del_tema)} de {len(resultados)} salieron del paquete del tema: "
-        f"{[r['package'] for r in resultados]}")
+    assert results
+    on_topic = [r for r in results if r["package"].startswith("anatomy")]
+    assert len(on_topic) > len(results) / 2, (
+        f"solo {len(on_topic)} de {len(results)} salieron del paquete del tema: "
+        f"{[r['package'] for r in results]}")
 
 
 def test_the_best_passage_is_not_buried(three_subjects):
     """The passage that answers must lead, not sit behind unrelated firsts."""
-    primero = mcp_server.search_packages(
+    first = mcp_server.search_packages(
         "design for additive manufacturing", limit=5)[0]
-    assert primero["package"].startswith("manufacturing")
+    assert first["package"].startswith("manufacturing")
 
 
 def test_a_subject_that_spans_packages_still_reaches_both(three_subjects):
@@ -142,9 +142,9 @@ def test_a_subject_that_spans_packages_still_reaches_both(three_subjects):
     threshold, so it opens when the subject genuinely spans packages and closes
     when it does not.
     """
-    resultados = mcp_server.search_packages(
+    results = mcp_server.search_packages(
         "how a system is organised and what makes it fail", limit=6)
-    assert len({r["package"] for r in resultados}) > 1
+    assert len({r["package"] for r in results}) > 1
 
 
 def test_packages_without_vectors_are_all_asked(tmp_path, monkeypatch):
@@ -155,8 +155,8 @@ def test_packages_without_vectors_are_all_asked(tmp_path, monkeypatch):
     """
     serve(tmp_path, monkeypatch, semantic_index=False)
     try:
-        paquetes = mcp_server._open_packages()
-        assert mcp_server._packages_worth_asking(paquetes, "anything at all") == paquetes
+        packages = mcp_server._open_packages()
+        assert mcp_server._packages_worth_asking(packages, "anything at all") == packages
     finally:
         mcp_server._STATE.clear()
 
@@ -168,8 +168,8 @@ def test_a_single_configured_package_is_never_gated(tmp_path, monkeypatch):
     monkeypatch.setenv("MDCX_KEY", "k")
     mcp_server._STATE.clear()
     try:
-        resultados = mcp_server.search_packages("nervous system", limit=3)
-        assert resultados
-        assert all("package" not in r for r in resultados)
+        results = mcp_server.search_packages("nervous system", limit=3)
+        assert results
+        assert all("package" not in r for r in results)
     finally:
         mcp_server._STATE.clear()

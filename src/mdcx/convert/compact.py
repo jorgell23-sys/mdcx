@@ -70,10 +70,10 @@ def compress_header(text: str) -> str:
     """Reduce the metadata header to the fields needed to cite and audit."""
     if not text.startswith("---"):
         return text
-    partes = text.split("---", 2)
-    if len(partes) < 3:
+    parts = text.split("---", 2)
+    if len(parts) < 3:
         return text
-    cab, body = partes[1], partes[2]
+    cab, body = parts[1], parts[2]
     lines = [l for l in cab.splitlines() if l.strip().startswith(HEADER_FIELDS)]
     if not lines:
         return text
@@ -94,16 +94,16 @@ def drop_empty_columns(text: str) -> str:
             j += 1
         table = lines[i:j]
         rows = [[c.strip() for c in l.strip()[1:-1].split("|")] for l in table]
-        ancho = max((len(f) for f in rows), default=0)
-        es_sep = [bool(re.fullmatch(r"[\s\-:]*", "".join(f))) for f in rows]
-        util = [any(len(f) > c and f[c] and not es_sep[k] for k, f in enumerate(rows))
-                for c in range(ancho)]
-        if not any(util) or all(util):
+        width = max((len(f) for f in rows), default=0)
+        is_sep = [bool(re.fullmatch(r"[\s\-:]*", "".join(f))) for f in rows]
+        useful = [any(len(f) > c and f[c] and not is_sep[k] for k, f in enumerate(rows))
+                for c in range(width)]
+        if not any(useful) or all(useful):
             out.extend(table)
         else:
             for k, f in enumerate(rows):
-                cells = [f[c] if len(f) > c else "" for c in range(ancho) if util[c]]
-                if es_sep[k]:
+                cells = [f[c] if len(f) > c else "" for c in range(width) if useful[c]]
+                if is_sep[k]:
                     out.append("|" + "|".join("---" for _ in cells) + "|")
                 else:
                     out.append("| " + " | ".join(cells) + " |")
@@ -122,31 +122,31 @@ STEPS = (
 def compact(text: str) -> tuple[str, bool]:
     """Compact the Markdown and verify in the same operation that no content was lost."""
     try:
-        comprimido = text
-        for paso in STEPS:
-            comprimido = paso(comprimido)
-        comprimido = comprimido.rstrip("\n") + "\n"
+        compressed = text
+        for step in STEPS:
+            compressed = step(compressed)
+        compressed = compressed.rstrip("\n") + "\n"
     except Exception:  # noqa: BLE001
         return text, False
 
-    antes = verify.tokenize(verify.strip_markdown_noise(_cuerpo(text)))
-    despues = verify.tokenize(verify.strip_markdown_noise(_cuerpo(comprimido)))
-    if _is_missing(antes, despues):
+    before = verify.tokenize(verify.strip_markdown_noise(_body(text)))
+    after = verify.tokenize(verify.strip_markdown_noise(_body(compressed)))
+    if _is_missing(before, after):
         return text, False
-    return comprimido, True
+    return compressed, True
 
-def _cuerpo(text: str) -> str:
+def _body(text: str) -> str:
     """Return the text without the metadata header."""
     if text.startswith("---"):
-        partes = text.split("---", 2)
-        if len(partes) >= 3:
-            return partes[2]
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            return parts[2]
     return text
 
-def _is_missing(antes: list[str], despues: list[str]) -> bool:
+def _is_missing(before: list[str], after: list[str]) -> bool:
     """Report whether any word of the original text is missing, counting repetitions."""
     from collections import Counter
 
-    faltan = Counter(antes)
-    faltan.subtract(Counter(despues))
-    return any(n > 0 for n in faltan.values())
+    missing = Counter(before)
+    missing.subtract(Counter(after))
+    return any(n > 0 for n in missing.values())

@@ -71,7 +71,7 @@ class _Turn:
             _GPU_GATE.acquire()
         return self
 
-    def __exit__(self, *excepcion) -> bool:
+    def __exit__(self, *exception) -> bool:
         if _GPU_GATE is not None:
             _GPU_GATE.release()
         return False
@@ -127,13 +127,13 @@ def local_artifacts_path():
     from pathlib import Path as _P
     import os as _os
 
-    candidatas = []
+    candidates = []
     env = _os.environ.get("DOCLING_ARTIFACTS_PATH")
     if env:
-        candidatas.append(_P(env))
-    candidatas.append(_P(__file__).resolve().parent.parent / "models")
-    candidatas.append(_P.home() / ".cache" / "docling" / "models")
-    for c in candidatas:
+        candidates.append(_P(env))
+    candidates.append(_P(__file__).resolve().parent.parent / "models")
+    candidates.append(_P.home() / ".cache" / "docling" / "models")
+    for c in candidates:
         if c.is_dir() and any(c.iterdir()):
             return c
     return None
@@ -163,15 +163,15 @@ def _get_docling_converter(ocr: bool):
     if accel is not None:
         popts.accelerator_options = accel
 
-    artefactos = local_artifacts_path()
-    if artefactos is not None:
-        popts.artifacts_path = str(artefactos)
+    artefacts = local_artifacts_path()
+    if artefacts is not None:
+        popts.artifacts_path = str(artefacts)
     try:
         from docling.datamodel.pipeline_options import TableFormerMode
 
-        modo = _os.environ.get("PDFTOMD_TABLAS", "rapido").strip().lower()
+        mode = _os.environ.get("PDFTOMD_TABLAS", "rapido").strip().lower()
         popts.table_structure_options.mode = (
-            TableFormerMode.ACCURATE if modo in ("exacto", "accurate")
+            TableFormerMode.ACCURATE if mode in ("exacto", "accurate")
             else TableFormerMode.FAST)
         popts.table_structure_options.do_cell_matching = True
     except Exception:
@@ -353,10 +353,10 @@ def _native_pages(path: Path, headings: dict | None = None) -> tuple[list[str], 
     # in place, each page it recovered a table from. Sharing the list would
     # hand the next engine a document the previous one had already rewritten,
     # which is the same class of fault as sharing it between packages.
-    copia = dict(meta)
-    if isinstance(copia.get("unresolved"), list):
-        copia["unresolved"] = list(copia["unresolved"])
-    return list(pages), copia
+    duplicate = dict(meta)
+    if isinstance(duplicate.get("unresolved"), list):
+        duplicate["unresolved"] = list(duplicate["unresolved"])
+    return list(pages), duplicate
 
 
 def native_pdf(path: Path, headings: dict | None = None) -> tuple[str, dict, None]:
@@ -453,8 +453,8 @@ def hybrid_pdf(path: Path, headings: dict | None = None) -> tuple[str, dict, Non
         return "\n\n".join(pages), meta, None
 
     read_by_model = 0
-    with tempfile.TemporaryDirectory(prefix="mdcx-pages-") as carpeta:
-        gathered = Path(carpeta) / "pending.pdf"
+    with tempfile.TemporaryDirectory(prefix="mdcx-pages-") as folder:
+        gathered = Path(folder) / "pending.pdf"
         try:
             # One document rather than one per page. Layout analysis charges a
             # fixed cost per document and batches the pages inside it, so four

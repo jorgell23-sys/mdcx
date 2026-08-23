@@ -36,24 +36,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mdcx import archive, semantic  # noqa: E402
 
-necesita_modelo = pytest.mark.skipif(
+needs_model = pytest.mark.skipif(
     not semantic.available(),
     reason="needs the multilingual extra: pip install 'mdcx[multilingual]'")
 
-CONSULTA = "how does a plant make its own food"
+QUERY = "how does a plant make its own food"
 
 
-def _construir(raiz: Path, nombre: str, documentos: dict[str, str],
-               con_significado: bool) -> Path:
-    carpeta = raiz / nombre / "Received"
-    carpeta.mkdir(parents=True)
-    for titulo, texto in documentos.items():
-        (carpeta / f"{titulo}.md").write_text(
-            f"---\nsource_format: pdf\n---\n\n# {titulo}\n\n{texto}\n",
+def _build(root: Path, name: str, documents: dict[str, str],
+               with_semantics: bool) -> Path:
+    folder = root / name / "Received"
+    folder.mkdir(parents=True)
+    for title, text in documents.items():
+        (folder / f"{title}.md").write_text(
+            f"---\nsource_format: pdf\n---\n\n# {title}\n\n{text}\n",
             encoding="utf-8")
-    destino = raiz / f"{nombre}.mdcx"
-    archive.pack(raiz / nombre, destino, "k", semantic=con_significado)
-    return destino
+    target = root / f"{name}.mdcx"
+    archive.pack(root / name, target, "k", semantic=with_semantics)
+    return target
 
 
 BOTANICA = {
@@ -66,24 +66,24 @@ IMPRENTA = {
 }
 
 
-def _claves_son_digests(nombre: str, cache: dict) -> None:
-    assert cache, f"{nombre} is empty, so this checked nothing"
-    for clave in cache:
-        assert isinstance(clave, str), (
-            f"{nombre} holds {clave!r}, which looks like an address; "
+def _keys_are_digests(name: str, cache: dict) -> None:
+    assert cache, f"{name} is empty, so this checked nothing"
+    for key in cache:
+        assert isinstance(key, str), (
+            f"{name} holds {key!r}, which looks like an address; "
             f"an address is reused and the entry under it is not")
 
 
 def test_the_lexical_caches_are_keyed_by_content_and_not_by_address(tmp_path):
     """An address is not an identity, and these caches outlive the object at it."""
-    paquete = _construir(tmp_path, "botanica", BOTANICA, con_significado=False)
-    conexion, _ = archive.open_package(paquete, "k")
-    archive.query(conexion, "sunlight sugar chlorophyll", limit=2)
-    _claves_son_digests("_STATS_CACHE", archive._STATS_CACHE)
-    _claves_son_digests("_COLUMN_CACHE", archive._COLUMN_CACHE)
+    package = _build(tmp_path, "botanica", BOTANICA, with_semantics=False)
+    connection, _ = archive.open_package(package, "k")
+    archive.query(connection, "sunlight sugar chlorophyll", limit=2)
+    _keys_are_digests("_STATS_CACHE", archive._STATS_CACHE)
+    _keys_are_digests("_COLUMN_CACHE", archive._COLUMN_CACHE)
 
 
-@necesita_modelo
+@needs_model
 def test_the_vector_cache_is_keyed_by_content_and_not_by_address(tmp_path):
     """This is the one that was keyed by address, and the one that mattered.
 
@@ -91,38 +91,38 @@ def test_the_vector_cache_is_keyed_by_content_and_not_by_address(tmp_path):
     without them the cache stays empty and an assertion over its keys passes
     without having looked at anything.
     """
-    paquete = _construir(tmp_path, "botanica", BOTANICA, con_significado=True)
-    conexion, _ = archive.open_package(paquete, "k")
-    archive.semantic_query(conexion, CONSULTA, 1)
-    _claves_son_digests("_VECTOR_CACHE", archive._VECTOR_CACHE)
+    package = _build(tmp_path, "botanica", BOTANICA, with_semantics=True)
+    connection, _ = archive.open_package(package, "k")
+    archive.semantic_query(connection, QUERY, 1)
+    _keys_are_digests("_VECTOR_CACHE", archive._VECTOR_CACHE)
 
 
 def test_two_connections_onto_one_package_share_the_entry(tmp_path):
     """The fix must not turn the cache off: that is what it is for."""
-    paquete = _construir(tmp_path, "botanica", BOTANICA, con_significado=False)
-    primera, _ = archive.open_package(paquete, "k")
-    segunda, _ = archive.open_package(paquete, "k")
-    assert primera is not segunda
-    assert archive._cache_key(primera) == archive._cache_key(segunda)
-    assert (archive._corpus_statistics(primera)
-            is archive._corpus_statistics(segunda))
+    package = _build(tmp_path, "botanica", BOTANICA, with_semantics=False)
+    first, _ = archive.open_package(package, "k")
+    second, _ = archive.open_package(package, "k")
+    assert first is not second
+    assert archive._cache_key(first) == archive._cache_key(second)
+    assert (archive._corpus_statistics(first)
+            is archive._corpus_statistics(second))
 
 
 def test_a_connection_this_module_did_not_open_is_not_cached(tmp_path):
     """With no digest there is no key that could tell it from another."""
     import sqlite3
 
-    suelta = sqlite3.connect(":memory:")
-    suelta.execute("CREATE TABLE df (term TEXT, passages INTEGER)")
-    suelta.execute("CREATE TABLE meta (key TEXT, value TEXT)")
-    assert archive._cache_key(suelta) is None
-    antes = len(archive._STATS_CACHE)
-    archive._corpus_statistics(suelta)
-    assert len(archive._STATS_CACHE) == antes, (
+    stray = sqlite3.connect(":memory:")
+    stray.execute("CREATE TABLE df (term TEXT, passages INTEGER)")
+    stray.execute("CREATE TABLE meta (key TEXT, value TEXT)")
+    assert archive._cache_key(stray) is None
+    before = len(archive._STATS_CACHE)
+    archive._corpus_statistics(stray)
+    assert len(archive._STATS_CACHE) == before, (
         "it was cached under a key that cannot identify it")
 
 
-@necesita_modelo
+@needs_model
 def test_a_package_does_not_answer_with_a_closed_one_s_vectors(tmp_path):
     """The failure itself: same address, different package, another's ranking.
 
@@ -132,29 +132,29 @@ def test_a_package_does_not_answer_with_a_closed_one_s_vectors(tmp_path):
     not, there is nothing here to measure and the test says so rather than
     passing quietly.
     """
-    a = _construir(tmp_path, "botanica", BOTANICA, con_significado=True)
-    b = _construir(tmp_path, "imprenta", IMPRENTA, con_significado=True)
+    a = _build(tmp_path, "botanica", BOTANICA, with_semantics=True)
+    b = _build(tmp_path, "imprenta", IMPRENTA, with_semantics=True)
 
-    con_a, _ = archive.open_package(a, "k")
-    direccion = id(con_a)
-    archive.semantic_query(con_a, CONSULTA, 1)
-    del con_a
+    conn_a, _ = archive.open_package(a, "k")
+    address = id(conn_a)
+    archive.semantic_query(conn_a, QUERY, 1)
+    del conn_a
     gc.collect()
 
     for _ in range(200):
-        con_b, _ = archive.open_package(b, "k")
-        if id(con_b) == direccion:
+        conn_b, _ = archive.open_package(b, "k")
+        if id(conn_b) == address:
             break
-        del con_b
+        del conn_b
         gc.collect()
     else:
         pytest.skip("the allocator never reused the address")
 
-    con_cache = archive.semantic_query(con_b, CONSULTA, 1)[0]
+    with_cache = archive.semantic_query(conn_b, QUERY, 1)[0]
     archive._VECTOR_CACHE.clear()
-    sin_cache = archive.semantic_query(con_b, CONSULTA, 1)[0]
+    without_cache = archive.semantic_query(conn_b, QUERY, 1)[0]
 
-    assert con_cache["score"] == pytest.approx(sin_cache["score"]), (
+    assert with_cache["score"] == pytest.approx(without_cache["score"]), (
         "the package answered with a cosine that is not its own")
-    assert con_cache["document"] == sin_cache["document"], (
+    assert with_cache["document"] == without_cache["document"], (
         "the ranking came from another package's vectors")

@@ -188,7 +188,7 @@ def _epub_text(path: Path) -> tuple[str, dict]:
     documents = 0
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
-        contenido = [n for n in names
+        content = [n for n in names
                      if n.lower().endswith((".xhtml", ".html", ".htm"))]
 
         # The package file lists the documents in reading order. It is read as
@@ -197,27 +197,27 @@ def _epub_text(path: Path) -> tuple[str, dict]:
         opf = next((n for n in names if n.lower().endswith(".opf")), None)
         if opf:
             try:
-                paquete = archive.read(opf).decode("utf-8", "replace")
+                package = archive.read(opf).decode("utf-8", "replace")
                 base = opf.rsplit("/", 1)[0] + "/" if "/" in opf else ""
-                rutas = dict(re.findall(r'id="([^"]+)"[^>]*href="([^"]+)"', paquete))
-                orden = [base + rutas[i] for i in re.findall(r'idref="([^"]+)"', paquete)
-                         if i in rutas]
-                ordenados = [n for n in orden if n in contenido]
-                contenido = ordenados + [n for n in contenido if n not in ordenados]
+                paths = dict(re.findall(r'id="([^"]+)"[^>]*href="([^"]+)"', package))
+                order = [base + paths[i] for i in re.findall(r'idref="([^"]+)"', package)
+                         if i in paths]
+                ordered = [n for n in order if n in content]
+                content = ordered + [n for n in content if n not in ordered]
             except Exception:  # noqa: BLE001 - the spine is a hint, not a requirement
                 pass
 
-        for nombre in contenido:
+        for name in content:
             try:
-                texto = _html_to_text(archive.read(nombre).decode("utf-8", "replace"))
+                text = _html_to_text(archive.read(name).decode("utf-8", "replace"))
             except Exception:  # noqa: BLE001 - a damaged member is skipped, not fatal
                 continue
-            if texto.strip():
-                parts.append(texto)
+            if text.strip():
+                parts.append(text)
                 documents += 1
 
-    texto = "\n\n".join(parts)
-    return texto, {"documents": documents, "characters": len(texto)}
+    text = "\n\n".join(parts)
+    return text, {"documents": documents, "characters": len(text)}
 
 
 _EXTRACTORS = {

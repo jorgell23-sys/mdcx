@@ -57,9 +57,9 @@ def test_a_boundary_inside_a_word_does_not_split_it():
     page = Textpage("Advanced Functions", start=0.0)     # 4 points a character
     cells = tables.cells_by_word(page, rows=[10.0, 0.0], columns=[0.0, 30.0, 100.0])
 
-    juntas = " ".join(v for v in cells[0] if v)
-    assert "Functions" in juntas, f"la palabra se partio: {cells[0]}"
-    assert "Advanced" in juntas
+    joined = " ".join(v for v in cells[0] if v)
+    assert "Functions" in joined, f"la palabra se partio: {cells[0]}"
+    assert "Advanced" in joined
     assert not any("unctions" == v for v in cells[0])
 
 
@@ -83,20 +83,20 @@ def test_the_shape_is_read_in_the_coordinates_of_the_page():
     Getting this backwards puts every row of the table in the wrong place, and
     the result still looks like a table.
     """
-    escala = tatr.DPI / 72.0
-    assert tatr._to_pdf(0.0, escala, 800.0) == pytest.approx(800.0)   # top
-    assert tatr._to_pdf(800.0 * escala, escala, 800.0) == pytest.approx(0.0)
+    scale = tatr.DPI / 72.0
+    assert tatr._to_pdf(0.0, scale, 800.0) == pytest.approx(800.0)   # top
+    assert tatr._to_pdf(800.0 * scale, scale, 800.0) == pytest.approx(0.0)
     # Horizontal: only the scale applies, whatever the rendering resolution is.
-    assert tatr._to_pdf(72.0 * escala, escala) == pytest.approx(72.0)
+    assert tatr._to_pdf(72.0 * scale, scale) == pytest.approx(72.0)
 
 
 def test_the_model_is_asked_for_the_shape_and_not_for_the_words():
     """The words come from the PDF, so nothing can be invented into a cell."""
-    fuente = (Path(__file__).resolve().parents[1]
+    source = (Path(__file__).resolve().parents[1]
               / "src" / "mdcx" / "convert" / "tatr.py").read_text(encoding="utf-8")
-    assert "cells_by_word" in fuente, "las celdas deben salir del texto del PDF"
-    for transcribir in ("generate(", "decode(", "ocr"):
-        assert transcribir not in fuente, f"no debe transcribir: {transcribir}"
+    assert "cells_by_word" in source, "las celdas deben salir del texto del PDF"
+    for transcribe in ("generate(", "decode(", "ocr"):
+        assert transcribe not in source, f"no debe transcribir: {transcribe}"
 
 
 def test_it_reports_whether_it_can_run():

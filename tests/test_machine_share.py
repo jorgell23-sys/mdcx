@@ -32,48 +32,48 @@ from mdcx.convert import engines  # noqa: E402
 
 # Machine sizes worth checking: the small ones where a fixed cap oversubscribes,
 # and the large ones where reserving a single processor reserves nothing.
-TAMANOS = (1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 64, 128)
+SIZES = (1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 64, 128)
 
 
-def _tope(procesadores: int, monkeypatch) -> int:
-    monkeypatch.setattr(os, "cpu_count", lambda: procesadores)
+def _cap(processors: int, monkeypatch) -> int:
+    monkeypatch.setattr(os, "cpu_count", lambda: processors)
     return cli._default_max_cores()
 
 
-@pytest.mark.parametrize("procesadores", TAMANOS)
-def test_a_share_of_the_machine_is_left_free(procesadores, monkeypatch):
+@pytest.mark.parametrize("processors", SIZES)
+def test_a_share_of_the_machine_is_left_free(processors, monkeypatch):
     """Never more than what the reserve allows, at any size."""
-    tope = _tope(procesadores, monkeypatch)
-    permitido = int(procesadores * (1.0 - cli.RESERVED_SHARE))
-    assert tope <= max(1, permitido), (
-        f"on {procesadores} processors the default asks for {tope}, "
+    cap = _cap(processors, monkeypatch)
+    allowed = int(processors * (1.0 - cli.RESERVED_SHARE))
+    assert cap <= max(1, allowed), (
+        f"on {processors} processors the default asks for {cap}, "
         f"which leaves less than {cli.RESERVED_SHARE:.0%} free")
 
 
-@pytest.mark.parametrize("procesadores", TAMANOS)
-def test_the_default_never_asks_for_more_than_the_machine_has(procesadores, monkeypatch):
+@pytest.mark.parametrize("processors", SIZES)
+def test_the_default_never_asks_for_more_than_the_machine_has(processors, monkeypatch):
     """The defect the constant had: 8 on a machine of four."""
-    tope = _tope(procesadores, monkeypatch)
-    assert 1 <= tope <= procesadores, (
-        f"on {procesadores} processors the default asks for {tope}")
+    cap = _cap(processors, monkeypatch)
+    assert 1 <= cap <= processors, (
+        f"on {processors} processors the default asks for {cap}")
 
 
-@pytest.mark.parametrize("procesadores", [n for n in TAMANOS if n >= 8])
-def test_a_larger_machine_is_actually_used(procesadores, monkeypatch):
+@pytest.mark.parametrize("processors", [n for n in SIZES if n >= 8])
+def test_a_larger_machine_is_actually_used(processors, monkeypatch):
     """The cap grows with the machine; a constant is a ceiling nobody asked for.
 
     Reserving a share and then capping the rest at a fixed number leaves most of
     a large machine idle, which is the same defect in the other direction: the
     number stops describing the machine it is running on.
     """
-    tope = _tope(procesadores, monkeypatch)
-    assert tope >= procesadores // 2, (
-        f"on {procesadores} processors the default asks for only {tope}")
+    cap = _cap(processors, monkeypatch)
+    assert cap >= processors // 2, (
+        f"on {processors} processors the default asks for only {cap}")
 
 
 def test_the_cap_grows_with_the_machine(monkeypatch):
     """Twice the machine, near enough twice the processes."""
-    assert _tope(64, monkeypatch) > _tope(32, monkeypatch) > _tope(16, monkeypatch)
+    assert _cap(64, monkeypatch) > _cap(32, monkeypatch) > _cap(16, monkeypatch)
 
 
 def test_an_unknown_processor_count_does_not_raise(monkeypatch):
@@ -82,10 +82,10 @@ def test_an_unknown_processor_count_does_not_raise(monkeypatch):
     assert cli._default_max_cores() >= 1
 
 
-def _tamanos(monkeypatch, total, fraccion, vram_libre, tiene_gpu=True):
-    monkeypatch.setattr(cli, "_free_vram_mib", lambda: vram_libre)
+def _sizes(monkeypatch, total, fraction, vram_free, has_gpu=True):
+    monkeypatch.setattr(cli, "_free_vram_mib", lambda: vram_free)
     monkeypatch.setattr(cli, "_vram_per_worker_mib", lambda: 1384)
-    return cli._lane_sizes(total, fraccion, tiene_gpu)
+    return cli._lane_sizes(total, fraction, has_gpu)
 
 
 def test_the_card_decides_when_it_is_the_scarce_one(monkeypatch):
@@ -96,23 +96,23 @@ def test_the_card_decides_when_it_is_the_scarce_one(monkeypatch):
     slower than three -- because the resource running out was not the one being
     raised.
     """
-    gpu, cpu = _tamanos(monkeypatch, total=12, fraccion=0.20, vram_libre=2000)
+    gpu, cpu = _sizes(monkeypatch, total=12, fraction=0.20, vram_free=2000)
     assert gpu == 1, "more workers were put on the card than fit on it"
     assert cpu == 11
 
 
 def test_the_work_decides_when_little_of_it_needs_the_card(monkeypatch):
     """A lane sized for documents that never arrive is a lane of idle processes."""
-    gpu, cpu = _tamanos(monkeypatch, total=9, fraccion=0.20, vram_libre=11000)
+    gpu, cpu = _sizes(monkeypatch, total=9, fraction=0.20, vram_free=11000)
     assert gpu == 2, "the card would allow more, but the work does not ask for it"
     assert cpu == 7
 
 
 def test_more_of_the_work_needing_the_card_moves_workers_to_it(monkeypatch):
     """Measured on real material, the share ranges from 13% to 58%."""
-    pocos, _ = _tamanos(monkeypatch, total=9, fraccion=0.13, vram_libre=5105)
-    muchos, _ = _tamanos(monkeypatch, total=9, fraccion=0.58, vram_libre=5105)
-    assert muchos > pocos, "the split does not follow what the material asks for"
+    few, _ = _sizes(monkeypatch, total=9, fraction=0.13, vram_free=5105)
+    many, _ = _sizes(monkeypatch, total=9, fraction=0.58, vram_free=5105)
+    assert many > few, "the split does not follow what the material asks for"
 
 
 def test_something_is_always_left_for_the_processor(monkeypatch):
@@ -122,38 +122,38 @@ def test_something_is_always_left_for_the_processor(monkeypatch):
     everything else, which is backwards: the bulk of this work is processor
     work.
     """
-    gpu, cpu = _tamanos(monkeypatch, total=8, fraccion=1.0, vram_libre=24000)
+    gpu, cpu = _sizes(monkeypatch, total=8, fraction=1.0, vram_free=24000)
     assert cpu >= 1
     assert gpu <= 7, "every worker was put on the card"
 
 
 def test_the_split_grows_with_the_machine(monkeypatch):
     """It used to be the constants 8 and 2, whatever the machine."""
-    chica = _tamanos(monkeypatch, total=3, fraccion=0.20, vram_libre=24000)
-    grande = _tamanos(monkeypatch, total=25, fraccion=0.20, vram_libre=24000)
-    assert sum(grande) > sum(chica)
-    assert grande[0] > chica[0], "the card lane did not grow with the machine"
+    small = _sizes(monkeypatch, total=3, fraction=0.20, vram_free=24000)
+    large = _sizes(monkeypatch, total=25, fraction=0.20, vram_free=24000)
+    assert sum(large) > sum(small)
+    assert large[0] > small[0], "the card lane did not grow with the machine"
 
 
 def test_a_machine_with_no_card_is_not_measured_against_one(monkeypatch):
     """There is no video memory to divide, and the lane is still worth having."""
-    gpu, cpu = _tamanos(monkeypatch, total=9, fraccion=0.30, vram_libre=None,
-                        tiene_gpu=False)
+    gpu, cpu = _sizes(monkeypatch, total=9, fraction=0.30, vram_free=None,
+                        has_gpu=False)
     assert gpu >= 1 and cpu >= 1
 
 
-def _lote(monkeypatch, libre_mib=None, hay_placa=True):
+def _batch(monkeypatch, free_mib=None, gpu_present=True):
     """The batch this machine would choose, with the card it is told it has."""
     import types
 
     from mdcx.convert import tatr
 
     monkeypatch.delenv("MDCX_TATR_BATCH", raising=False)
-    falso = types.ModuleType("torch")
-    falso.cuda = types.SimpleNamespace(
-        is_available=lambda: hay_placa,
-        mem_get_info=lambda: ((libre_mib or 0) * 1024 * 1024, 0))
-    monkeypatch.setitem(sys.modules, "torch", falso)
+    bogus = types.ModuleType("torch")
+    bogus.cuda = types.SimpleNamespace(
+        is_available=lambda: gpu_present,
+        mem_get_info=lambda: ((free_mib or 0) * 1024 * 1024, 0))
+    monkeypatch.setitem(sys.modules, "torch", bogus)
     return tatr._batch_size()
 
 
@@ -167,7 +167,7 @@ def test_a_worker_alone_does_not_size_its_own_batch(monkeypatch):
     """
     from mdcx.convert import tatr
 
-    assert _lote(monkeypatch, libre_mib=24000) == tatr.BATCH_FLOOR, (
+    assert _batch(monkeypatch, free_mib=24000) == tatr.BATCH_FLOOR, (
         "a worker sized the batch from memory it does not have to itself")
 
 
@@ -175,24 +175,24 @@ def test_the_batch_fits_once_every_worker_is_seated(monkeypatch):
     """Whoever can see the whole run decides, and what it decides has to fit."""
     from mdcx.convert import tatr
 
-    for libre, procesos in ((5113, 3), (5113, 1), (2000, 1), (11000, 4),
+    for free, processes in ((5113, 3), (5113, 1), (2000, 1), (11000, 4),
                             (24000, 5), (80000, 8), (1000, 2)):
-        lote = tatr.batch_for(libre, procesos)
-        pedido = procesos * (tatr.MODELS_MIB + lote * tatr.BATCH_MIB)
-        asentados = procesos * (tatr.MODELS_MIB + tatr.BATCH_FLOOR * tatr.BATCH_MIB)
-        if asentados <= libre:
-            assert pedido <= libre, (
-                f"{procesos} workers with a batch of {lote} ask for {pedido} MiB "
-                f"of the {libre} free")
+        batch = tatr.batch_for(free, processes)
+        requested = processes * (tatr.MODELS_MIB + batch * tatr.BATCH_MIB)
+        settled = processes * (tatr.MODELS_MIB + tatr.BATCH_FLOOR * tatr.BATCH_MIB)
+        if settled <= free:
+            assert requested <= free, (
+                f"{processes} workers with a batch of {batch} ask for {requested} MiB "
+                f"of the {free} free")
 
 
 def test_room_left_over_buys_a_larger_batch(monkeypatch):
     """The cost of a page falls with the batch: 150 ms sending one, 46 with 24."""
     from mdcx.convert import tatr
 
-    apretado = tatr.batch_for(5113, 3)
+    tight = tatr.batch_for(5113, 3)
     holgado = tatr.batch_for(5113, 1)
-    assert holgado > apretado, "the room left by fewer workers bought nothing"
+    assert holgado > tight, "the room left by fewer workers bought nothing"
     assert tatr.batch_for(80000, 2) == tatr.BATCH_CEILING
 
 
@@ -209,15 +209,15 @@ def test_the_batch_never_grows_past_where_the_curve_flattens(monkeypatch):
     """Past twenty-four the saving is small and the memory is not."""
     from mdcx.convert import tatr
 
-    for libre in (8000, 24000, 80000, 200000):
-        assert tatr.batch_for(libre, 1) <= tatr.BATCH_CEILING
+    for free in (8000, 24000, 80000, 200000):
+        assert tatr.batch_for(free, 1) <= tatr.BATCH_CEILING
 
 
 def test_a_machine_with_no_card_keeps_the_floor(monkeypatch):
     """Nothing to read, and nothing gained by a larger batch either."""
     from mdcx.convert import tatr
 
-    assert _lote(monkeypatch, hay_placa=False) == tatr.BATCH_FLOOR
+    assert _batch(monkeypatch, gpu_present=False) == tatr.BATCH_FLOOR
 
 
 def test_a_machine_can_say_otherwise(monkeypatch):
@@ -235,10 +235,10 @@ def test_the_threads_a_worker_asks_for_are_the_ones_it_was_given(monkeypatch):
     what the run would take.
     """
     monkeypatch.setenv("OMP_NUM_THREADS", "1")
-    opciones = engines._accelerator_options()
-    if opciones is None:
+    options = engines._accelerator_options()
+    if options is None:
         pytest.skip("needs the convert extra: pip install 'mdcx[convert]'")
-    assert opciones.num_threads == 1
+    assert options.num_threads == 1
 
     monkeypatch.setenv("OMP_NUM_THREADS", "3")
     assert engines._accelerator_options().num_threads == 3
@@ -272,7 +272,7 @@ def test_the_card_is_bounded_by_a_gate_and_not_by_a_lane(monkeypatch):
     things with one number, and the second was never wanted: it cost the CPU
     lane a third of its table rows and every list item.
     """
-    class Contador:
+    class CallCounter:
         def __init__(self):
             self.dentro = 0
             self.maximo = 0
@@ -284,20 +284,20 @@ def test_the_card_is_bounded_by_a_gate_and_not_by_a_lane(monkeypatch):
         def release(self):
             self.dentro -= 1
 
-    puerta = Contador()
-    engines.set_gpu_gate(puerta)
+    gate = CallCounter()
+    engines.set_gpu_gate(gate)
     try:
         with engines.gpu_turn():
-            assert puerta.dentro == 1, "the model call did not take its turn"
-        assert puerta.dentro == 0, "the turn was not given back"
-        assert puerta.maximo == 1
+            assert gate.dentro == 1, "the model call did not take its turn"
+        assert gate.dentro == 0, "the turn was not given back"
+        assert gate.maximo == 1
     finally:
         engines.set_gpu_gate(None)
 
 
 def test_the_turn_is_given_back_when_the_model_fails(monkeypatch):
     """A model that raises must not leave the card reserved for the whole run."""
-    class Contador:
+    class CallCounter:
         def __init__(self):
             self.dentro = 0
 
@@ -307,13 +307,13 @@ def test_the_turn_is_given_back_when_the_model_fails(monkeypatch):
         def release(self):
             self.dentro -= 1
 
-    puerta = Contador()
-    engines.set_gpu_gate(puerta)
+    gate = CallCounter()
+    engines.set_gpu_gate(gate)
     try:
         with pytest.raises(RuntimeError):
             with engines.gpu_turn():
                 raise RuntimeError("el modelo fallo")
-        assert puerta.dentro == 0, (
+        assert gate.dentro == 0, (
             "a failure left the card held, and every other process waiting")
     finally:
         engines.set_gpu_gate(None)

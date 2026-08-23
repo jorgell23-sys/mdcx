@@ -114,21 +114,21 @@ def _accelerator_kwargs() -> dict:
     return {"torch_dtype": torch.float16, "attn_implementation": "sdpa"}
 
 
-def _batches(orden: list[int], textos: list[str], max_rows: int, budget: int):
+def _batches(order: list[int], texts: list[str], max_rows: int, budget: int):
     """Group sorted texts into batches of bounded cost.
 
     The texts arrive shortest first, so the last one added is the longest, and
     the cost of the batch is that length times the number of rows.
     """
-    lote: list[int] = []
-    for indice in orden:
-        mas_largo = len(textos[indice])
-        if lote and ((len(lote) + 1) * mas_largo > budget or len(lote) >= max_rows):
-            yield lote
-            lote = []
-        lote.append(indice)
-    if lote:
-        yield lote
+    batch: list[int] = []
+    for index in order:
+        longest = len(texts[index])
+        if batch and ((len(batch) + 1) * longest > budget or len(batch) >= max_rows):
+            yield batch
+            batch = []
+        batch.append(index)
+    if batch:
+        yield batch
 
 
 def load(name: str | None = None):
@@ -188,23 +188,23 @@ def encode(texts: list[str], role: str = "passage", name: str | None = None,
     model = load(name)
     query_prefix, passage_prefix = prefixes(name)
     prefix = query_prefix if role == "query" else passage_prefix
-    preparados = [prefix + t for t in texts]
-    if not preparados:
+    prepared = [prefix + t for t in texts]
+    if not prepared:
         return np.zeros((0, dimensions(name)), dtype=np.float32)
 
-    orden = sorted(range(len(preparados)), key=lambda i: len(preparados[i]))
-    salida: list = [None] * len(preparados)
-    for lote in _batches(orden, preparados, batch_size, budget):
-        vectores = model.encode([preparados[i] for i in lote],
+    order = sorted(range(len(prepared)), key=lambda i: len(prepared[i]))
+    output: list = [None] * len(prepared)
+    for batch in _batches(order, prepared, batch_size, budget):
+        vectors = model.encode([prepared[i] for i in batch],
                                 normalize_embeddings=True,
                                 show_progress_bar=False,
-                                batch_size=len(lote))
-        for indice, vector in zip(lote, vectores):
-            salida[indice] = vector
+                                batch_size=len(batch))
+        for index, vector in zip(batch, vectors):
+            output[index] = vector
 
     # Reduced precision is a way of spending the accelerator, not a change to
     # the format: a package stores single precision whatever produced it.
-    return np.asarray(salida, dtype=np.float32)
+    return np.asarray(output, dtype=np.float32)
 
 
 def dimensions(name: str | None = None) -> int:

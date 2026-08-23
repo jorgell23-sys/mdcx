@@ -34,16 +34,16 @@ from mdcx.convert import convert as C  # noqa: E402
 from mdcx.convert import tables  # noqa: E402
 
 
-def _job(**cambios):
+def _job(**changes):
     """A conversion job, with only what choosing an engine looks at.
 
     A chapter carries the book it was cut from and the pages it covers, because
     the headings have to be fetched from there: cutting pages leaves the
     bookmarks behind.
     """
-    campos = dict(kind="pdf", is_chapter=False, page_range=None, source=Path("libro.pdf"))
-    campos.update(cambios)
-    return SimpleNamespace(**campos)
+    fields = dict(kind="pdf", is_chapter=False, page_range=None, source=Path("libro.pdf"))
+    fields.update(changes)
+    return SimpleNamespace(**fields)
 
 
 class Textpage:
@@ -58,16 +58,16 @@ class Textpage:
 
 def test_the_cheap_engine_is_tried_first():
     """A vision model is what the order exists to avoid paying for."""
-    nombres = [n for n, _ in C._candidates(_job(), {}, use_docling=True)]
-    assert nombres, "algun motor debe quedar"
-    assert nombres[0] == "nativo"
-    assert nombres.index("nativo") < nombres.index("docling")
+    names = [n for n, _ in C._candidates(_job(), {}, use_docling=True)]
+    assert names, "algun motor debe quedar"
+    assert names[0] == "nativo"
+    assert names.index("nativo") < names.index("docling")
 
 
 def test_a_document_that_needs_ocr_goes_to_the_model_first():
     """There is nothing to extract from a page with no text layer."""
-    nombres = [n for n, _ in C._candidates(_job(), {"needs_ocr": True}, use_docling=True)]
-    assert nombres[0] == "docling-ocr"
+    names = [n for n, _ in C._candidates(_job(), {"needs_ocr": True}, use_docling=True)]
+    assert names[0] == "docling-ocr"
 
 
 def test_the_cheap_result_stops_the_expensive_engine_when_nothing_is_pending():
@@ -96,8 +96,8 @@ def test_a_book_that_labels_its_tables_figure_is_not_given_up_on():
     """
     v = {"status": "ok"}
     score = (1, 5, 1.0, 1000)
-    ninguna_rotulada = {"tables": 13, "tables_announced": 0, "unresolved": [3, 9]}
-    assert C._good_enough("nativo", ninguna_rotulada, v, score) is False
+    none_labelled = {"tables": 13, "tables_announced": 0, "unresolved": [3, 9]}
+    assert C._good_enough("nativo", none_labelled, v, score) is False
 
 
 def test_an_engine_that_cannot_answer_defers_to_the_model():
@@ -151,24 +151,24 @@ def test_no_engine_is_preferred_to_one_that_read_more():
     had. Measured over 214 chapters it happened in 45, and in one the chosen
     result was 16,624 characters shorter than the one already extracted.
     """
-    intentos = [{"engine": "nativo", "coverage": 1.0}]
-    assert C._covers_less({"coverage": 0.900}, intentos) is True
-    assert C._covers_less({"coverage": 0.762}, intentos) is True
-    assert C._covers_less({"coverage": 0.997}, intentos) is False   # dentro de la tolerancia
-    assert C._covers_less({"coverage": 1.0}, intentos) is False
+    attempts = [{"engine": "nativo", "coverage": 1.0}]
+    assert C._covers_less({"coverage": 0.900}, attempts) is True
+    assert C._covers_less({"coverage": 0.762}, attempts) is True
+    assert C._covers_less({"coverage": 0.997}, attempts) is False   # dentro de la tolerancia
+    assert C._covers_less({"coverage": 1.0}, attempts) is False
 
 
 def test_layout_analysis_is_held_to_the_same_rule():
     """It returns more characters and covers fewer of the document's words."""
-    intentos = [{"engine": "nativo", "coverage": 1.0},
+    attempts = [{"engine": "nativo", "coverage": 1.0},
                 {"engine": "hibrido", "coverage": 0.95}]
-    assert C._covers_less({"coverage": 0.990}, intentos) is True
+    assert C._covers_less({"coverage": 0.990}, attempts) is True
 
 
 def test_an_engine_that_reads_more_is_not_held_back():
     """The rule is against losing ground, not against improving on it."""
-    intentos = [{"engine": "nativo", "coverage": 0.900}]
-    assert C._covers_less({"coverage": 1.0}, intentos) is False
+    attempts = [{"engine": "nativo", "coverage": 0.900}]
+    assert C._covers_less({"coverage": 1.0}, attempts) is False
 
 
 def test_a_document_with_nothing_to_compare_against_is_not_rejected():

@@ -59,32 +59,32 @@ def test_a_setting_names_several_packages():
     only because it had never run anywhere but Windows.
     """
     if os.pathsep == ";":
-        partes = mcp_server._split_setting(f"C:\\one.mdcx{os.pathsep}D:\\two.mdcx")
-        assert partes == ["C:\\one.mdcx", "D:\\two.mdcx"]
+        parts = mcp_server._split_setting(f"C:\\one.mdcx{os.pathsep}D:\\two.mdcx")
+        assert parts == ["C:\\one.mdcx", "D:\\two.mdcx"]
     else:
-        partes = mcp_server._split_setting(f"/data/one.mdcx{os.pathsep}/data/two.mdcx")
-        assert partes == ["/data/one.mdcx", "/data/two.mdcx"]
+        parts = mcp_server._split_setting(f"/data/one.mdcx{os.pathsep}/data/two.mdcx")
+        assert parts == ["/data/one.mdcx", "/data/two.mdcx"]
     assert mcp_server._split_setting("a.mdcx, b.mdcx") == ["a.mdcx", "b.mdcx"]
     assert mcp_server._split_setting("only.mdcx") == ["only.mdcx"]
 
 
 def test_both_packages_are_opened(two_packages):
-    paquetes = mcp_server._open_packages()
-    assert len(paquetes) == 2
-    assert {p["name"] for p in paquetes} == {"first.mdcx", "second.mdcx"}
+    packages = mcp_server._open_packages()
+    assert len(packages) == 2
+    assert {p["name"] for p in packages} == {"first.mdcx", "second.mdcx"}
 
 
 def test_a_query_reaches_either_package(two_packages):
     """A document is found whichever package holds it, and names its own."""
-    for consulta, esperado, paquete in (
+    for query, expected, package in (
             ("printing press", "gutenberg", "first.mdcx"),
             ("photosynthesis sugar", "photosynthesis", "second.mdcx")):
-        resultados = mcp_server.search_packages(consulta, limit=3)
-        assert resultados, f"nothing found for {consulta!r}"
-        assert any(esperado in r["document"] for r in resultados)
-        assert all(r.get("package") for r in resultados), (
+        results = mcp_server.search_packages(query, limit=3)
+        assert results, f"nothing found for {query!r}"
+        assert any(expected in r["document"] for r in results)
+        assert all(r.get("package") for r in results), (
             "a result must say which package it came from")
-        assert any(r.get("package") == paquete for r in resultados)
+        assert any(r.get("package") == package for r in results)
 
 
 def test_a_single_package_omits_the_package_field(tmp_path, monkeypatch):
@@ -95,9 +95,9 @@ def test_a_single_package_omits_the_package_field(tmp_path, monkeypatch):
     monkeypatch.setenv("MDCX_KEY", "k")
     mcp_server._STATE.clear()
     try:
-        resultados = mcp_server.search_packages("printing press", limit=3)
-        assert resultados
-        assert "package" not in resultados[0]
+        results = mcp_server.search_packages("printing press", limit=3)
+        assert results
+        assert "package" not in results[0]
     finally:
         mcp_server._STATE.clear()
 
@@ -166,8 +166,8 @@ def test_a_single_package_still_works(tmp_path, monkeypatch):
     monkeypatch.setenv("MDCX_KEY", "k")
     mcp_server._STATE.clear()
     try:
-        paquetes = mcp_server._open_packages()
-        assert len(paquetes) == 1
-        assert archive.query(paquetes[0]["connection"], "printing press", limit=3)
+        packages = mcp_server._open_packages()
+        assert len(packages) == 1
+        assert archive.query(packages[0]["connection"], "printing press", limit=3)
     finally:
         mcp_server._STATE.clear()

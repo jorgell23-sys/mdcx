@@ -30,10 +30,10 @@ from mdcx.convert.paths import plan_jobs  # noqa: E402
 
 # A title from the OpenStax catalogue in Polish. Every character outside cp1252
 # here is one that appears in real catalogue entries.
-NOMBRE_POLACO = "Fizyka dla szkół wyższych — łódź"
+POLISH_NAME = "Fizyka dla szkół wyższych — łódź"
 
 
-class ConsolaLimitada(io.TextIOBase):
+class LimitedConsole(io.TextIOBase):
     """A stream with a code page that cannot represent every character.
 
     It has no reconfigure, which is the case that the fallback exists for: a
@@ -53,33 +53,33 @@ class ConsolaLimitada(io.TextIOBase):
 
 def test_a_limited_console_would_raise():
     """The premise of these tests: this stream fails as the console fails."""
-    consola = ConsolaLimitada()
+    stream = LimitedConsole()
     with pytest.raises(UnicodeEncodeError):
-        consola.write(NOMBRE_POLACO)
+        stream.write(POLISH_NAME)
 
 
 def test_safe_print_degrades_instead_of_raising(monkeypatch):
     """The unrepresentable character is replaced; the line still appears."""
-    consola = ConsolaLimitada()
-    monkeypatch.setattr(sys, "stdout", consola)
-    console.safe_print(f">>> {NOMBRE_POLACO}")
-    escrito = "".join(consola.written)
-    assert ">>>" in escrito
-    assert "Fizyka" in escrito
-    assert "wy" in escrito, "the representable part of the name survives"
+    stream = LimitedConsole()
+    monkeypatch.setattr(sys, "stdout", stream)
+    console.safe_print(f">>> {POLISH_NAME}")
+    written = "".join(stream.written)
+    assert ">>>" in written
+    assert "Fizyka" in written
+    assert "wy" in written, "the representable part of the name survives"
 
 
 def test_safe_print_passes_its_arguments(monkeypatch):
-    consola = ConsolaLimitada()
-    monkeypatch.setattr(sys, "stdout", consola)
+    stream = LimitedConsole()
+    monkeypatch.setattr(sys, "stdout", stream)
     console.safe_print("plain text", end="")
-    assert "".join(consola.written) == "plain text"
+    assert "".join(stream.written) == "plain text"
 
 
 def test_configure_survives_a_stream_that_cannot_be_reconfigured(monkeypatch):
     """Configuration must not raise on a stream that does not support it."""
-    monkeypatch.setattr(sys, "stdout", ConsolaLimitada())
-    monkeypatch.setattr(sys, "stderr", ConsolaLimitada())
+    monkeypatch.setattr(sys, "stdout", LimitedConsole())
+    monkeypatch.setattr(sys, "stderr", LimitedConsole())
     console.configure()
 
 
@@ -91,39 +91,39 @@ def test_a_name_outside_the_code_page_still_converts(monkeypatch):
     recorded as an engine failure without the conversion ever being tried.
     """
     with tempfile.TemporaryDirectory() as tmp:
-        raiz = Path(tmp)
-        entrada = raiz / "in"
-        entrada.mkdir()
-        (entrada / f"{NOMBRE_POLACO}.txt").write_text(
+        root = Path(tmp)
+        entry = root / "in"
+        entry.mkdir()
+        (entry / f"{POLISH_NAME}.txt").write_text(
             "Content long enough for the conversion to have something to do.",
             encoding="utf-8")
-        salida = raiz / "out"
-        salida.mkdir()
+        output = root / "out"
+        output.mkdir()
 
-        jobs, _ = plan_jobs(entrada)
+        jobs, _ = plan_jobs(entry)
         assert jobs, "the file must be queued"
 
-        monkeypatch.setattr(sys, "stdout", ConsolaLimitada())
-        registro = convert_one_safe((jobs[0], salida, False, False, True))
+        monkeypatch.setattr(sys, "stdout", LimitedConsole())
+        record = convert_one_safe((jobs[0], output, False, False, True))
 
-        assert registro["engine"] != "none", (
-            f"the conversion was not attempted: {registro.get('errors')}")
-        assert registro["ok"], registro.get("errors")
-        assert (salida / f"{NOMBRE_POLACO}.md").exists()
+        assert record["engine"] != "none", (
+            f"the conversion was not attempted: {record.get('errors')}")
+        assert record["ok"], record.get("errors")
+        assert (output / f"{POLISH_NAME}.md").exists()
 
 
 def test_the_written_document_keeps_its_name(monkeypatch):
     """The output file is named after the source, not after what fits."""
     with tempfile.TemporaryDirectory() as tmp:
-        raiz = Path(tmp)
-        entrada = raiz / "in"
-        entrada.mkdir()
-        (entrada / f"{NOMBRE_POLACO}.txt").write_text("Some content here.",
+        root = Path(tmp)
+        entry = root / "in"
+        entry.mkdir()
+        (entry / f"{POLISH_NAME}.txt").write_text("Some content here.",
                                                       encoding="utf-8")
-        salida = raiz / "out"
-        salida.mkdir()
-        jobs, _ = plan_jobs(entrada)
-        monkeypatch.setattr(sys, "stdout", ConsolaLimitada())
-        convert_one_safe((jobs[0], salida, False, False, True))
-        nombres = [p.name for p in salida.glob("*.md")]
-        assert f"{NOMBRE_POLACO}.md" in nombres
+        output = root / "out"
+        output.mkdir()
+        jobs, _ = plan_jobs(entry)
+        monkeypatch.setattr(sys, "stdout", LimitedConsole())
+        convert_one_safe((jobs[0], output, False, False, True))
+        names = [p.name for p in output.glob("*.md")]
+        assert f"{POLISH_NAME}.md" in names

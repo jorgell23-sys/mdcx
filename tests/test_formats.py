@@ -59,8 +59,8 @@ def test_epub_is_a_supported_format():
 
 
 def test_content_identifies_an_epub(tmp_path):
-    libro = build_epub(tmp_path / "book.epub")
-    assert sniff_format(libro) == "epub"
+    book = build_epub(tmp_path / "book.epub")
+    assert sniff_format(book) == "epub"
 
 
 def test_an_epub_named_pdf_is_still_an_epub(tmp_path):
@@ -69,14 +69,14 @@ def test_an_epub_named_pdf_is_still_an_epub(tmp_path):
     Repositories serve EPUB files from .pdf URLs. Trusting the name sends the
     file to the PDF reader, which cannot open it.
     """
-    disfrazado = build_epub(tmp_path / "served_as.pdf")
-    assert sniff_format(disfrazado) == "epub"
-    assert resolve_format(disfrazado) == "epub"
+    disguised = build_epub(tmp_path / "served_as.pdf")
+    assert sniff_format(disguised) == "epub"
+    assert resolve_format(disguised) == "epub"
 
 
 def test_ooxml_is_identified_by_its_members(tmp_path):
-    documento = build_docx_like(tmp_path / "report.docx")
-    assert sniff_format(documento) == "docx"
+    document = build_docx_like(tmp_path / "report.docx")
+    assert sniff_format(document) == "docx"
 
 
 def test_a_pdf_is_identified_by_its_header(tmp_path):
@@ -87,39 +87,39 @@ def test_a_pdf_is_identified_by_its_header(tmp_path):
 
 def test_text_falls_back_to_the_extension(tmp_path):
     """Plain text carries no signature, so its name is the only information."""
-    nota = tmp_path / "note.txt"
-    nota.write_text("plain text carries no signature", encoding="utf-8")
-    assert sniff_format(nota) is None
-    assert resolve_format(nota) == "text"
+    note = tmp_path / "note.txt"
+    note.write_text("plain text carries no signature", encoding="utf-8")
+    assert sniff_format(note) is None
+    assert resolve_format(note) == "text"
 
 
 def test_an_unknown_file_is_not_guessed(tmp_path):
-    desconocido = tmp_path / "data.bin"
-    desconocido.write_bytes(b"\x00\x01\x02\x03binary")
-    assert resolve_format(desconocido) is None
+    unknown = tmp_path / "data.bin"
+    unknown.write_bytes(b"\x00\x01\x02\x03binary")
+    assert resolve_format(unknown) is None
 
 
 def test_a_damaged_zip_is_not_claimed(tmp_path):
     """A truncated archive identifies nothing and must not be forced through."""
-    roto = tmp_path / "broken.epub"
-    roto.write_bytes(b"PK\x03\x04" + b"\x00" * 40)
-    assert sniff_format(roto) is None
+    damaged = tmp_path / "broken.epub"
+    damaged.write_bytes(b"PK\x03\x04" + b"\x00" * 40)
+    assert sniff_format(damaged) is None
 
 
 def test_planning_queues_epub_under_either_name(tmp_path):
     """Both the honest and the misnamed EPUB reach the queue, as EPUB."""
-    entrada = tmp_path / "input"
-    entrada.mkdir()
-    build_epub(entrada / "honest.epub")
-    build_epub(entrada / "misnamed.pdf")
-    (entrada / "note.txt").write_text("text", encoding="utf-8")
+    entry = tmp_path / "input"
+    entry.mkdir()
+    build_epub(entry / "honest.epub")
+    build_epub(entry / "misnamed.pdf")
+    (entry / "note.txt").write_text("text", encoding="utf-8")
 
-    jobs, skipped = plan_jobs(entrada)
-    formatos = {j.source.name: j.kind for j in jobs}
+    jobs, skipped = plan_jobs(entry)
+    formats = {j.source.name: j.kind for j in jobs}
     assert not skipped
-    assert formatos["honest.epub"] == "epub"
-    assert formatos["misnamed.pdf"] == "epub"
-    assert formatos["note.txt"] == "text"
+    assert formats["honest.epub"] == "epub"
+    assert formats["misnamed.pdf"] == "epub"
+    assert formats["note.txt"] == "text"
 
 
 def test_reference_text_of_an_epub_is_measurable(tmp_path):
@@ -128,41 +128,41 @@ def test_reference_text_of_an_epub_is_measurable(tmp_path):
     Without it the coverage of an EPUB is undefined, and a document whose
     fidelity cannot be measured is one nobody can audit afterwards.
     """
-    libro = build_epub(tmp_path / "book.epub", title="Measured",
+    book = build_epub(tmp_path / "book.epub", title="Measured",
                        body="Photosynthesis lets plants turn sunlight into sugar.")
-    texto, meta = extract.reference_text(libro, "epub")
+    text, meta = extract.reference_text(book, "epub")
     assert "error" not in meta
     assert meta["documents"] == 1
-    assert "Photosynthesis" in texto
-    assert "Measured" in texto
+    assert "Photosynthesis" in text
+    assert "Measured" in text
 
 
 def test_reference_text_leaves_out_markup_and_code(tmp_path):
     """Style and markup are not content, and counting them would credit noise."""
-    libro = build_epub(tmp_path / "book.epub")
-    texto, _ = extract.reference_text(libro, "epub")
-    assert "color: red" not in texto
-    assert "<p>" not in texto
-    assert "ignored" not in texto, "the head title is not body text"
+    book = build_epub(tmp_path / "book.epub")
+    text, _ = extract.reference_text(book, "epub")
+    assert "color: red" not in text
+    assert "<p>" not in text
+    assert "ignored" not in text, "the head title is not body text"
 
 
 def test_a_damaged_epub_reports_instead_of_raising(tmp_path):
     """Extraction never raises: a failure is reported as a failure."""
-    roto = tmp_path / "broken.epub"
-    roto.write_bytes(b"PK\x03\x04 not really an archive")
-    texto, meta = extract.reference_text(roto, "epub")
-    assert texto == ""
+    damaged = tmp_path / "broken.epub"
+    damaged.write_bytes(b"PK\x03\x04 not really an archive")
+    text, meta = extract.reference_text(damaged, "epub")
+    assert text == ""
     assert "error" in meta
 
 
 def test_an_epub_missing_its_package_file_still_reads(tmp_path):
     """The reading order is a hint. Without it the documents are still content."""
-    ruta = tmp_path / "no_opf.epub"
-    with zipfile.ZipFile(ruta, "w") as archive:
+    path = tmp_path / "no_opf.epub"
+    with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip",
                          compress_type=zipfile.ZIP_STORED)
         archive.writestr("text/one.xhtml", "<html><body><p>First part.</p></body></html>")
         archive.writestr("text/two.xhtml", "<html><body><p>Second part.</p></body></html>")
-    texto, meta = extract.reference_text(ruta, "epub")
+    text, meta = extract.reference_text(path, "epub")
     assert meta["documents"] == 2
-    assert "First part." in texto and "Second part." in texto
+    assert "First part." in text and "Second part." in text

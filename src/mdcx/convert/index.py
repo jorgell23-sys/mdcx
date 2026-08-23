@@ -61,15 +61,15 @@ def _fmt_size(n: int) -> str:
 
 def build_manifest(records: list[dict], input_root: Path, skipped: list[Path],
                    elapsed: float) -> dict:
-    principales = [r for r in records if not r.get("es_capitulo")]
+    main = [r for r in records if not r.get("es_capitulo")]
     chapters = [r for r in records if r.get("es_capitulo")]
-    ok = sum(1 for r in principales if r.get("ok"))
+    ok = sum(1 for r in main if r.get("ok"))
     measurable = [r for r in records
                   if (r.get("verification") or {}).get("measurable")
                   and not r.get("es_indice_de_documento")]
     # Verification could not be performed, as against performed and not met.
     unverifiable = sum(
-        1 for r in principales
+        1 for r in main
         if not r.get("ok")
         and (r.get("verification") or {}).get("status") in ("no-reference", "sin-lectura"))
 
@@ -86,7 +86,7 @@ def build_manifest(records: list[dict], input_root: Path, skipped: list[Path],
             "location of the folder; it never contains absolute paths or drive letters."
         ),
         "resumen": {
-            "documents": len(principales),
+            "documents": len(main),
             "chapters": len(chapters),
             "converted_ok": ok,
             # A document with no text of its own cannot be verified, which is
@@ -95,7 +95,7 @@ def build_manifest(records: list[dict], input_root: Path, skipped: list[Path],
             # while its coverage read 100%, because coverage was measured over
             # the documents that could be measured at all.
             "unverifiable": unverifiable,
-            "with_findings": len(principales) - ok - unverifiable,
+            "with_findings": len(main) - ok - unverifiable,
             "skipped_archive_no_soportado": len(skipped),
             "global_token_coverage": (
                 round((total_ref - total_missing) / total_ref, 5) if total_ref else None
@@ -112,9 +112,9 @@ def build_manifest(records: list[dict], input_root: Path, skipped: list[Path],
 def write_index(records: list[dict], output_root: Path, manifest: dict) -> Path:
     # Chapters are not listed separately in the global index: they appear inside
     # their own document, which appears here as a single entry.
-    principales = [r for r in records if not r.get("es_capitulo")]
+    main = [r for r in records if not r.get("es_capitulo")]
     by_folder: dict[str, list[dict]] = defaultdict(list)
-    for r in principales:
+    for r in main:
         by_folder[r.get("folder", ".")].append(r)
 
     res = manifest["resumen"]
@@ -176,7 +176,7 @@ def write_index(records: list[dict], output_root: Path, manifest: dict) -> Path:
 
     lines += ["---", "", "## Correspondencia source -> Markdown (pseudopaths)", "",
               "| Source pseudopath | Markdown pseudopath |", "|---|---|"]
-    for r in sorted(principales, key=lambda r: r["source_pseudopath"].lower()):
+    for r in sorted(main, key=lambda r: r["source_pseudopath"].lower()):
         target = r["markdown_pseudopath"]
         if r.get("es_indice_de_documento"):
             target += f"  (+ {r.get('chapters', 0)} chapters)"
@@ -231,11 +231,11 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
     chapters = sorted(chapters, key=lambda r: (r.get("chapter") or {}).get("outline", 0))
     rel_target: Path = info["rel_target"]
     rel_source: Path = info["rel_source"]
-    carpeta_rel = rel_target.with_suffix("").name
+    folder_rel = rel_target.with_suffix("").name
 
     ref_total = sum((c.get("verification") or {}).get("ref_tokens", 0) for c in chapters)
-    faltan = sum((c.get("verification") or {}).get("missing_tokens", 0) for c in chapters)
-    coverage = ((ref_total - faltan) / ref_total) if ref_total else None
+    missing = sum((c.get("verification") or {}).get("missing_tokens", 0) for c in chapters)
+    coverage = ((ref_total - missing) / ref_total) if ref_total else None
     pages = sum(
         (c.get("chapter") or {}).get("pages", [0, 0])[1]
         - (c.get("chapter") or {}).get("pages", [1, 0])[0] + 1
@@ -276,14 +276,14 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
         v = c.get("verification") or {}
         name = c["markdown_pseudopath"].rsplit("/", 1)[-1]
         # Relative link from the index to the chapter subfolder.
-        target = quote(f"{carpeta_rel}/{name}")
-        pag = cap.get("pages") or [0, 0]
+        target = quote(f"{folder_rel}/{name}")
+        pg = cap.get("pages") or [0, 0]
         # A title may contain a vertical bar, which would split the table row into
         # extra columns, so it is escaped.
-        etiqueta = str(cap.get("title") or name).replace("|", r"\|")
+        label = str(cap.get("title") or name).replace("|", r"\|")
         lines.append(
-            f"| {cap.get('outline', '?')} | [{etiqueta}]({target}) | "
-            f"{pag[0]}-{pag[1]} | {_fmt_pct(v.get('coverage'))} | "
+            f"| {cap.get('outline', '?')} | [{label}]({target}) | "
+            f"{pg[0]}-{pg[1]} | {_fmt_pct(v.get('coverage'))} | "
             f"{_STATUS_LABEL.get(v.get('status'), '?')} |"
         )
 
@@ -304,16 +304,16 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
     # as failing verification. A book whose cover plate was scanned would
     # otherwise be reported as non-conforming although every word of its text
     # was recovered.
-    no_conformes = [c for c in chapters if not c.get("ok")]
-    no_medibles = [c for c in no_conformes
+    non_conforming = [c for c in chapters if not c.get("ok")]
+    not_measurable = [c for c in non_conforming
                    if (c.get("verification") or {}).get("status")
                    in ("no-reference", "sin-lectura")]
-    if not no_conformes:
-        estado = "ok"
-    elif len(no_medibles) == len(no_conformes):
-        estado = "no-reference"
+    if not non_conforming:
+        status = "ok"
+    elif len(not_measurable) == len(non_conforming):
+        status = "no-reference"
     else:
-        estado = "warn"
+        status = "warn"
     return {
         "source_pseudopath": to_pseudopath(rel_source),
         "markdown_pseudopath": to_pseudopath(rel_target),
@@ -340,11 +340,11 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
         "ok": conforming == len(chapters),
         "verification": {
             "measurable": ref_total > 0,
-            "status": estado if ref_total else "no-reference",
+            "status": status if ref_total else "no-reference",
             "coverage": round(coverage, 5) if coverage is not None else None,
             "numeric_coverage": None,
             "ref_tokens": ref_total,
-            "missing_tokens": faltan,
+            "missing_tokens": missing,
             "missing_sample": [],
         },
     }
@@ -354,9 +354,9 @@ RESULTS_FILENAME = "00_RESULTS.txt"
 def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
                       elapsed: float, input_root: Path) -> Path:
     """Plain-text report: which documents converted cleanly and which need attention."""
-    principales = [r for r in records if not r.get("es_capitulo")]
-    succeeded = [r for r in principales if r.get("ok")]
-    fallidos = [r for r in principales if not r.get("ok")]
+    main = [r for r in records if not r.get("es_capitulo")]
+    succeeded = [r for r in main if r.get("ok")]
+    fallidos = [r for r in main if not r.get("ok")]
     res = manifest["resumen"]
 
     def _pct(v):
@@ -392,18 +392,18 @@ def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
     # with CUDA every docling attempt failed inside the worker processes, the native
     # engine won by default, and the run reported full success with every table
     # flattened into a paragraph.
-    con_fallo = [r for r in principales if r.get("failed_engines")]
-    if con_fallo:
-        motores = sorted({e for r in con_fallo for e in r["failed_engines"]})
-        L.append(f"Engines that failed    : {len(con_fallo)} document(s), "
-                 f"affecting {', '.join(motores)}")
+    with_failure = [r for r in main if r.get("failed_engines")]
+    if with_failure:
+        engines = sorted({e for r in with_failure for e in r["failed_engines"]})
+        L.append(f"Engines that failed    : {len(with_failure)} document(s), "
+                 f"affecting {', '.join(engines)}")
 
     # Fidelity is measured in words, and a native engine recovers every word of a
     # table while flattening it. Reporting table rows makes a loss of structure
     # visible that coverage alone reports as perfect.
-    filas = sum(r.get("table_rows") or 0 for r in principales)
-    con_tablas = sum(1 for r in principales if (r.get("table_rows") or 0) > 0)
-    L.append(f"Table rows preserved   : {filas} across {con_tablas} document(s)")
+    rows = sum(r.get("table_rows") or 0 for r in main)
+    with_tables = sum(1 for r in main if (r.get("table_rows") or 0) > 0)
+    L.append(f"Table rows preserved   : {rows} across {with_tables} document(s)")
     L.append("")
 
     if fallidos:
@@ -428,12 +428,12 @@ def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
             if r.get("recovered_lines"):
                 L.append(f"             nota   : {r['recovered_lines']} lines anexadas por recuperacion")
             for cap in r.get("chapters_con_observacion") or []:
-                pag = cap.get("pages") or ["?", "?"]
+                pg = cap.get("pages") or ["?", "?"]
                 cob = cap.get("coverage")
                 L.append(f"             chapter {cap.get('outline')}: "
                          f"{_STATUS_LABEL.get(cap.get('estado'), '?')} "
                          f"{_pct(cob) if cob is not None else '   n/d'} "
-                         f"(pages {pag[0]}-{pag[1]}) {str(cap.get('title') or '')[:50]}")
+                         f"(pages {pg[0]}-{pg[1]}) {str(cap.get('title') or '')[:50]}")
             if r.get("errors"):
                 L.append(f"             error  : {str(r['errors'][0])[:160]}")
             L.append("")

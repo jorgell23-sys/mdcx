@@ -136,10 +136,10 @@ def test_info_answers_when_called_with_no_arguments(one_package):
     agent that follows those instructions makes this exact call.
     """
     server = mcp_server.create_server()
-    respuesta = asyncio.run(server.call_tool("info", {}))
+    answer = asyncio.run(server.call_tool("info", {}))
 
-    assert not respuesta.is_error, respuesta.content
-    registro = json.loads(respuesta.content[0].text)
-    assert registro["documents"] == 1
-    assert registro["integrity"] == "intact"
-    assert "cross_language_search" in registro
+    assert not answer.is_error, answer.content
+    record = json.loads(answer.content[0].text)
+    assert record["documents"] == 1
+    assert record["integrity"] == "intact"
+    assert "cross_language_search" in record

@@ -76,8 +76,8 @@ def _default_max_cores() -> int:
     """
     import os as _os
 
-    disponibles = _os.cpu_count() or 4
-    return max(1, int(disponibles * (1.0 - RESERVED_SHARE)))
+    available = _os.cpu_count() or 4
+    return max(1, int(available * (1.0 - RESERVED_SHARE)))
 
 
 MAX_CORES_DEFAULT = _default_max_cores()
@@ -108,10 +108,10 @@ def _load_cache(output_root: Path) -> dict:
         except Exception:
             pass
 
-    progreso = output_root / PROGRESS_FILENAME
-    if progreso.exists():
+    progress = output_root / PROGRESS_FILENAME
+    if progress.exists():
         try:
-            with progreso.open("r", encoding="utf-8") as fh:
+            with progress.open("r", encoding="utf-8") as fh:
                 for line in fh:
                     line = line.strip()
                     if not line:
@@ -184,13 +184,13 @@ def _free_vram_mib() -> int | None:
 
         if not torch.cuda.is_available():
             return None
-        libre, _total = torch.cuda.mem_get_info()
-        return int(libre // (1024 * 1024))
+        free, _total = torch.cuda.mem_get_info()
+        return int(free // (1024 * 1024))
     except Exception:  # noqa: BLE001 - no card, no driver, no torch: same answer
         return None
 
 
-def _lane_sizes(tope_total: int, fraccion_gpu: float, tiene_gpu: bool) -> tuple[int, int]:
+def _lane_sizes(total_cap: int, gpu_fraction: float, has_gpu: bool) -> tuple[int, int]:
     """How many workers each lane gets, from the machine and from the work.
 
     Three ceilings, and the smallest wins. All three are needed, and leaving any
@@ -213,21 +213,21 @@ def _lane_sizes(tope_total: int, fraccion_gpu: float, tiene_gpu: bool) -> tuple[
     """
     import math
 
-    if tope_total <= 1:
+    if total_cap <= 1:
         return 1, 1
 
-    por_la_placa = tope_total
-    if tiene_gpu:
-        libre = _free_vram_mib()
-        if libre is not None:
-            por_la_placa = libre // _vram_per_worker_mib()
+    by_gpu = total_cap
+    if has_gpu:
+        free = _free_vram_mib()
+        if free is not None:
+            by_gpu = free // _vram_per_worker_mib()
 
-    por_la_demanda = math.ceil(tope_total * max(0.0, min(1.0, fraccion_gpu)))
-    gpu = max(1, min(por_la_placa, por_la_demanda, tope_total - 1))
-    return gpu, max(1, tope_total - gpu)
+    by_demand = math.ceil(total_cap * max(0.0, min(1.0, gpu_fraction)))
+    gpu = max(1, min(by_gpu, by_demand, total_cap - 1))
+    return gpu, max(1, total_cap - gpu)
 
 
-def _worker_budget(hilos: int, gate, lote: int | None = None) -> None:
+def _worker_budget(threads: int, gate, batch: int | None = None) -> None:
     """Start a worker that keeps to its share of the machine.
 
     Two shares, and they are not the same thing.
@@ -255,9 +255,9 @@ def _worker_budget(hilos: int, gate, lote: int | None = None) -> None:
     """
     for variable in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
                      "NUMEXPR_NUM_THREADS"):
-        os.environ[variable] = str(hilos)
-    if lote:
-        os.environ["MDCX_TATR_BATCH"] = str(lote)
+        os.environ[variable] = str(threads)
+    if batch:
+        os.environ["MDCX_TATR_BATCH"] = str(batch)
     engines.set_gpu_gate(gate)
 
 
@@ -345,8 +345,8 @@ def main() -> int:
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
     use_docling = not args.no_docling and engines.docling_available()
-    tiene_gpu = (not args.no_gpu) and engines.gpu_available()
-    dispositivo = engines.device_name() if tiene_gpu else "CPU"
+    has_gpu = (not args.no_gpu) and engines.gpu_available()
+    device = engines.device_name() if has_gpu else "CPU"
 
     # The start method is chosen before any pool is created: on Linux a CUDA
     # context does not survive fork(), which silently disabled docling.
@@ -359,11 +359,11 @@ def main() -> int:
     print(f"Destino: {output_root}")
     print(f"Files to convert: {len(jobs)} | skipped por archive: {len(skipped)}")
     print(f"Engine estructurado (Docling): {'si' if use_docling else 'no'} | "
-          f"inference: {dispositivo}")
+          f"inference: {device}")
 
     cache = {} if args.force else _load_cache(output_root)
 
-    def _ya_convertido(job) -> dict | None:
+    def _already_converted(job) -> dict | None:
         """Reusable previous work for this target, or None if it must be redone."""
         prev = cache.get(to_pseudopath(job.rel_target))
         if not prev or not prev.get("digest") or not prev.get("ok"):
@@ -377,38 +377,38 @@ def main() -> int:
             return None
         return prev
 
-    def _ajustar_compactado(target: Path, quiere_compactado: bool) -> str:
+    def _adjust_compaction(target: Path, wants_compaction: bool) -> str:
         """Bring an existing .md to the requested compaction state."""
         try:
-            actual = target.read_text(encoding="utf-8", errors="replace")
+            current = target.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return "rehacer"
 
-        compacto, aplicada = compact_module.compact(actual)
-        ya_compactado = aplicada and compacto == actual
+        compacted, applied = compact_module.compact(current)
+        already_compacted = applied and compacted == current
 
-        if quiere_compactado:
-            if ya_compactado:
+        if wants_compaction:
+            if already_compacted:
                 return "igual"
-            if not aplicada:
+            if not applied:
                 return "igual"
             try:
-                target.write_text(compacto, encoding="utf-8")
+                target.write_text(compacted, encoding="utf-8")
             except OSError:
                 return "rehacer"
             return "ajustado"
 
-        return "rehacer" if ya_compactado else "igual"
+        return "rehacer" if already_compacted else "igual"
 
-    documents_divididos: dict[str, dict] = {}
-    unidades: list = []
+    documents_split: dict[str, dict] = {}
+    units: list = []
     if not args.no_split:
         for job in jobs:
             caps = chapters.plan_chapters(job.source, args.split_threshold) if job.kind == "pdf" else []
             if len(caps) < 2:
-                unidades.append(job)
+                units.append(job)
                 continue
-            documents_divididos[to_pseudopath(job.rel_target)] = {
+            documents_split[to_pseudopath(job.rel_target)] = {
                 "document": job.rel_source.name,
                 "pseudopath_indice": to_pseudopath(job.rel_target),
                 "carpeta_chapters": to_pseudopath(job.rel_target.with_suffix("")),
@@ -418,28 +418,28 @@ def main() -> int:
                 "rel_source": job.rel_source,
                 "hijos": [],
             }
-            unidades.extend(make_chapter_jobs(job, caps))
-        if documents_divididos:
-            print(f"Documentos divididos por chapters: {len(documents_divididos)} "
-                  f"-> {sum(d['chapters'] for d in documents_divididos.values())} chapters")
+            units.extend(make_chapter_jobs(job, caps))
+        if documents_split:
+            print(f"Documentos divididos por chapters: {len(documents_split)} "
+                  f"-> {sum(d['chapters'] for d in documents_split.values())} chapters")
     else:
-        unidades = list(jobs)
+        units = list(jobs)
 
     pending, reused = [], []
     adjusted = 0
-    rehacer_por_compactado = 0
-    for job in unidades:
-        prev = _ya_convertido(job)
+    redo_for_compaction = 0
+    for job in units:
+        prev = _already_converted(job)
         if prev is None:
             pending.append(job)
             continue
-        estado = _ajustar_compactado(output_root / job.rel_target,
+        status = _adjust_compaction(output_root / job.rel_target,
                                      not args.no_compact)
-        if estado == "rehacer":
-            rehacer_por_compactado += 1
+        if status == "rehacer":
+            redo_for_compaction += 1
             pending.append(job)
             continue
-        if estado == "ajustado":
+        if status == "ajustado":
             adjusted += 1
             prev = dict(prev)
             prev["compacted"] = not args.no_compact
@@ -450,8 +450,8 @@ def main() -> int:
     if adjusted:
         print(f"Compacted without reconversion: {adjusted} "
               "(content was already correct; only scaffolding was removed)")
-    if rehacer_por_compactado:
-        print(f"Reconverted due to a change in compaction: {rehacer_por_compactado} "
+    if redo_for_compaction:
+        print(f"Reconverted due to a change in compaction: {redo_for_compaction} "
               "(compaction cannot be undone without returning to the original)")
     if reused and not pending:
         print("Nothing pending: the output is up to date.")
@@ -464,11 +464,11 @@ def main() -> int:
     for lane in lanes:
         lanes[lane].sort(key=estimated_cost)
 
-    pesados = [j for j in lanes[LANE_GPU] if estimated_cost(j) >= 100]
-    if pesados:
+    heavy = [j for j in lanes[LANE_GPU] if estimated_cost(j) >= 100]
+    if heavy:
         print(f"Long documents (dispatched last): "
               + ", ".join(f"{j.rel_source.name[:40]} ({estimated_cost(j):.0f} pag)"
-                          for j in pesados[-4:]))
+                          for j in heavy[-4:]))
     # The start method is chosen before any pool is created: on Linux a CUDA
     # context does not survive fork(), which silently disabled docling.
     start_method = _select_start_method()
@@ -476,11 +476,11 @@ def main() -> int:
     if args.serial:
         gpu_workers, cpu_workers = 1, 1
         print("Serial mode: one document at a time (timings are comparable across runs)")
-        hilos_por_worker = max(1, args.max_cores)
+        threads_per_worker = max(1, args.max_cores)
     else:
-        con_placa = len(lanes[LANE_GPU])
-        fraccion_gpu = con_placa / max(1, con_placa + len(lanes[LANE_CPU]))
-        gpu_workers, cpu_workers = _lane_sizes(args.max_cores, fraccion_gpu, tiene_gpu)
+        with_gpu = len(lanes[LANE_GPU])
+        gpu_fraction = with_gpu / max(1, with_gpu + len(lanes[LANE_CPU]))
+        gpu_workers, cpu_workers = _lane_sizes(args.max_cores, gpu_fraction, has_gpu)
         # The formula is the default, not a ruling: a machine that knows better
         # says so, and is then held only to the total.
         if args.gpu_workers is not None:
@@ -491,11 +491,11 @@ def main() -> int:
             # measured, twelve workers on a 6 GB card ran three times slower
             # than three, because the resource running out was not the one being
             # raised. Saying so costs a line and saves the measurement.
-            libre = _free_vram_mib() if tiene_gpu else None
-            caben = (libre // _vram_per_worker_mib()) if libre else None
-            if caben is not None and gpu_workers > max(1, caben):
+            free = _free_vram_mib() if has_gpu else None
+            fit = (free // _vram_per_worker_mib()) if free else None
+            if fit is not None and gpu_workers > max(1, fit):
                 print(f"Aviso: se pidieron {gpu_workers} procesos en la placa y "
-                      f"entran {max(1, caben)} ({libre} MiB libres, "
+                      f"entran {max(1, fit)} ({free} MiB libres, "
                       f"{_vram_per_worker_mib()} por proceso). Por encima de eso "
                       f"compiten por memoria y la corrida se hace mas lenta, no "
                       f"mas rapida.")
@@ -508,17 +508,17 @@ def main() -> int:
         # though nobody else would.
         from .convert import tatr as _tatr
 
-        lote = _tatr.batch_for(_free_vram_mib() if tiene_gpu else None, gpu_workers)
+        batch = _tatr.batch_for(_free_vram_mib() if has_gpu else None, gpu_workers)
 
         # The cap is a budget for the whole run, so it is divided among the
         # workers rather than granted to each: otherwise the share it was
         # careful to leave free is spent again inside every process.
-        hilos_por_worker = max(1, args.max_cores // max(1, gpu_workers + cpu_workers))
+        threads_per_worker = max(1, args.max_cores // max(1, gpu_workers + cpu_workers))
         print(f"Carril GPU: {len(lanes[LANE_GPU])} documents en {gpu_workers} procesos | "
               f"Carril CPU: {len(lanes[LANE_CPU])} documents en {cpu_workers} procesos | "
               f"tope {args.max_cores} de {os.cpu_count() or '?'} cores, "
-              f"{hilos_por_worker} hilo(s) cada uno | "
-              f"placa: hasta {gpu_workers} proceso(s) a la vez, lote {lote}")
+              f"{threads_per_worker} hilo(s) cada uno | "
+              f"placa: hasta {gpu_workers} proceso(s) a la vez, lote {batch}")
         if start_method == "spawn" and sys.platform != "win32":
             print("Workers start with spawn: a CUDA context does not survive fork, "
                   "which would disable docling in every child.")
@@ -529,16 +529,16 @@ def main() -> int:
     total = len(pending)
     done = 0
 
-    progreso_path = output_root / PROGRESS_FILENAME
-    if args.force and progreso_path.exists():
-        progreso_path.unlink(missing_ok=True)
-    progreso_fh = progreso_path.open("a", encoding="utf-8")
+    progress_path = output_root / PROGRESS_FILENAME
+    if args.force and progress_path.exists():
+        progress_path.unlink(missing_ok=True)
+    progress_fh = progress_path.open("a", encoding="utf-8")
 
-    def _asentar(rec: dict) -> None:
+    def _settle(rec: dict) -> None:
         try:
-            progreso_fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            progreso_fh.flush()
-            os.fsync(progreso_fh.fileno())
+            progress_fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            progress_fh.flush()
+            os.fsync(progress_fh.fileno())
         except Exception:
             pass
 
@@ -548,16 +548,16 @@ def main() -> int:
                 for job in lanes[lane]:
                     # One process, so there is nothing to contend for and no
                     # reason to withhold the engine from either lane.
-                    permitir_docling = use_docling
+                    allow_docling = use_docling
                     try:
                         rec = convert_one_safe(
-                            (job, output_root, permitir_docling, not args.no_lossless,
+                            (job, output_root, allow_docling, not args.no_lossless,
                              not args.no_compact)
                         )
                     except Exception as exc:  # noqa: BLE001
                         rec = _error_record(job, exc)
                     records.append(rec)
-                    _asentar(rec)
+                    _settle(rec)
                     done += 1
                     _print_progress(done, total, lane, rec)
         else:
@@ -566,14 +566,14 @@ def main() -> int:
             # How many processes may hold the card at once. The GPU lane used to
             # be this number by being the only lane with the engines; now it is
             # said once and applies to every worker, whichever lane it is in.
-            puerta = multiprocessing.Semaphore(gpu_workers)
+            gate = multiprocessing.Semaphore(gpu_workers)
 
             with ProcessPoolExecutor(
                     max_workers=gpu_workers, initializer=_worker_budget,
-                    initargs=(hilos_por_worker, puerta, lote)) as gpu_pool, \
+                    initargs=(threads_per_worker, gate, batch)) as gpu_pool, \
                  ProcessPoolExecutor(
                     max_workers=cpu_workers, initializer=_worker_budget,
-                    initargs=(hilos_por_worker, puerta, lote)) as cpu_pool:
+                    initargs=(threads_per_worker, gate, batch)) as cpu_pool:
                 futures = {}
                 for job in lanes[LANE_GPU]:
                     fut = gpu_pool.submit(
@@ -594,19 +594,19 @@ def main() -> int:
                     except Exception as exc:  # noqa: BLE001
                         rec = _error_record(job, exc)
                     records.append(rec)
-                    _asentar(rec)
+                    _settle(rec)
                     done += 1
                     _print_progress(done, total, lane, rec)
 
-    if documents_divididos:
-        por_documento: dict[str, list[dict]] = {}
+    if documents_split:
+        by_document: dict[str, list[dict]] = {}
         for rec in records:
             cap = rec.get("chapter")
             if cap and cap.get("documento_pseudopath"):
                 rec["es_capitulo"] = True
-                por_documento.setdefault(cap["documento_pseudopath"], []).append(rec)
-        for pseudo, info in documents_divididos.items():
-            caps = por_documento.get(pseudo, [])
+                by_document.setdefault(cap["documento_pseudopath"], []).append(rec)
+        for pseudo, info in documents_split.items():
+            caps = by_document.get(pseudo, [])
             if not caps:
                 continue
             try:
@@ -615,7 +615,7 @@ def main() -> int:
                 print(f"WARNING: could not write the index for {info['document']}: {exc}")
 
     try:
-        progreso_fh.close()
+        progress_fh.close()
     except Exception:
         pass
 
@@ -623,7 +623,7 @@ def main() -> int:
     manifest = index.build_manifest(records, input_root, skipped, elapsed)
     manifest["ejecucion"] = {
         "modo": "serial" if args.serial else "parallel",
-        "dispositivo": dispositivo,
+        "dispositivo": device,
         "procesos_gpu": gpu_workers,
         "procesos_cpu": cpu_workers,
         "tope_cores": args.max_cores,
@@ -631,7 +631,7 @@ def main() -> int:
         "documents_carril_cpu": len(lanes[LANE_CPU]),
     }
     index_path = index.write_index(records, output_root, manifest)
-    resultados_path = index.write_results_txt(records, output_root, manifest, elapsed, input_root)
+    results_path = index.write_results_txt(records, output_root, manifest, elapsed, input_root)
 
     res = manifest["resumen"]
     print("\n" + "=" * 72)
@@ -646,10 +646,10 @@ def main() -> int:
     print(f"Tokens not recovered: {res['tokens_not_recovered']} of {res['reference_tokens']}")
     print(f"Elapsed         : {elapsed / 60:.1f} min ({'serial' if args.serial else 'parallel'})")
     print(f"Index           : {index_path}")
-    print(f"Results         : {resultados_path}")
+    print(f"Results         : {results_path}")
 
     try:
-        progreso_path.unlink(missing_ok=True)
+        progress_path.unlink(missing_ok=True)
     except Exception:
         pass
     print("=" * 72)

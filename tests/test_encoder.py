@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mdcx import semantic  # noqa: E402
 
-necesita_modelo = pytest.mark.skipif(
+needs_model = pytest.mark.skipif(
     not semantic.available(),
     reason="needs the multilingual extra: pip install 'mdcx[multilingual]'")
 
@@ -62,9 +62,9 @@ def test_reduced_precision_is_asked_for_only_where_it_helps(monkeypatch):
     assert semantic._accelerator_kwargs() == {}
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    pedido = semantic._accelerator_kwargs()
-    assert pedido["torch_dtype"] is torch.float16
-    assert pedido["attn_implementation"] == "sdpa"
+    requested = semantic._accelerator_kwargs()
+    assert requested["torch_dtype"] is torch.float16
+    assert requested["attn_implementation"] == "sdpa"
 
 
 def test_a_missing_torch_leaves_the_defaults(monkeypatch):
@@ -79,33 +79,33 @@ def test_a_batch_is_filled_to_a_budget_not_to_a_count():
     The cost of a batch is rows times longest column, so the guarantee is on
     that product, not on how many texts got in.
     """
-    textos = ["x" * 10] * 500 + ["y" * 2000]
-    orden = sorted(range(len(textos)), key=lambda i: len(textos[i]))
-    lotes = list(semantic._batches(orden, textos, max_rows=1024, budget=24_000))
+    texts = ["x" * 10] * 500 + ["y" * 2000]
+    order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+    batches = list(semantic._batches(order, texts, max_rows=1024, budget=24_000))
 
-    assert [i for lote in lotes for i in lote] == orden, "no se pierde ningun texto"
-    for lote in lotes:
-        ancho = max(len(textos[i]) for i in lote)
-        assert len(lote) * ancho <= 24_000 or len(lote) == 1, (
-            f"un lote de {len(lote)} por {ancho} excede el presupuesto")
+    assert [i for batch in batches for i in batch] == order, "no se pierde ningun texto"
+    for batch in batches:
+        width = max(len(texts[i]) for i in batch)
+        assert len(batch) * width <= 24_000 or len(batch) == 1, (
+            f"un lote de {len(batch)} por {width} excede el presupuesto")
 
 
 def test_a_single_text_longer_than_the_budget_still_goes():
     """A passage nothing can be grouped with is still encoded, alone."""
-    textos = ["z" * 90_000]
-    lotes = list(semantic._batches([0], textos, max_rows=1024, budget=24_000))
-    assert lotes == [[0]]
+    texts = ["z" * 90_000]
+    batches = list(semantic._batches([0], texts, max_rows=1024, budget=24_000))
+    assert batches == [[0]]
 
 
 def test_the_row_ceiling_holds():
     """A corpus of one-line headings must not assemble one enormous batch."""
-    textos = ["x" * 5] * 5000
-    orden = list(range(len(textos)))
-    for lote in semantic._batches(orden, textos, max_rows=64, budget=10**9):
-        assert len(lote) <= 64
+    texts = ["x" * 5] * 5000
+    order = list(range(len(texts)))
+    for batch in semantic._batches(order, texts, max_rows=64, budget=10**9):
+        assert len(batch) <= 64
 
 
-@necesita_modelo
+@needs_model
 def test_the_vectors_come_back_in_the_order_the_texts_went_in():
     """The sorting is an implementation detail and must not escape.
 
@@ -115,19 +115,19 @@ def test_the_vectors_come_back_in_the_order_the_texts_went_in():
     """
     import numpy as np
 
-    textos = ["a heading",
+    texts = ["a heading",
               "b " * 400,
               "c short",
               "d " * 90,
               "e a passage of middling length " * 8]
-    juntos = semantic.encode(textos)
-    solos = np.vstack([semantic.encode([t]) for t in textos])
+    joined = semantic.encode(texts)
+    alone = np.vstack([semantic.encode([t]) for t in texts])
 
-    propio = (juntos * solos).sum(axis=1)
-    assert propio.min() > 0.99, f"algun vector no es el de su texto: {propio}"
+    own = (joined * alone).sum(axis=1)
+    assert own.min() > 0.99, f"algun vector no es el de su texto: {own}"
 
 
-@necesita_modelo
+@needs_model
 def test_the_vectors_are_single_precision_whatever_produced_them():
     """Reduced precision is how the work is done, not what the package stores."""
     import numpy as np
@@ -136,7 +136,7 @@ def test_the_vectors_are_single_precision_whatever_produced_them():
     assert v.dtype == np.float32
 
 
-@necesita_modelo
+@needs_model
 def test_nothing_to_encode_is_not_a_failure():
     """An empty call returns an empty result of the right width."""
     v = semantic.encode([])

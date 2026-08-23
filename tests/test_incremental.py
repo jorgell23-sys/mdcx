@@ -52,13 +52,13 @@ def test_unchanged_passages_are_not_encoded_again():
     """Adding documents encodes the new ones only."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        recibidos = root / "corpus" / "Received"
-        write_corpus(recibidos, 6)
+        received = root / "corpus" / "Received"
+        write_corpus(received, 6)
         first = archive.pack(root / "corpus", root / "v1.mdcx", "k", semantic=True)
         assert first["passages_reused"] == 0
         assert first["passages_encoded"] == first["passages"]
 
-        write_corpus(recibidos, 2, start=7)
+        write_corpus(received, 2, start=7)
         second = archive.pack(root / "corpus", root / "v2.mdcx", "k", semantic=True,
                               reuse_from=root / "v1.mdcx")
         assert second["passages"] > first["passages"]
@@ -75,21 +75,21 @@ def test_reuse_produces_equivalent_retrieval():
     """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        recibidos = root / "corpus" / "Received"
-        write_corpus(recibidos, 8)
+        received = root / "corpus" / "Received"
+        write_corpus(received, 8)
         archive.pack(root / "corpus", root / "v1.mdcx", "k", semantic=True)
-        write_corpus(recibidos, 2, start=9)
+        write_corpus(received, 2, start=9)
 
         archive.pack(root / "corpus", root / "full.mdcx", "k", semantic=True)
         archive.pack(root / "corpus", root / "reused.mdcx", "k", semantic=True,
                      reuse_from=root / "v1.mdcx")
 
         completo, _ = archive.open_package(root / "full.mdcx", "k")
-        reutilizado, _ = archive.open_package(root / "reused.mdcx", "k")
-        for consulta in ("photosynthesis sugar", "document 3", "sunlight plants"):
-            a = [r["document"] for r in archive.query(completo, consulta, limit=5)]
-            b = [r["document"] for r in archive.query(reutilizado, consulta, limit=5)]
-            assert a == b, f"ranking differs for {consulta!r}"
+        reused, _ = archive.open_package(root / "reused.mdcx", "k")
+        for query in ("photosynthesis sugar", "document 3", "sunlight plants"):
+            a = [r["document"] for r in archive.query(completo, query, limit=5)]
+            b = [r["document"] for r in archive.query(reused, query, limit=5)]
+            assert a == b, f"ranking differs for {query!r}"
 
 
 @needs_model
@@ -97,12 +97,12 @@ def test_an_edited_passage_is_encoded_again():
     """Reuse follows the text. A changed document does not keep its vector."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        recibidos = root / "corpus" / "Received"
-        write_corpus(recibidos, 4)
+        received = root / "corpus" / "Received"
+        write_corpus(received, 4)
         first = archive.pack(root / "corpus", root / "v1.mdcx", "k", semantic=True)
 
-        objetivo = recibidos / "002_doc.md"
-        objetivo.write_text(objetivo.read_text(encoding="utf-8").replace(
+        goal = received / "002_doc.md"
+        goal.write_text(goal.read_text(encoding="utf-8").replace(
             "Photosynthesis", "Respiration"), encoding="utf-8")
 
         second = archive.pack(root / "corpus", root / "v2.mdcx", "k", semantic=True,
@@ -120,13 +120,13 @@ def test_a_package_from_another_model_is_not_reused():
     """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        recibidos = root / "corpus" / "Received"
-        write_corpus(recibidos, 4)
+        received = root / "corpus" / "Received"
+        write_corpus(received, 4)
         archive.pack(root / "corpus", root / "v1.mdcx", "k", semantic=True)
 
-        reutilizables = archive.reusable_vectors(root / "v1.mdcx", "k",
+        reusable = archive.reusable_vectors(root / "v1.mdcx", "k",
                                                  "another/model-entirely")
-        assert reutilizables == {}
+        assert reusable == {}
 
 
 def test_reuse_of_a_package_without_vectors_is_empty():

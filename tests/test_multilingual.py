@@ -93,9 +93,9 @@ def test_lexical_mode_stays_within_the_language(package):
     same package, one engine reaching across languages and the other not.
     """
     connection, _ = package
-    consulta = CORPUS["spanish"]["queries"]["hist"]
-    lexical = set(languages_of(archive.query(connection, consulta, limit=8, mode="lexical")))
-    fused = set(languages_of(archive.query(connection, consulta, limit=8, mode="auto")))
+    query = CORPUS["spanish"]["queries"]["hist"]
+    lexical = set(languages_of(archive.query(connection, query, limit=8, mode="lexical")))
+    fused = set(languages_of(archive.query(connection, query, limit=8, mode="auto")))
     assert len(fused) > len(lexical)
 
 
@@ -127,8 +127,8 @@ def test_every_script_is_reachable_from_spanish(package, language):
     for subject in SUBJECTS:
         results = archive.query(connection, CORPUS["spanish"]["queries"][subject],
                                 limit=34)
-        alcanzados = {r["document"] for r in results}
-        if f"{language}__{subject}" in alcanzados:
+        reached = {r["document"] for r in results}
+        if f"{language}__{subject}" in reached:
             return
     pytest.fail(f"no Spanish query reached any {language} document")
 

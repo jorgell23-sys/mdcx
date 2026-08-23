@@ -216,7 +216,7 @@ LANE_CPU = "cpu"   # reads its own text; a model here, if reached, runs on the p
 SAMPLE_PAGES = 5
 
 
-def _pages_to_sample(total: int, cuantas: int = SAMPLE_PAGES) -> list[int]:
+def _pages_to_sample(total: int, how_many: int = SAMPLE_PAGES) -> list[int]:
     """Which pages to look at when deciding whether a document has text.
 
     Not the first ones. A book opens with a cover, a blank verso and a title
@@ -235,10 +235,10 @@ def _pages_to_sample(total: int, cuantas: int = SAMPLE_PAGES) -> list[int]:
     Spreading the sample through the document costs the same handful of page
     reads and cannot be fooled by what a publisher puts at the front.
     """
-    if total <= cuantas:
+    if total <= how_many:
         return list(range(total))
-    paso = total / (cuantas + 1)
-    return sorted({min(total - 1, int(paso * (i + 1))) for i in range(cuantas)})
+    step = total / (how_many + 1)
+    return sorted({min(total - 1, int(step * (i + 1))) for i in range(how_many)})
 
 
 def classify_lane(job: "Job") -> str:
@@ -269,22 +269,22 @@ def classify_lane(job: "Job") -> str:
         doc = _pdf.open_document(job.source)
         try:
             pages = len(doc)
-            elegidas = _pages_to_sample(pages)
-            muestra = len(elegidas)
-            chars = sum(len(_pdf.page_text(doc[i]).strip()) for i in elegidas)
-            imagenes = sum(_pdf.count_images(doc[i]) for i in elegidas)
+            chosen = _pages_to_sample(pages)
+            sample = len(chosen)
+            chars = sum(len(_pdf.page_text(doc[i]).strip()) for i in chosen)
+            images = sum(_pdf.count_images(doc[i]) for i in chosen)
         finally:
             doc.close()
     except Exception:
         return LANE_GPU
 
-    cpp = chars / max(1, muestra)
+    cpp = chars / max(1, sample)
     if cpp < 60:
         # Nothing to read. Optical recognition has to read it, and that is the
         # one thing here that genuinely wants the card: measured on this corpus,
         # such documents are 14.8% of the pages and 31% of the processor time.
         return LANE_GPU
-    if pages <= 2 and imagenes >= 1:
+    if pages <= 2 and images >= 1:
         return LANE_CPU  # drawing or diagram: measured, the heavy engine performs worse
     return LANE_CPU
 

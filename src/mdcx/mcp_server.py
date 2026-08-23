@@ -46,10 +46,10 @@ def _split_setting(value: str) -> list[str]:
     path keeps its drive letter. A comma is also accepted, since it is what
     people write.
     """
-    partes: list[str] = []
-    for trozo in value.split(","):
-        partes.extend(t for t in trozo.split(os.pathsep) if t.strip())
-    return [t.strip() for t in partes if t.strip()]
+    parts: list[str] = []
+    for piece in value.split(","):
+        parts.extend(t for t in piece.split(os.pathsep) if t.strip())
+    return [t.strip() for t in parts if t.strip()]
 
 
 def _open_packages() -> list[dict]:
@@ -62,37 +62,37 @@ def _open_packages() -> list[dict]:
     if "packages" in _STATE:
         return _STATE["packages"]
 
-    ajuste = os.environ.get("MDCX_FILE", "").strip()
-    claves_ajuste = os.environ.get("MDCX_KEY", "")
-    if not ajuste:
+    adjustment = os.environ.get("MDCX_FILE", "").strip()
+    adjustment_keys = os.environ.get("MDCX_KEY", "")
+    if not adjustment:
         raise RuntimeError("MDCX_FILE is not set: provide the path to the .mdcx package.")
-    if not claves_ajuste:
+    if not adjustment_keys:
         raise RuntimeError("MDCX_KEY is not set: the package is encrypted.")
 
-    rutas = _split_setting(ajuste)
-    claves = _split_setting(claves_ajuste)
+    paths = _split_setting(adjustment)
+    keys = _split_setting(adjustment_keys)
     # One key serves every package, which is the ordinary case; several keys are
     # matched to the packages in order.
-    if len(claves) == 1:
-        claves = claves * len(rutas)
-    if len(claves) != len(rutas):
+    if len(keys) == 1:
+        keys = keys * len(paths)
+    if len(keys) != len(paths):
         raise RuntimeError(
-            f"MDCX_KEY names {len(claves)} keys for {len(rutas)} packages: "
+            f"MDCX_KEY names {len(keys)} keys for {len(paths)} packages: "
             "give one key for all of them, or one key per package in the same order.")
 
-    paquetes: list[dict] = []
-    for ruta, clave in zip(rutas, claves):
-        destino = Path(ruta)
-        if not destino.is_file():
-            raise RuntimeError(f"Package not found: {destino}")
-        connection, header = archive.open_package(destino, clave)
-        paquetes.append({"name": destino.name, "path": destino,
+    packages: list[dict] = []
+    for path, key in zip(paths, keys):
+        target = Path(path)
+        if not target.is_file():
+            raise RuntimeError(f"Package not found: {target}")
+        connection, header = archive.open_package(target, key)
+        packages.append({"name": target.name, "path": target,
                          "connection": connection, "header": header})
 
-    _STATE["packages"] = paquetes
-    _STATE["connection"] = paquetes[0]["connection"]
-    _STATE["header"] = paquetes[0]["header"]
-    return paquetes
+    _STATE["packages"] = packages
+    _STATE["connection"] = packages[0]["connection"]
+    _STATE["header"] = packages[0]["header"]
+    return packages
 
 
 def _connection():
@@ -150,8 +150,8 @@ def _closest_to(query: str) -> tuple[float, float] | None:
     None where there is no such number: a package that indexes words alone has
     none, and inventing one from BM25 would be the mistake this replaced.
     """
-    paquetes = _open_packages()
-    if not all(archive._semantic_ready(p["connection"]) for p in paquetes):
+    packages = _open_packages()
+    if not all(archive._semantic_ready(p["connection"]) for p in packages):
         return None
     try:
         import numpy as np
@@ -161,17 +161,17 @@ def _closest_to(query: str) -> tuple[float, float] | None:
         vector = np.asarray(semantic.encode([query], role="query")[0],
                             dtype=np.float32)
         todos: list[float] = []
-        for paquete in paquetes:
-            identificadores, matriz = archive._vectors(paquete["connection"])
-            if identificadores:
-                todos.extend((matriz @ vector).tolist())
+        for package in packages:
+            identifiers, matrix = archive._vectors(package["connection"])
+            if identifiers:
+                todos.extend((matrix @ vector).tolist())
     except Exception:  # noqa: BLE001
         return None
     if not todos:
         return None
     todos.sort(reverse=True)
-    cola = todos[min(TAIL_AT, len(todos) - 1)]
-    return float(todos[0]), float(todos[0] - cola)
+    queue = todos[min(TAIL_AT, len(todos) - 1)]
+    return float(todos[0]), float(todos[0] - queue)
 
 
 def _best_similarity(connection, vector) -> float | None:
@@ -181,13 +181,13 @@ def _best_similarity(connection, vector) -> float | None:
     is the angle between the query and a passage, measured by one model that
     knows nothing of the corpus the passage was drawn from.
     """
-    identificadores, matriz = archive._vectors(connection)
-    if not identificadores:
+    identifiers, matrix = archive._vectors(connection)
+    if not identifiers:
         return None
-    return float((matriz @ vector).max())
+    return float((matrix @ vector).max())
 
 
-def _packages_worth_asking(paquetes: list[dict], query: str) -> list[dict]:
+def _packages_worth_asking(packages: list[dict], query: str) -> list[dict]:
     """Drop the packages that have nothing to say about this query.
 
     Reciprocal rank compares positions, and a position only means something
@@ -205,25 +205,25 @@ def _packages_worth_asking(paquetes: list[dict], query: str) -> list[dict]:
     A package without vectors leaves nothing to compare, and then every package
     is asked, as before: a query that cannot be measured is not one to filter on.
     """
-    if len(paquetes) < 2:
-        return paquetes
-    if not all(archive._semantic_ready(p["connection"]) for p in paquetes):
-        return paquetes
+    if len(packages) < 2:
+        return packages
+    if not all(archive._semantic_ready(p["connection"]) for p in packages):
+        return packages
 
     import numpy as np
 
     from . import semantic
 
     vector = np.asarray(semantic.encode([query], role="query")[0], dtype=np.float32)
-    cercania = {}
-    for paquete in paquetes:
-        mejor = _best_similarity(paquete["connection"], vector)
-        if mejor is None:
-            return paquetes
-        cercania[paquete["name"]] = mejor
+    closeness = {}
+    for package in packages:
+        best = _best_similarity(package["connection"], vector)
+        if best is None:
+            return packages
+        closeness[package["name"]] = best
 
-    tope = max(cercania.values())
-    return [p for p in paquetes if cercania[p["name"]] >= tope - RELEVANCE_MARGIN]
+    cap = max(closeness.values())
+    return [p for p in packages if closeness[p["name"]] >= cap - RELEVANCE_MARGIN]
 
 
 # What share of a query's terms the index must hold for the lexical ranking to
@@ -233,7 +233,7 @@ def _packages_worth_asking(paquetes: list[dict], query: str) -> list[dict]:
 LEXICAL_FOOTHOLD = 0.5
 
 
-def _mode_for(paquete: dict, query: str) -> str:
+def _mode_for(package: dict, query: str) -> str:
     """Which engines can say anything useful about this query, in this package.
 
     Retrieval by word and retrieval by meaning are merged by rank, which assumes
@@ -281,22 +281,22 @@ def _mode_for(paquete: dict, query: str) -> str:
     try:
         from . import search as _search
 
-        terminos = set(_search.searchable_terms(_search._normalize(query)))
-        terminos -= _search.STOPWORDS
-        if not terminos:
+        terms = set(_search.searchable_terms(_search._normalize(query)))
+        terms -= _search.STOPWORDS
+        if not terms:
             return "auto"
-        marcadores = ",".join("?" * len(terminos))
+        markers = ",".join("?" * len(terms))
         with archive._CONNECTION_LOCK:
-            fila = paquete["connection"].execute(
-                f"SELECT count(*) FROM df WHERE term IN ({marcadores})",
-                tuple(terminos)).fetchone()
-        presentes = fila[0] if fila else 0
-        if presentes / len(terminos) >= LEXICAL_FOOTHOLD:
+            row = package["connection"].execute(
+                f"SELECT count(*) FROM df WHERE term IN ({markers})",
+                tuple(terms)).fetchone()
+        present = row[0] if row else 0
+        if present / len(terms) >= LEXICAL_FOOTHOLD:
             return "auto"
 
-        idioma_corpus = archive._corpus_language(paquete["connection"])
-        idioma_consulta, _ = _search.detect_language(query)
-        if idioma_corpus and idioma_consulta and idioma_consulta != idioma_corpus:
+        corpus_language = archive._corpus_language(package["connection"])
+        language_of_query, _ = _search.detect_language(query)
+        if corpus_language and language_of_query and language_of_query != corpus_language:
             return "semantic"
     except Exception:  # noqa: BLE001
         pass
@@ -316,36 +316,36 @@ def search_packages(query: str, limit: int = 5,
     packages that are not about the same thing buries the answer, so a package
     far from the query never reaches the merge.
     """
-    configurados = _open_packages()
-    if len(configurados) == 1:
-        return archive.query(configurados[0]["connection"], query, limit=limit,
-                             only=only, mode=_mode_for(configurados[0], query))
+    configured = _open_packages()
+    if len(configured) == 1:
+        return archive.query(configured[0]["connection"], query, limit=limit,
+                             only=only, mode=_mode_for(configured[0], query))
 
-    paquetes = _packages_worth_asking(configurados, query)
+    packages = _packages_worth_asking(configured, query)
 
-    def etiquetado(paquete):
+    def labelled(package):
         """Results carry the package they came from, since several are served."""
-        for item in archive.query(paquete["connection"], query, limit=limit,
-                                  only=only, mode=_mode_for(paquete, query)):
+        for item in archive.query(package["connection"], query, limit=limit,
+                                  only=only, mode=_mode_for(package, query)):
             item = dict(item)
-            item["package"] = paquete["name"]
+            item["package"] = package["name"]
             yield item
 
-    if len(paquetes) == 1:
-        return list(etiquetado(paquetes[0]))[:limit]
+    if len(packages) == 1:
+        return list(labelled(packages[0]))[:limit]
 
     from .semantic import fuse
 
-    por_clave: dict = {}
-    listas: list[list] = []
-    for paquete in paquetes:
-        lista = []
-        for item in etiquetado(paquete):
-            clave = (paquete["name"], item["document"], item["passage"][:120])
-            por_clave[clave] = item
-            lista.append(clave)
-        listas.append(lista)
-    return [por_clave[c] for c in fuse(listas)[:limit]]
+    by_key: dict = {}
+    item_lists: list[list] = []
+    for package in packages:
+        items = []
+        for item in labelled(package):
+            key = (package["name"], item["document"], item["passage"][:120])
+            by_key[key] = item
+            items.append(key)
+        item_lists.append(items)
+    return [by_key[c] for c in fuse(item_lists)[:limit]]
 
 
 def create_server():
@@ -408,7 +408,7 @@ def create_server():
         # `score` beside the passage invited comparing, sorting and filtering by
         # it, and none of the three was ever valid. A query the corpus cannot
         # answer reached 14.65 while one it answers well sat at 0.65.
-        respuesta = {
+        answer = {
             "query": query,
             "found": len(results),
             "passages": [
@@ -423,21 +423,21 @@ def create_server():
                 for position, item in enumerate(results, start=1)
             ],
         }
-        medido = _closest_to(query)
-        if medido is not None:
-            cercania, despegue = medido
-            respuesta["similarity"] = round(cercania, 4)
-            respuesta["stands_clear"] = round(despegue, 4)
-            if cercania < NOTHING_NEAR and despegue < STANDS_CLEAR:
-                respuesta["warning"] = (
+        measured = _closest_to(query)
+        if measured is not None:
+            closeness, despegue = measured
+            answer["similarity"] = round(closeness, 4)
+            answer["stands_clear"] = round(despegue, 4)
+            if closeness < NOTHING_NEAR and despegue < STANDS_CLEAR:
+                answer["warning"] = (
                     "nothing in this corpus is about the question: the best "
                     "passage is no nearer than the rest, so the passages below "
                     "are the nearest there are rather than an answer")
         if not results:
-            aviso = archive.language_mismatch(connection, query)
-            if aviso:
-                respuesta["hint"] = aviso
-        return respuesta
+            warning = archive.language_mismatch(connection, query)
+            if warning:
+                answer["hint"] = warning
+        return answer
 
     def _cross_language() -> str:
         """How this server can answer, in the terms that change the answer."""
@@ -449,10 +449,10 @@ def create_server():
                     "the multilingual extra is missing or set to another model")
         return "yes: a query in one language reaches documents in the others"
 
-    def _describe(paquete: dict) -> dict:
-        header = paquete["header"]
+    def _describe(package: dict) -> dict:
+        header = package["header"]
         return {
-            "package": paquete["name"],
+            "package": package["name"],
             "format": f"{header.get('file_format')} v{header.get('version')}",
             "issuer": header.get("issuer") or "(not declared)",
             "created_utc": header.get("created_utc"),
@@ -473,24 +473,24 @@ def create_server():
     )
     async def info() -> dict:
         """Return the corpus record without querying it."""
-        paquetes = _open_packages()
-        if len(paquetes) == 1:
-            descripcion = _describe(paquetes[0])
-            descripcion.pop("package")
-            descripcion["cross_language_search"] = _cross_language()
-            return descripcion
+        packages = _open_packages()
+        if len(packages) == 1:
+            description = _describe(packages[0])
+            description.pop("package")
+            description["cross_language_search"] = _cross_language()
+            return description
 
         # Several packages are queried as one corpus, so the totals describe the
         # whole of it and the list says where each part comes from.
-        partes = [_describe(p) for p in paquetes]
+        parts = [_describe(p) for p in packages]
         return {
-            "packages": len(partes),
-            "documents": sum(p["documents"] or 0 for p in partes),
-            "passages": sum(p["passages"] or 0 for p in partes),
-            "integrity": ("intact" if all(p["integrity"] == "intact" for p in partes)
+            "packages": len(parts),
+            "documents": sum(p["documents"] or 0 for p in parts),
+            "passages": sum(p["passages"] or 0 for p in parts),
+            "integrity": ("intact" if all(p["integrity"] == "intact" for p in parts)
                           else "ALTERED"),
             "cross_language_search": _cross_language(),
-            "each": partes,
+            "each": parts,
         }
 
     @server.tool(
@@ -504,9 +504,9 @@ def create_server():
     )
     async def document(name: str) -> dict:
         """Return the full text of one document in the corpus."""
-        paquetes = _open_packages()
-        for paquete in paquetes:
-            connection = paquete["connection"]
+        packages = _open_packages()
+        for package in packages:
+            connection = package["connection"]
             row = connection.execute(
                 "SELECT d.name, d.pseudopath, d.source, "
                 "       group_concat(p.text, char(10) || char(10)) "
@@ -516,14 +516,14 @@ def create_server():
                 "GROUP BY d.id ORDER BY p.position LIMIT 1",
                 (name, name)).fetchone()
             if row:
-                salida = {"found": True, "document": row[0], "path": row[1],
+                output = {"found": True, "document": row[0], "path": row[1],
                           "direction": row[2], "text": row[3] or ""}
-                if len(paquetes) > 1:
-                    salida["package"] = paquete["name"]
-                return salida
-        donde = "this corpus" if len(paquetes) == 1 else f"any of the {len(paquetes)} packages"
+                if len(packages) > 1:
+                    output["package"] = package["name"]
+                return output
+        where = "this corpus" if len(packages) == 1 else f"any of the {len(packages)} packages"
         return {"found": False,
-                "message": f"No document named {name!r} in {donde}."}
+                "message": f"No document named {name!r} in {where}."}
 
     return server
 

@@ -91,14 +91,14 @@ def _derive_key(key: str, salt: bytes) -> bytes:
                           n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=KEY_BYTES,
                           maxmem=memory * 2)
 
-def _encrypt(datos: bytes, clave_derivada: bytes) -> tuple[bytes, bytes]:
+def _encrypt(data: bytes, derived_key: bytes) -> tuple[bytes, bytes]:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     nonce = os.urandom(12)
-    return nonce, AESGCM(clave_derivada).encrypt(nonce, datos, None)
+    return nonce, AESGCM(derived_key).encrypt(nonce, data, None)
 
-def _decrypt(body: bytes, clave_derivada: bytes, nonce: bytes) -> bytes:
+def _decrypt(body: bytes, derived_key: bytes, nonce: bytes) -> bytes:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    return AESGCM(clave_derivada).decrypt(nonce, body, None)
+    return AESGCM(derived_key).decrypt(nonce, body, None)
 
 def _build_database(folder: Path, semantic: bool = False,
                     reuse: dict | None = None) -> tuple[bytes, dict]:
@@ -166,8 +166,8 @@ def _build_database(folder: Path, semantic: bool = False,
             "INSERT INTO document VALUES (?,?,?,?,?,?,?,?)",
             (i, d["name"], d["pseudopath"], d["source"], d["folder"], archive, status,
              d["norm"]))
-        for j, bloque in enumerate(d["blocks"] if "blocks" in d else _split_blocks(text)):
-            if not bloque.strip():
+        for j, block in enumerate(d["blocks"] if "blocks" in d else _split_blocks(text)):
+            if not block.strip():
                 continue
             n_passages += 1
             # The indexed column is never left empty. FTS5 with external content
@@ -177,8 +177,8 @@ def _build_database(folder: Path, semantic: bool = False,
             # absorbs the duplication.
             connection.execute(
                 "INSERT INTO passage VALUES (?,?,?,?,?)",
-                (n_passages, i, j, bloque,
-                 B._normalize(B.segment_for_index(bloque))))
+                (n_passages, i, j, block,
+                 B._normalize(B.segment_for_index(block))))
 
     connection.execute("INSERT INTO passage_fts(passage_fts) VALUES('rebuild')")
 
@@ -200,23 +200,23 @@ def _build_database(folder: Path, semantic: bool = False,
     # query itself can tell when a question is written in another one. Retrieval
     # is lexical: a term absent from the index cannot match, and without this the
     # result is an empty answer indistinguishable from "the corpus lacks it".
-    muestra = " ".join(d["text"][:4000] for d in docs[:40])
-    idioma, confianza = B.detect_language(muestra)
+    sample = " ".join(d["text"][:4000] for d in docs[:40])
+    language, confidence = B.detect_language(sample)
 
     summary = {
         "documents": len(docs),
-        "language": idioma,
-        "language_confidence": round(confianza, 3),
+        "language": language,
+        "language_confidence": round(confidence, 3),
         "passages": n_passages,
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source_folder": folder.name,
         "largo_medio_pasaje": round(avg_length, 2),
         "terminos_indexados": len(df_count),
     }
-    manifiesto = folder / "_manifest.json"
-    if manifiesto.exists():
+    manifest = folder / "_manifest.json"
+    if manifest.exists():
         try:
-            m = json.loads(manifiesto.read_text(encoding="utf-8"))
+            m = json.loads(manifest.read_text(encoding="utf-8"))
             summary["conversion"] = m.get("summary", {})
         except Exception:  # noqa: BLE001
             pass
@@ -228,9 +228,9 @@ def _build_database(folder: Path, semantic: bool = False,
                     (k, json.dumps(v) if not isinstance(v, str) else v))
     connection.commit()
 
-    datos = connection.serialize()
+    data = connection.serialize()
     connection.close()
-    return bytes(datos), summary
+    return bytes(data), summary
 
 def _split_blocks(text: str) -> list[str]:
     return [b for b in text.split("\n\n") if b.strip()]
@@ -322,7 +322,7 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
     t0 = time.perf_counter()
     derived_key = _derive_key(key, salt)
     nonce, body = _encrypt(compressed, derived_key)
-    t_cifrado = time.perf_counter() - t0
+    t_encrypt = time.perf_counter() - t0
 
     header = {
         "file_format": "mdcx",
@@ -364,7 +364,7 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         "bytes_file": target.stat().st_size,
         "seconds_index": round(t_base, 2),
         "seconds_compress": round(t_comp, 2),
-        "seconds_encrypt": round(t_cifrado, 2),
+        "seconds_encrypt": round(t_encrypt, 2),
         **summary,
     }
 
@@ -390,14 +390,14 @@ def reusable_vectors(path: Path, key: str, model: str) -> dict[str, bytes]:
     try:
         # The model is recorded in the package metadata rather than in the
         # header, which is the part readable without the key.
-        fila = connection.execute(
+        row = connection.execute(
             "SELECT value FROM meta WHERE key = 'embedding_model'").fetchone()
-        if not fila or fila[0] != model:
+        if not row or row[0] != model:
             return {}
-        filas = connection.execute(
+        rows = connection.execute(
             "SELECT p.text, v.vector FROM passage p "
             "JOIN passage_vector v ON v.passage_id = p.id").fetchall()
-        return {passage_digest(texto): vector for texto, vector in filas}
+        return {passage_digest(text): vector for text, vector in rows}
     finally:
         connection.close()
 
@@ -415,46 +415,46 @@ def _embed_passages(connection: sqlite3.Connection,
 
     from . import semantic
 
-    filas = connection.execute("SELECT id, text FROM passage ORDER BY id").fetchall()
-    if not filas:
+    rows = connection.execute("SELECT id, text FROM passage ORDER BY id").fetchall()
+    if not rows:
         return {}
 
     reuse = reuse or {}
-    conocidos: list[tuple[int, bytes]] = []
-    por_codificar: list[tuple[int, str]] = []
-    for identificador, texto in filas:
-        vector = reuse.get(passage_digest(texto))
+    known: list[tuple[int, bytes]] = []
+    to_encode: list[tuple[int, str]] = []
+    for identifier, text in rows:
+        vector = reuse.get(passage_digest(text))
         if vector is None:
-            por_codificar.append((identificador, texto))
+            to_encode.append((identifier, text))
         else:
-            conocidos.append((identificador, vector))
+            known.append((identifier, vector))
 
-    dimensiones = 0
-    if por_codificar:
-        vectores = np.asarray(
-            semantic.encode([t for _, t in por_codificar], role="passage"),
+    dimensions = 0
+    if to_encode:
+        vectors = np.asarray(
+            semantic.encode([t for _, t in to_encode], role="passage"),
             dtype=np.float16)
-        dimensiones = int(vectores.shape[1])
+        dimensions = int(vectors.shape[1])
         connection.executemany(
             "INSERT INTO passage_vector VALUES (?,?)",
-            [(i, v.tobytes()) for (i, _), v in zip(por_codificar, vectores)])
-    if conocidos:
-        connection.executemany("INSERT INTO passage_vector VALUES (?,?)", conocidos)
-        if not dimensiones:
-            dimensiones = len(conocidos[0][1]) // np.dtype(np.float16).itemsize
+            [(i, v.tobytes()) for (i, _), v in zip(to_encode, vectors)])
+    if known:
+        connection.executemany("INSERT INTO passage_vector VALUES (?,?)", known)
+        if not dimensions:
+            dimensions = len(known[0][1]) // np.dtype(np.float16).itemsize
 
     return {"embedding_model": semantic.model_name(),
-            "embedding_dimensions": dimensiones,
-            "passages_encoded": len(por_codificar),
-            "passages_reused": len(conocidos)}
+            "embedding_dimensions": dimensions,
+            "passages_encoded": len(to_encode),
+            "passages_reused": len(known)}
 
 
 def has_vectors(connection: sqlite3.Connection) -> bool:
     """Whether the package carries passage vectors."""
-    fila = connection.execute(
+    row = connection.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='passage_vector'"
     ).fetchone()
-    if not fila:
+    if not row:
         return False
     return connection.execute("SELECT 1 FROM passage_vector LIMIT 1").fetchone() is not None
 
@@ -496,18 +496,18 @@ def _vectors(connection: sqlite3.Connection):
     """
     import numpy as np
 
-    clave = _cache_key(connection)
-    if clave is not None and clave in _VECTOR_CACHE:
-        return _VECTOR_CACHE[clave]
-    filas = connection.execute(
+    key = _cache_key(connection)
+    if key is not None and key in _VECTOR_CACHE:
+        return _VECTOR_CACHE[key]
+    rows = connection.execute(
         "SELECT passage_id, vector FROM passage_vector ORDER BY passage_id").fetchall()
-    identificadores = [f[0] for f in filas]
-    matriz = np.frombuffer(b"".join(f[1] for f in filas), dtype=np.float16)
-    matriz = matriz.reshape(len(filas), -1).astype(np.float32)
-    if clave is None:
-        return identificadores, matriz
-    _VECTOR_CACHE[clave] = (identificadores, matriz)
-    return _VECTOR_CACHE[clave]
+    identifiers = [f[0] for f in rows]
+    matrix = np.frombuffer(b"".join(f[1] for f in rows), dtype=np.float16)
+    matrix = matrix.reshape(len(rows), -1).astype(np.float32)
+    if key is None:
+        return identifiers, matrix
+    _VECTOR_CACHE[key] = (identifiers, matrix)
+    return _VECTOR_CACHE[key]
 
 
 def semantic_query(connection: sqlite3.Connection, query_text: str,
@@ -522,28 +522,28 @@ def semantic_query(connection: sqlite3.Connection, query_text: str,
 
     from . import semantic
 
-    identificadores, matriz = _vectors(connection)
-    if not identificadores:
+    identifiers, matrix = _vectors(connection)
+    if not identifiers:
         return []
     vector = np.asarray(semantic.encode([query_text], role="query")[0],
                         dtype=np.float32)
-    puntajes = matriz @ vector
-    mejores = np.argsort(-puntajes)[:limit]
+    scores = matrix @ vector
+    best_ones = np.argsort(-scores)[:limit]
 
     columna = document_column(connection)
-    salida = []
-    for posicion in mejores:
-        pid = identificadores[int(posicion)]
-        fila = connection.execute(
+    output = []
+    for position in best_ones:
+        pid = identifiers[int(position)]
+        row = connection.execute(
             f"SELECT d.name, d.pseudopath, d.source, p.text "
             f"FROM passage p JOIN document d ON d.id = p.{columna} WHERE p.id = ?",
             (pid,)).fetchone()
-        if fila is None:
+        if row is None:
             continue
-        salida.append({"document": fila[0], "pseudopath": fila[1], "source": fila[2],
-                       "passage": fila[3], "score": float(puntajes[int(posicion)]),
+        output.append({"document": row[0], "pseudopath": row[1], "source": row[2],
+                       "passage": row[3], "score": float(scores[int(position)]),
                        "engine": "semantic"})
-    return salida
+    return output
 
 
 def language_mismatch(connection: sqlite3.Connection, query_text: str) -> str | None:
@@ -565,44 +565,44 @@ def language_mismatch(connection: sqlite3.Connection, query_text: str) -> str | 
         return None
 
     with _CONNECTION_LOCK:
-        marcadores = ",".join("?" * len(terms))
-        fila = connection.execute(
-            f"SELECT count(*) FROM df WHERE term IN ({marcadores})",
+        markers = ",".join("?" * len(terms))
+        row = connection.execute(
+            f"SELECT count(*) FROM df WHERE term IN ({markers})",
             tuple(terms)).fetchone()
-    presentes = fila[0] if fila else 0
-    if presentes:
+    present = row[0] if row else 0
+    if present:
         # Some term does exist in the corpus, so the empty result is about the
         # combination, not about the language.
         return None
 
-    idioma = _corpus_language(connection)
-    if not idioma:
+    language = _corpus_language(connection)
+    if not language:
         return ("None of the query terms appear in this corpus. If the documents "
                 "are in another language, note that matching is literal and a "
                 "query in a different language finds nothing.")
 
-    consulta_idioma, _ = B.detect_language(query_text)
-    if consulta_idioma and consulta_idioma == idioma:
+    query_lang, _ = B.detect_language(query_text)
+    if query_lang and query_lang == language:
         return None
-    detalle = f" The query looks like '{consulta_idioma}'." if consulta_idioma else ""
+    detail = f" The query looks like '{query_lang}'." if query_lang else ""
     return (f"None of the query terms appear in this corpus, which is in "
-            f"'{idioma}'.{detalle} Matching is literal, so a query in another "
+            f"'{language}'.{detail} Matching is literal, so a query in another "
             f"language finds nothing even when the material is present. Try the "
-            f"same question in '{idioma}'.")
+            f"same question in '{language}'.")
 
 
 def _corpus_language(connection: sqlite3.Connection) -> str | None:
     """Language recorded when the package was built, if any."""
     with _CONNECTION_LOCK:
-        fila = connection.execute(
+        row = connection.execute(
             "SELECT value FROM meta WHERE key='language'").fetchone()
-    if not fila or not fila[0]:
+    if not row or not row[0]:
         return None
     try:
-        valor = json.loads(fila[0])
+        value = json.loads(row[0])
     except Exception:  # noqa: BLE001
-        valor = fila[0]
-    return valor or None
+        value = row[0]
+    return value or None
 
 
 def read_header(path: Path) -> dict:
@@ -728,19 +728,19 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
 
     by_document: dict[str, list[dict]] = {}
     for r in candidates:
-        frec = _term_frequencies(r["passage"], distinct_terms)
-        if not frec:
+        freq = _term_frequencies(r["passage"], distinct_terms)
+        if not freq:
             continue
-        largo = max(len(B.tokenize_text(B._normalize(r["passage"]))), 1)
+        length = max(len(B.tokenize_text(B._normalize(r["passage"]))), 1)
         score = 0.0
-        for t, f in frec.items():
+        for t, f in freq.items():
             d_t = df.get(t, 1)
             idf = math.log(1 + (n_passages - d_t + 0.5) / (d_t + 0.5))
             score += idf * (f * (K1 + 1)) / (
-                f + K1 * (1 - B_LENGTH + B_LENGTH * largo / avg_length))
+                f + K1 * (1 - B_LENGTH + B_LENGTH * length / avg_length))
         r = dict(r)
         r["score"] = round(score, 3)
-        r["terms"] = sorted(frec)
+        r["terms"] = sorted(freq)
         by_document.setdefault(r["document"], []).append(r)
 
     ranking = []
@@ -749,7 +749,7 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
         base_score = sum(x["score"] for x in passages[:DOC_TOP_PASSAGES])
         coverage = max(len(x["terms"]) for x in passages) / max(len(distinct_terms), 1)
         ranking.append((base_score * coverage, passages))
-    ranking.sort(key=lambda par: -par[0])
+    ranking.sort(key=lambda pair: -pair[0])
 
     if len(phrase.split()) >= 5:
         needle = B._normalize(phrase)
@@ -758,8 +758,8 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
                 "SELECT name, normalized_text FROM document") if t and needle in t]
         if preferred:
             position = {d: i for i, d in enumerate(preferred)}
-            ranking.sort(key=lambda par: (position.get(par[1][0]["document"], len(position)),
-                                          -par[0]))
+            ranking.sort(key=lambda pair: (position.get(pair[1][0]["document"], len(position)),
+                                          -pair[0]))
 
     out: list[dict] = []
     for round_index in range(DOC_TOP_PASSAGES):
@@ -826,14 +826,14 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
 
     from . import semantic as S
 
-    def clave(r: dict) -> tuple:
+    def key(r: dict) -> tuple:
         return (r["document"], r["passage"][:120])
 
-    por_clave = {}
+    by_key = {}
     for r in lexical + dense:
-        por_clave.setdefault(clave(r), r)
-    orden = S.fuse([[clave(r) for r in lexical], [clave(r) for r in dense]])
-    return [por_clave[k] for k in orden[:limit]]
+        by_key.setdefault(key(r), r)
+    order = S.fuse([[key(r) for r in lexical], [key(r) for r in dense]])
+    return [by_key[k] for k in order[:limit]]
 
 
 def _semantic_ready(connection: sqlite3.Connection) -> bool:
@@ -850,19 +850,19 @@ def _semantic_ready(connection: sqlite3.Connection) -> bool:
     # different one lands somewhere else in the space. Comparing the two returns
     # confident nonsense, so the mismatch disables meaning rather than reporting
     # results that look ranked.
-    esperado = connection.execute(
+    expected = connection.execute(
         "SELECT value FROM meta WHERE key = 'embedding_model'").fetchone()
-    return bool(esperado) and esperado[0] == S.model_name()
+    return bool(expected) and expected[0] == S.model_name()
 
 
 def _term_frequencies(text: str, terms: set[str]) -> dict[str, int]:
     from . import search as B
 
-    cuenta: dict[str, int] = {}
+    count: dict[str, int] = {}
     for t in B.tokenize_text(B._normalize(text)):
         if t in terms:
-            cuenta[t] = cuenta.get(t, 0) + 1
-    return cuenta
+            count[t] = count.get(t, 0) + 1
+    return count
 
 _STATS_CACHE: dict = {}
 
@@ -1034,9 +1034,9 @@ def main() -> int:
     # they cannot support -- 3.589 above 0.344 reads as far better and means
     # nothing of the sort. The MCP reply dropped the score for this reason;
     # this surface went on printing it.
-    for posicion, r in enumerate(results, start=1):
+    for position, r in enumerate(results, start=1):
         print("-" * 96)
-        print(f"{posicion}. [{r['source']}] {r['document']}")
+        print(f"{position}. [{r['source']}] {r['document']}")
         print(f"{r['pseudopath']}")
         print(r["passage"][:1200])
     return 0

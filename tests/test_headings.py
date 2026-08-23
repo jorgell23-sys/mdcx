@@ -32,11 +32,11 @@ HEADING = re.compile(r"(?m)^#{1,6} ")
 
 def test_bookmarks_are_translated_to_where_the_pages_ended_up():
     """A bookmark on page 42 of the book is on page 3 of a chapter starting at 40."""
-    marcas = [(1, "Chapter 3", 40), (2, "Solutions", 42), (2, "Osmosis", 45),
+    marks = [(1, "Chapter 3", 40), (2, "Solutions", 42), (2, "Osmosis", 45),
               (1, "Chapter 4", 100)]
     original = pdf.outline
     try:
-        pdf.outline = lambda _: marcas
+        pdf.outline = lambda _: marks
         found = pdf.outline_for_range(Path("libro.pdf"), 40, 60)
     finally:
         pdf.outline = original
@@ -64,7 +64,7 @@ def test_the_headings_reach_the_markdown():
     """What is fetched has to come out as headings, at the right depth."""
     from mdcx.convert import engines
 
-    class Pagina:
+    class Page:
         def get_textpage(self):
             return self
         def get_text_range(self, *a):
@@ -80,7 +80,7 @@ def test_the_headings_reach_the_markdown():
         def get_objects(self, max_depth=1):
             return []
 
-    class Documento(list):
+    class Document(list):
         def close(self):
             pass
 
@@ -88,19 +88,19 @@ def test_the_headings_reach_the_markdown():
     from mdcx.convert import pdf as _pdf
     original_open, original_par = _pdf.open_document, _pdf.page_paragraphs_fast
     try:
-        _pdf.open_document = lambda _: Documento([Pagina(), Pagina()])
+        _pdf.open_document = lambda _: Document([Page(), Page()])
         _pdf.page_paragraphs_fast = lambda _: ["cuerpo del capitulo"]
-        paginas, meta = engines._native_pages(
+        pages, meta = engines._native_pages(
             Path("cap.pdf"), {1: [(1, "Chapter 3"), (2, "Solutions")], 2: [(3, "Osmosis")]})
     finally:
         _pdf.open_document, _pdf.page_paragraphs_fast = original_open, original_par
 
-    entero = "\n".join(paginas)
+    whole = "\n".join(pages)
     assert meta["headings"] == 3
-    assert len(HEADING.findall(entero)) == 3
-    assert "# Chapter 3" in entero
-    assert "## Solutions" in entero
-    assert "### Osmosis" in entero
+    assert len(HEADING.findall(whole)) == 3
+    assert "# Chapter 3" in whole
+    assert "## Solutions" in whole
+    assert "### Osmosis" in whole
 
 
 def test_a_chapter_of_prose_is_no_longer_rejected_as_structureless():
@@ -112,17 +112,17 @@ def test_a_chapter_of_prose_is_no_longer_rejected_as_structureless():
     """
     from mdcx.convert import convert as C
 
-    sin_titulos = "parrafo uno\n\nparrafo dos\n"
-    con_titulos = "# Chapter 3\n\nparrafo uno\n\n## Solutions\n\nparrafo dos\n"
+    without_titles = "parrafo uno\n\nparrafo dos\n"
+    with_titles = "# Chapter 3\n\nparrafo uno\n\n## Solutions\n\nparrafo dos\n"
     v = {"status": "ok", "coverage": 1.0}
 
-    assert C._score(sin_titulos, v)[1] == 0
-    assert C._score(con_titulos, v)[1] > 0
+    assert C._score(without_titles, v)[1] == 0
+    assert C._score(with_titles, v)[1] > 0
 
     # A result with no structural marks is not accepted however much of the
     # document it covered: a chapter returned as a wall of prose is exactly
     # what the expensive engine is for.
     assert C._good_enough("hibrido", {"unresolved": []}, v,
-                          C._score(sin_titulos, v), []) is False
+                          C._score(without_titles, v), []) is False
     assert C._good_enough("hibrido", {"unresolved": []}, v,
-                          C._score(con_titulos, v), []) is True
+                          C._score(with_titles, v), []) is True

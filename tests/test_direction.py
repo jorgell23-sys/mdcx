@@ -28,79 +28,79 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mdcx import archive, semantic  # noqa: E402
 
-necesita_modelo = pytest.mark.skipif(
+needs_model = pytest.mark.skipif(
     not semantic.available(),
     reason="needs the multilingual extra: pip install 'mdcx[multilingual]'")
 
 
-def _build(raiz: Path, *, con_significado: bool) -> Path:
+def _build(root: Path, *, with_semantics: bool) -> Path:
     """A collection with both directions present, in English."""
-    recibidos = raiz / "src" / "Received"
-    emitidos = raiz / "src" / "Sent"
-    recibidos.mkdir(parents=True)
-    emitidos.mkdir(parents=True)
-    (recibidos / "incoming.md").write_text(
+    received = root / "src" / "Received"
+    issued = root / "src" / "Sent"
+    received.mkdir(parents=True)
+    issued.mkdir(parents=True)
+    (received / "incoming.md").write_text(
         "---\nsource_format: pdf\n---\n\n# Photosynthesis\n\n"
         "Plants turn sunlight into sugar using the chlorophyll in their "
         "leaves, and release oxygen while doing so.\n", encoding="utf-8")
-    (emitidos / "outgoing.md").write_text(
+    (issued / "outgoing.md").write_text(
         "---\nsource_format: pdf\n---\n\n# Printing\n\n"
         "Gutenberg built the printing press with movable type in Mainz, "
         "and the page was set one letter at a time.\n", encoding="utf-8")
-    paquete = raiz / "corpus.mdcx"
-    archive.pack(raiz / "src", paquete, "k", semantic=con_significado)
-    return paquete
+    package = root / "corpus.mdcx"
+    archive.pack(root / "src", package, "k", semantic=with_semantics)
+    return package
 
 
 @pytest.fixture
-def lexico(tmp_path):
-    conexion, _ = archive.open_package(_build(tmp_path, con_significado=False), "k")
-    return conexion
+def lexicon(tmp_path):
+    connection, _ = archive.open_package(_build(tmp_path, with_semantics=False), "k")
+    return connection
 
 
 @pytest.fixture
-def con_significado(tmp_path):
-    conexion, _ = archive.open_package(_build(tmp_path, con_significado=True), "k")
-    return conexion
+def with_semantics(tmp_path):
+    connection, _ = archive.open_package(_build(tmp_path, with_semantics=True), "k")
+    return connection
 
 
-def test_the_direction_comes_from_the_top_level_folder(lexico):
-    almacenadas = {fila[0] for fila in
-                   lexico.execute("SELECT DISTINCT source FROM document")}
-    assert almacenadas == {"RECEIVED", "SENT"}
+def test_the_direction_comes_from_the_top_level_folder(lexicon):
+    stored = {row[0] for row in
+                   lexicon.execute("SELECT DISTINCT source FROM document")}
+    assert stored == {"RECEIVED", "SENT"}
 
 
-def test_a_restriction_returns_only_that_side(lexico):
-    recibidos = archive.query(lexico, "photosynthesis sunlight", only="received")
-    emitidos = archive.query(lexico, "printing press movable type", only="sent")
-    assert recibidos and all("incoming" in r["document"] for r in recibidos)
-    assert emitidos and all("outgoing" in r["document"] for r in emitidos)
+def test_a_restriction_returns_only_that_side(lexicon):
+    received = archive.query(lexicon, "photosynthesis sunlight", only="received")
+    issued = archive.query(lexicon, "printing press movable type", only="sent")
+    assert received and all("incoming" in r["document"] for r in received)
+    assert issued and all("outgoing" in r["document"] for r in issued)
 
 
-def test_a_restriction_excludes_the_other_side(lexico):
+def test_a_restriction_excludes_the_other_side(lexicon):
     """The document exists and holds the words; the restriction is what removes it."""
-    assert archive.query(lexico, "printing press movable type")
-    assert not archive.query(lexico, "printing press movable type", only="received")
+    assert archive.query(lexicon, "printing press movable type")
+    assert not archive.query(lexicon, "printing press movable type", only="received")
 
 
-def test_the_case_a_caller_writes_does_not_change_the_answer(lexico):
+def test_the_case_a_caller_writes_does_not_change_the_answer(lexicon):
     """Every caller writes lowercase and the column holds uppercase."""
-    esperado = archive.query(lexico, "photosynthesis sunlight", only="RECEIVED")
-    assert esperado
-    for escrito in ("received", "Received", "rEcEiVeD"):
+    expected = archive.query(lexicon, "photosynthesis sunlight", only="RECEIVED")
+    assert expected
+    for written in ("received", "Received", "rEcEiVeD"):
         assert [r["document"] for r in
-                archive.query(lexico, "photosynthesis sunlight", only=escrito)] == \
-               [r["document"] for r in esperado], f"{escrito!r} answered differently"
+                archive.query(lexicon, "photosynthesis sunlight", only=written)] == \
+               [r["document"] for r in expected], f"{written!r} answered differently"
 
 
-def test_omitting_the_direction_reaches_both(lexico):
-    documentos = {r["document"] for r in
-                  archive.query(lexico, "photosynthesis printing", limit=8)}
-    assert len(documentos) == 2
+def test_omitting_the_direction_reaches_both(lexicon):
+    documents = {r["document"] for r in
+                  archive.query(lexicon, "photosynthesis printing", limit=8)}
+    assert len(documents) == 2
 
 
-@necesita_modelo
-def test_a_restricted_query_still_crosses_languages(con_significado):
+@needs_model
+def test_a_restricted_query_still_crosses_languages(with_semantics):
     """The regression: the dense engine is the only one that can answer here.
 
     The query is Spanish and the documents are English, so they share no term
@@ -108,29 +108,29 @@ def test_a_restricted_query_still_crosses_languages(con_significado):
     dense results, what comes back is empty -- which is what happened, and read
     as a corpus with nothing on the subject rather than as a filter fault.
     """
-    consulta = "como convierten las plantas la luz solar en azucar"
-    assert not archive.query(con_significado, consulta, mode="lexical"), (
+    query = "como convierten las plantas la luz solar en azucar"
+    assert not archive.query(with_semantics, query, mode="lexical"), (
         "the premise of this test is that word matching cannot answer it")
 
-    sin_restriccion = archive.query(con_significado, consulta, limit=3)
-    assert sin_restriccion, "the dense engine should answer this on its own"
+    without_restriction = archive.query(with_semantics, query, limit=3)
+    assert without_restriction, "the dense engine should answer this on its own"
 
-    restringida = archive.query(con_significado, consulta, limit=3, only="received")
-    assert restringida, (
+    restricted = archive.query(with_semantics, query, limit=3, only="received")
+    assert restricted, (
         "a restriction to the side that holds the answer returned nothing")
-    assert all("incoming" in r["document"] for r in restringida)
+    assert all("incoming" in r["document"] for r in restricted)
 
 
-@necesita_modelo
-def test_a_restriction_still_excludes_the_other_side_by_meaning(con_significado):
+@needs_model
+def test_a_restriction_still_excludes_the_other_side_by_meaning(with_semantics):
     """Reaching across languages must not reach past the restriction."""
-    restringida = archive.query(
-        con_significado, "quien invento la imprenta de tipos moviles",
+    restricted = archive.query(
+        with_semantics, "quien invento la imprenta de tipos moviles",
         limit=3, only="received")
-    assert all("outgoing" not in r["document"] for r in restringida)
+    assert all("outgoing" not in r["document"] for r in restricted)
 
 
-def test_the_values_the_cli_offers_are_the_values_that_match(lexico):
+def test_the_values_the_cli_offers_are_the_values_that_match(lexicon):
     """The choices a user is given have to be choices the column can answer.
 
     This is the shape of the original fault: two places agreeing on the concept
@@ -141,22 +141,22 @@ def test_the_values_the_cli_offers_are_the_values_that_match(lexico):
     """
     import ast
 
-    fuente = (Path(__file__).resolve().parents[1]
+    source = (Path(__file__).resolve().parents[1]
               / "src" / "mdcx" / "archive.py").read_text(encoding="utf-8")
-    declaradas: set[str] = set()
-    for nodo in ast.walk(ast.parse(fuente)):
-        if not isinstance(nodo, ast.Call):
+    declared: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
             continue
-        if not (nodo.args and isinstance(nodo.args[0], ast.Constant)
-                and nodo.args[0].value == "--only"):
+        if not (node.args and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "--only"):
             continue
-        for palabra in nodo.keywords:
-            if palabra.arg == "choices":
-                declaradas = set(ast.literal_eval(palabra.value))
-    assert declaradas, "the --only argument no longer declares its choices"
+        for word in node.keywords:
+            if word.arg == "choices":
+                declared = set(ast.literal_eval(word.value))
+    assert declared, "the --only argument no longer declares its choices"
 
-    almacenadas = {fila[0] for fila in
-                   lexico.execute("SELECT DISTINCT source FROM document")}
-    for eleccion in declaradas:
-        assert eleccion.upper() in almacenadas, (
-            f"the CLI offers {eleccion!r}, which no document is stored as")
+    stored = {row[0] for row in
+                   lexicon.execute("SELECT DISTINCT source FROM document")}
+    for choice in declared:
+        assert choice.upper() in stored, (
+            f"the CLI offers {choice!r}, which no document is stored as")

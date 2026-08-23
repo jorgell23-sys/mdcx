@@ -48,10 +48,10 @@ class Lines:
 
 def test_a_passage_carries_its_position_and_not_a_score():
     """Position is what the merge establishes; the scores are not comparable."""
-    fuente = (Path(__file__).resolve().parents[1]
+    source = (Path(__file__).resolve().parents[1]
               / "src" / "mdcx" / "mcp_server.py").read_text(encoding="utf-8")
-    assert '"rank": position' in fuente
-    assert '"score": item.get("score")' not in fuente, (
+    assert '"rank": position' in source
+    assert '"score": item.get("score")' not in source, (
         "publicar el score invita a ordenar y filtrar por el, y no es valido")
 
 
@@ -65,27 +65,27 @@ def test_the_command_line_prints_a_position_and_not_a_score(tmp_path, capsys):
     """
     from mdcx import archive
 
-    recibidos = tmp_path / "src" / "Received"
-    recibidos.mkdir(parents=True)
-    (recibidos / "printing.md").write_text(
+    received = tmp_path / "src" / "Received"
+    received.mkdir(parents=True)
+    (received / "printing.md").write_text(
         "---\nsource_format: pdf\n---\n\n# Printing\n\n"
         "Gutenberg built the printing press with movable type in Mainz.\n",
         encoding="utf-8")
-    paquete = tmp_path / "corpus.mdcx"
-    archive.pack(tmp_path / "src", paquete, "k")
+    package = tmp_path / "corpus.mdcx"
+    archive.pack(tmp_path / "src", package, "k")
 
     argv = sys.argv
-    sys.argv = ["mdcx", "search", str(paquete), "printing press", "--key", "k"]
+    sys.argv = ["mdcx", "search", str(package), "printing press", "--key", "k"]
     try:
         assert archive.main() == 0
     finally:
         sys.argv = argv
 
-    salida = capsys.readouterr().out
-    assert "printing" in salida, "the passage should have been found"
-    assert "score" not in salida.lower(), (
+    output = capsys.readouterr().out
+    assert "printing" in output, "the passage should have been found"
+    assert "score" not in output.lower(), (
         "a score printed over a merged list invites a comparison it cannot support")
-    assert "1. " in salida, "the position is what the merge establishes"
+    assert "1. " in output, "the position is what the merge establishes"
 
 
 def test_both_conditions_are_required_because_each_alone_was_wrong():
@@ -103,17 +103,17 @@ def test_both_conditions_are_required_because_each_alone_was_wrong():
     Checked here against the edges each was measured on -- the large corpus
     where the absolute number separates and the small one where it does not.
     """
-    def marca(sim, clear):
+    def mark(sim, clear):
         return sim < mcp_server.NOTHING_NEAR and clear < mcp_server.STANDS_CLEAR
 
     # Large corpus: answered questions from 0.6427, unanswered up to 0.6320.
-    assert not marca(0.6427, 0.2235), "la peor respuesta buena no debe marcarse"
-    assert marca(0.6320, 0.1347), "la mejor sin respuesta debe marcarse"
-    assert marca(0.5452, 0.1150), "recipe for neapolitan pizza dough"
+    assert not mark(0.6427, 0.2235), "la peor respuesta buena no debe marcarse"
+    assert mark(0.6320, 0.1347), "la mejor sin respuesta debe marcarse"
+    assert mark(0.5452, 0.1150), "recipe for neapolitan pizza dough"
 
     # Small corpus: answered questions from 0.566, and they stand well clear.
-    assert not marca(0.566, 0.331), "una respuesta buena de un corpus chico"
-    assert marca(0.327, 0.172), "una consulta ajena en un corpus chico"
+    assert not mark(0.566, 0.331), "una respuesta buena de un corpus chico"
+    assert mark(0.327, 0.172), "una consulta ajena en un corpus chico"
 
 
 def test_relevance_is_judged_against_the_corpus_and_not_against_a_constant():
@@ -141,12 +141,12 @@ def test_a_corpus_that_cannot_answer_says_so_without_hiding_anything():
     The nearest passage is worth seeing even when it is not an answer, and a
     corpus that answers in another language must not be swallowed by this.
     """
-    fuente = (Path(__file__).resolve().parents[1]
+    source = (Path(__file__).resolve().parents[1]
               / "src" / "mdcx" / "mcp_server.py").read_text(encoding="utf-8")
-    assert 'respuesta["warning"]' in fuente
-    assert "found" in fuente
+    assert 'answer["warning"]' in source
+    assert "found" in source
     # the passages are built before the warning is considered
-    assert fuente.index('"passages"') < fuente.index('respuesta["warning"]')
+    assert source.index('"passages"') < source.index('answer["warning"]')
 
 
 def test_a_package_without_vectors_offers_no_such_number(monkeypatch):
@@ -158,10 +158,10 @@ def test_a_package_without_vectors_offers_no_such_number(monkeypatch):
 
 def test_the_tail_is_what_the_best_passage_is_compared_against():
     """Both numbers are reported, and the judgement rests on the second."""
-    fuente = (Path(__file__).resolve().parents[1]
+    source = (Path(__file__).resolve().parents[1]
               / "src" / "mdcx" / "mcp_server.py").read_text(encoding="utf-8")
-    assert 'respuesta["stands_clear"]' in fuente
-    assert "despegue < STANDS_CLEAR" in fuente, (
+    assert 'answer["stands_clear"]' in source
+    assert "despegue < STANDS_CLEAR" in source, (
         "el aviso debe decidirse por el despegue, no por el coseno absoluto")
 
 
@@ -180,8 +180,8 @@ def test_rules_around_prose_are_not_read_as_a_table():
     Four lines between one pair of rules is a paragraph, and cutting it into
     cells returns shredded sentences that look like a well-formed table.
     """
-    parrafo = Lines([(50.0, y, 500.0, y + 10.0) for y in (700.0, 685.0, 670.0, 655.0)])
-    assert not tables._rows_are_single_lines(parrafo, [720.0, 640.0, 600.0])
+    paragraph = Lines([(50.0, y, 500.0, y + 10.0) for y in (700.0, 685.0, 670.0, 655.0)])
+    assert not tables._rows_are_single_lines(paragraph, [720.0, 640.0, 600.0])
 
 
 def test_the_cells_of_one_row_are_not_mistaken_for_several_lines():
@@ -190,25 +190,25 @@ def test_the_cells_of_one_row_are_not_mistaken_for_several_lines():
     Counting those as separate lines would call every table prose -- which it
     did, taking the tables found in a textbook from twenty-four to one.
     """
-    fila = Lines([(50.0, 700.0, 150.0, 710.0), (160.0, 700.4, 260.0, 710.4),
+    row = Lines([(50.0, 700.0, 150.0, 710.0), (160.0, 700.4, 260.0, 710.4),
                   (270.0, 699.8, 370.0, 709.8)])
-    assert tables._rows_are_single_lines(fila, [715.0, 695.0, 680.0])
+    assert tables._rows_are_single_lines(row, [715.0, 695.0, 680.0])
 
 
-class Indice:
+class Index:
     """A package whose index holds a known set of terms."""
 
-    def __init__(self, terminos):
-        self._terminos = set(terminos)
+    def __init__(self, terms):
+        self._terminos = set(terms)
 
     def __init__2(self):
         pass
 
-    def execute(self, sql, parametros=()):
+    def execute(self, sql, parameters=()):
         if "meta" in sql:                       # el idioma declarado del paquete
             return type("F", (), {"fetchone": lambda _self: ('"en"',)})()
-        presentes = sum(1 for t in parametros if t in self._terminos)
-        return type("F", (), {"fetchone": lambda _self: (presentes,)})()
+        present = sum(1 for t in parameters if t in self._terminos)
+        return type("F", (), {"fetchone": lambda _self: (present,)})()
 
 
 def test_a_query_the_index_barely_holds_is_answered_by_meaning_alone():
@@ -221,18 +221,18 @@ def test_a_query_the_index_barely_holds_is_answered_by_meaning_alone():
     equivalent questions, the top five held up either way but the first
     position, which is what gets cited, was a quarter worse.
     """
-    paquete = {"connection": Indice({"acid", "base", "titration", "ionic", "bond"})}
+    package = {"connection": Index({"acid", "base", "titration", "ionic", "bond"})}
 
     # A question in the language of the corpus: the index holds its terms.
-    assert mcp_server._mode_for(paquete, "acid base titration") == "auto"
-    assert mcp_server._mode_for(paquete, "what is an ionic bond") == "auto"
+    assert mcp_server._mode_for(package, "acid base titration") == "auto"
+    assert mcp_server._mode_for(package, "what is an ionic bond") == "auto"
 
     # One in another language: a single accidental match out of several terms,
     # and the question reads as Spanish. Both are needed.
     assert mcp_server._mode_for(
-        paquete, "una reaccion de acido base y su valoracion") == "semantic"
+        package, "una reaccion de acido base y su valoracion") == "semantic"
     assert mcp_server._mode_for(
-        paquete, "cual es la estructura del atomo") == "semantic"
+        package, "cual es la estructura del atomo") == "semantic"
 
 
 def test_both_signals_are_required_because_each_alone_is_wrong():
@@ -245,15 +245,15 @@ def test_both_signals_are_required_because_each_alone_is_wrong():
     Spanish question comes back Spanish.
     """
     assert 0.0 < mcp_server.LEXICAL_FOOTHOLD < 1.0
-    fuente = (Path(__file__).resolve().parents[1]
+    source = (Path(__file__).resolve().parents[1]
               / "src" / "mdcx" / "mcp_server.py").read_text(encoding="utf-8")
-    assert "LEXICAL_FOOTHOLD" in fuente
-    assert "detect_language" in fuente, (
+    assert "LEXICAL_FOOTHOLD" in source
+    assert "detect_language" in source, (
         "hacen falta las dos senales: la proporcion sola condena consultas "
         "legitimas en un paquete chico, donde casi nada esta indexado")
 
 
 def test_a_query_of_only_stopwords_changes_nothing():
     """There is nothing to look up, so there is nothing to decide."""
-    paquete = {"connection": Indice({"acid"})}
-    assert mcp_server._mode_for(paquete, "de la que el") == "auto"
+    package = {"connection": Index({"acid"})}
+    assert mcp_server._mode_for(package, "de la que el") == "auto"

@@ -35,15 +35,15 @@ class Block:
     left: float
     top: float
 
-def _abrir(ruta: Path):
+def _open(path: Path):
     import pypdfium2 as pdfium
 
-    return pdfium.PdfDocument(str(ruta))
+    return pdfium.PdfDocument(str(path))
 
-def count_pages(ruta: Path) -> int:
+def count_pages(path: Path) -> int:
     """Number of pages, or zero if the file cannot be read."""
     try:
-        doc = _abrir(ruta)
+        doc = _open(path)
     except Exception:  # noqa: BLE001
         return 0
     try:
@@ -64,10 +64,10 @@ def page_blocks(page) -> list[Block]:
     blocks: list[Block] = []
     try:
         for i in range(tp.count_rects()):
-            izq, abajo, der, top = tp.get_rect(i)
-            text = (tp.get_text_bounded(izq, abajo, der, top) or "").strip()
+            left, below, right, top = tp.get_rect(i)
+            text = (tp.get_text_bounded(left, below, right, top) or "").strip()
             if text:
-                blocks.append(Block(text, round(izq, 1), round(top, 1)))
+                blocks.append(Block(text, round(left, 1), round(top, 1)))
     finally:
         tp.close()
     # Mayor coordenada superior primero: en PDF, mas top es un valor mas alto.
@@ -83,14 +83,14 @@ def count_images(page) -> int:
     except Exception:  # noqa: BLE001
         return 0
 
-def open_document(ruta: Path):
+def open_document(path: Path):
     """Open the PDF for iteration. The caller closes it."""
-    return _abrir(ruta)
+    return _open(path)
 
-def outline(ruta: Path) -> list[tuple[int, str, int]]:
+def outline(path: Path) -> list[tuple[int, str, int]]:
     """Embedded table of contents as (level, title, page), 1-based."""
     try:
-        doc = _abrir(ruta)
+        doc = _open(path)
     except Exception:  # noqa: BLE001
         return []
     out: list[tuple[int, str, int]] = []
@@ -118,7 +118,7 @@ def extract_pages(source: Path, first: int, last: int, target: Path) -> Path:
     """Write a new PDF containing the given page range, 1-based inclusive."""
     import pypdfium2 as pdfium
 
-    src = _abrir(source)
+    src = _open(source)
     try:
         out = pdfium.PdfDocument.new()
         out.import_pages(src, list(range(first - 1, last)))
@@ -159,7 +159,7 @@ def extract_page_list(source: Path, pages: list[int], target: Path) -> Path:
     """
     import pypdfium2 as pdfium
 
-    src = _abrir(source)
+    src = _open(source)
     try:
         out = pdfium.PdfDocument.new()
         out.import_pages(src, sorted(set(pages)))
@@ -181,47 +181,47 @@ def page_paragraphs(page) -> list[str]:
         return []
 
     lines: list[tuple[float, str]] = []
-    actual: list[Block] = []
+    current: list[Block] = []
     for b in blocks:
-        if actual and abs(actual[-1].top - b.top) <= LINE_TOLERANCE:
-            actual.append(b)
+        if current and abs(current[-1].top - b.top) <= LINE_TOLERANCE:
+            current.append(b)
             continue
-        if actual:
-            lines.append((actual[0].top,
-                           " ".join(x.text for x in sorted(actual, key=lambda y: y.left))))
-        actual = [b]
-    if actual:
-        lines.append((actual[0].top,
-                       " ".join(x.text for x in sorted(actual, key=lambda y: y.left))))
+        if current:
+            lines.append((current[0].top,
+                           " ".join(x.text for x in sorted(current, key=lambda y: y.left))))
+        current = [b]
+    if current:
+        lines.append((current[0].top,
+                       " ".join(x.text for x in sorted(current, key=lambda y: y.left))))
 
-    parrafos: list[str] = []
-    acumulado: list[str] = []
-    anterior: float | None = None
+    paragraphs: list[str] = []
+    accumulated: list[str] = []
+    previous: float | None = None
     for top, text in lines:
-        if anterior is not None and (anterior - top) > PARAGRAPH_GAP:
-            if acumulado:
-                parrafos.append(" ".join(acumulado))
-            acumulado = []
-        acumulado.append(text)
-        anterior = top
-    if acumulado:
-        parrafos.append(" ".join(acumulado))
-    return parrafos
+        if previous is not None and (previous - top) > PARAGRAPH_GAP:
+            if accumulated:
+                paragraphs.append(" ".join(accumulated))
+            accumulated = []
+        accumulated.append(text)
+        previous = top
+    if accumulated:
+        paragraphs.append(" ".join(accumulated))
+    return paragraphs
 
 def page_paragraphs_fast(page) -> list[str]:
     """Paragraphs from the plain page text, without inspecting rectangles."""
     text = page_text(page)
     if not text.strip():
         return []
-    parrafos: list[str] = []
-    actual: list[str] = []
+    paragraphs: list[str] = []
+    current: list[str] = []
     for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         l = line.strip()
         if l:
-            actual.append(l)
-        elif actual:
-            parrafos.append(" ".join(actual))
-            actual = []
-    if actual:
-        parrafos.append(" ".join(actual))
-    return parrafos
+            current.append(l)
+        elif current:
+            paragraphs.append(" ".join(current))
+            current = []
+    if current:
+        paragraphs.append(" ".join(current))
+    return paragraphs

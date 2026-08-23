@@ -63,9 +63,9 @@ def test_a_character_across_a_boundary_is_counted_once():
     cells = tables._grid_cells(page, rows=[10.0, 0.0], columns=[0.0, 10.0, 20.0])
 
     assert len(cells) == 1
-    juntas = "".join(cells[0])
-    assert juntas.count("b") == 1, f"la b aparece {juntas.count('b')} veces: {cells[0]}"
-    assert sorted(juntas) == ["a", "b", "c"]
+    joined = "".join(cells[0])
+    assert joined.count("b") == 1, f"la b aparece {joined.count('b')} veces: {cells[0]}"
+    assert sorted(joined) == ["a", "b", "c"]
 
 
 def test_a_glyph_cut_by_the_outer_rule_keeps_its_row():
@@ -92,9 +92,9 @@ def test_what_lies_outside_the_grid_stays_outside():
         ("z", 60.0, 0.0, 70.0, 8.0),        # well to the right
     ])
     cells = tables._grid_cells(page, rows=[10.0, 0.0], columns=[0.0, 10.0])
-    juntas = "".join(cells[0])
-    assert "y" in juntas
-    assert "x" not in juntas and "z" not in juntas, f"entro el margen: {cells[0]}"
+    joined = "".join(cells[0])
+    assert "y" in joined
+    assert "x" not in joined and "z" not in joined, f"entro el margen: {cells[0]}"
 
 
 def test_characters_are_placed_in_the_right_row_and_column():

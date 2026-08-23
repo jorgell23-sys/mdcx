@@ -78,10 +78,10 @@ def _recovery_block(reference: str, markdown: str) -> tuple[str, int]:
     if not deficit:
         return "", 0
 
-    restante = sum(deficit.values())
+    remaining = sum(deficit.values())
     recovered: list[str] = []
     for raw_line in reference.splitlines():
-        if restante <= 0:
+        if remaining <= 0:
             break
         line = raw_line.strip()
         if not line:
@@ -95,15 +95,15 @@ def _recovery_block(reference: str, markdown: str) -> tuple[str, int]:
             continue
         recovered.append(line)
         for t, c in tokens.items():
-            pendiente = deficit.get(t, 0)
-            if not pendiente:
+            pending = deficit.get(t, 0)
+            if not pending:
                 continue
-            usados = c if c < pendiente else pendiente
-            if usados == pendiente:
+            used = c if c < pending else pending
+            if used == pending:
                 del deficit[t]
             else:
-                deficit[t] = pendiente - usados
-            restante -= usados
+                deficit[t] = pending - used
+            remaining -= used
 
     fragments = sorted(deficit.elements()) if deficit else []
 
@@ -173,17 +173,17 @@ def _candidates(job: Job, ref_meta: dict, use_docling: bool) -> list[tuple[str, 
     # author already wrote. Both cheap engines need them: giving them to one and
     # not the other leaves the second producing nothing structural, being
     # rejected for it, and sending the document to layout analysis anyway.
-    titulos = None
+    titles = None
     if job.kind == "pdf" and job.is_chapter and job.page_range:
         try:
             from . import pdf as _pdf
 
-            titulos = _pdf.outline_for_range(job.source, *job.page_range)
+            titles = _pdf.outline_for_range(job.source, *job.page_range)
         except Exception:  # noqa: BLE001
-            titulos = None
+            titles = None
 
     if native and job.kind == "pdf":
-        out.append(("nativo", lambda p, t=titulos: engines.native_pdf(p, t)))
+        out.append(("nativo", lambda p, t=titles: engines.native_pdf(p, t)))
     elif native:
         out.append(("nativo", native))
     if docling_ok and job.kind == "pdf":
@@ -195,14 +195,14 @@ def _candidates(job: Job, ref_meta: dict, use_docling: bool) -> list[tuple[str, 
         # a chapter with no structural marks, is rejected for having none, and
         # the document goes to layout analysis after all -- which is the whole
         # of what fetching the headings was for.
-        out.append(("hibrido", lambda p, t=titulos: engines.hybrid_pdf(p, t)))
+        out.append(("hibrido", lambda p, t=titles: engines.hybrid_pdf(p, t)))
     if docling_ok:
         out.append(("docling", lambda p: engines.docling_convert(p, ocr=False)))
     return out
 
 MIN_USABLE_COVERAGE = 0.60
 
-MIN_TOKENS_SIN_REFERENCIA = 15
+MIN_TOKENS_WITHOUT_REFERENCE = 15
 
 def _score(md: str, v: dict) -> tuple:
     """Composite score used to choose among engine outputs."""
@@ -332,18 +332,18 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
         record["digest"] = ""
         record["errors"].append(f"hash: {exc}")
 
-    fuente = job.source
-    temporal: Path | None = None
+    source = job.source
+    temporary: Path | None = None
     if job.is_chapter:
         try:
-            temporal = Path(tempfile.gettempdir()) / (
+            temporary = Path(tempfile.gettempdir()) / (
                 f"pdftomd_{os.getpid()}_{job.chapter_index:03d}_{job.source.stem[:40]}.pdf"
             )
-            chapters.extract_range(job.source, job.page_range[0], job.page_range[1], temporal)
-            fuente = temporal
+            chapters.extract_range(job.source, job.page_range[0], job.page_range[1], temporary)
+            source = temporary
         except Exception as exc:  # noqa: BLE001
             record["errors"].append(f"recorte de pages: {type(exc).__name__}: {exc}")
-            temporal = None
+            temporary = None
 
     record["chapter"] = {
         "title": job.chapter_title,
@@ -352,7 +352,7 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
         "documento_pseudopath": to_pseudopath(job.parent_target) if job.parent_target else None,
     } if job.is_chapter else None
 
-    reference, ref_meta = extract.reference_text(fuente, job.kind)
+    reference, ref_meta = extract.reference_text(source, job.kind)
     record["reference_meta"] = ref_meta
     if ref_meta.get("pages"):
         record["pages"] = ref_meta["pages"]
@@ -367,7 +367,7 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
 
     for name, fn in _candidates(job, ref_meta, use_docling):
         try:
-            md, meta, lossless = fn(fuente)
+            md, meta, lossless = fn(source)
         except Exception as exc:  # noqa: BLE001
             attempts.append({"engine": name, "error": f"{type(exc).__name__}: {exc}"})
             record["errors"].append(f"{name}: {type(exc).__name__}: {exc}")
@@ -383,9 +383,9 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
             "score": list(score),
         })
 
-        retrocede = _covers_less(v, attempts)
+        steps_back = _covers_less(v, attempts)
 
-        if not retrocede and (best_score is None or score > best_score):
+        if not steps_back and (best_score is None or score > best_score):
             best_md, best_v, best_engine, best_score = md, v, name, score
             best_lossless = lossless
             best_ocr = bool(meta.get("ocr"))
@@ -443,8 +443,8 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
     record["ok"] = best_v.get("status") == "ok"
 
     if best_v.get("status") == "no-reference":
-        contenido = len(verify.tokenize(best_md))
-        if contenido < MIN_TOKENS_SIN_REFERENCIA:
+        content = len(verify.tokenize(best_md))
+        if content < MIN_TOKENS_WITHOUT_REFERENCE:
             record["verification"]["status"] = "sin-lectura"
             record["verification"]["note"] = (
                 "the original exposes no text and optical recognition produced no "
@@ -460,18 +460,18 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
     target = output_root / job.rel_target
     target.parent.mkdir(parents=True, exist_ok=True)
     if job.is_chapter:
-        encabezado = (
+        header = (
             f"# {job.chapter_title}\n\n"
             f"> Capitulo {job.chapter_index} de *{job.rel_source.stem}* — "
             f"pages {job.page_range[0]} to {job.page_range[1]} of the original.  \n"
             f"> Full document: `{to_pseudopath(job.parent_target)}`\n\n"
         )
     else:
-        encabezado = f"# {job.rel_source.stem}\n\n"
-    body = _front_matter(job, record) + "\n\n" + encabezado + best_md.strip() + "\n"
+        header = f"# {job.rel_source.stem}\n\n"
+    body = _front_matter(job, record) + "\n\n" + header + best_md.strip() + "\n"
     if compact:
-        body, aplicada = compact_module.compact(body)
-        record["compacted"] = aplicada
+        body, applied = compact_module.compact(body)
+        record["compacted"] = applied
     target.write_text(body, encoding="utf-8")
     record["md_bytes"] = len(body.encode("utf-8"))
 
@@ -486,9 +486,9 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
         except Exception as exc:  # noqa: BLE001
             record["errors"].append(f"lossless: {exc}")
 
-    if temporal is not None:
+    if temporary is not None:
         try:
-            temporal.unlink(missing_ok=True)
+            temporary.unlink(missing_ok=True)
         except Exception:
             pass
 
@@ -497,16 +497,16 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
 
 def convert_one_safe(args) -> dict:
     """Process pool wrapper: one broken file must not bring down the batch."""
-    job, output_root, use_docling, save_lossless, *resto = args
-    compact = resto[0] if resto else True
+    job, output_root, use_docling, save_lossless, *rest = args
+    compact = rest[0] if rest else True
     # A worker is a new process and does not inherit the streams the parent
     # configured, so it configures its own before writing anything.
     console.configure()
 
-    etiqueta = job.rel_source.name
+    label = job.rel_source.name
     if job.is_chapter:
-        etiqueta += f"  [cap. {job.chapter_index}: {job.chapter_title[:40]}]"
-    console.safe_print(f">>> {etiqueta}", flush=True)
+        label += f"  [cap. {job.chapter_index}: {job.chapter_title[:40]}]"
+    console.safe_print(f">>> {label}", flush=True)
     try:
         return convert_one(job, output_root, use_docling, save_lossless, compact)
     except Exception:  # noqa: BLE001

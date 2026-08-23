@@ -29,65 +29,65 @@ from mdcx.convert import engines  # noqa: E402
 
 
 @pytest.fixture
-def contador(monkeypatch):
+def counter(monkeypatch):
     """Counts real extractions, and stands in for one."""
-    llamadas: list[tuple] = []
+    calls: list[tuple] = []
 
-    def falso(path, headings=None):
-        llamadas.append((str(path), headings))
-        paginas = [f"# Page one\n\ntext of {Path(path).name}", "page two"]
-        return paginas, {"engine": "pypdfium2", "pages": 2, "unresolved": [],
+    def bogus(path, headings=None):
+        calls.append((str(path), headings))
+        pages = [f"# Page one\n\ntext of {Path(path).name}", "page two"]
+        return pages, {"engine": "pypdfium2", "pages": 2, "unresolved": [],
                          "tables": 0, "tables_announced": 0, "headings": 0}
 
-    monkeypatch.setattr(engines, "_extract_pages", falso)
+    monkeypatch.setattr(engines, "_extract_pages", bogus)
     engines._LAST_EXTRACTION.clear()
-    yield llamadas
+    yield calls
     engines._LAST_EXTRACTION.clear()
 
 
-def test_the_hybrid_does_not_redo_what_the_native_attempt_just_did(contador, tmp_path):
+def test_the_hybrid_does_not_redo_what_the_native_attempt_just_did(counter, tmp_path):
     """The defect, in the order the pipeline produces it."""
-    documento = tmp_path / "book.pdf"
-    engines.native_pdf(documento, None)
-    engines.hybrid_pdf(documento, None)
-    assert len(contador) == 1, (
-        f"the document was extracted {len(contador)} times for one conversion")
+    document = tmp_path / "book.pdf"
+    engines.native_pdf(document, None)
+    engines.hybrid_pdf(document, None)
+    assert len(counter) == 1, (
+        f"the document was extracted {len(counter)} times for one conversion")
 
 
-def test_another_document_is_extracted(contador, tmp_path):
+def test_another_document_is_extracted(counter, tmp_path):
     """One entry, so a second document replaces the first rather than joining it."""
     engines.native_pdf(tmp_path / "one.pdf", None)
     engines.native_pdf(tmp_path / "two.pdf", None)
-    assert len(contador) == 2
+    assert len(counter) == 2
     engines.native_pdf(tmp_path / "one.pdf", None)
-    assert len(contador) == 3, "the entry should hold the last document, not every one"
+    assert len(counter) == 3, "the entry should hold the last document, not every one"
 
 
-def test_different_headings_are_a_different_extraction(contador, tmp_path):
+def test_different_headings_are_a_different_extraction(counter, tmp_path):
     """A chapter is extracted with the titles its book carried, and they decide the result."""
-    documento = tmp_path / "book.pdf"
-    engines.native_pdf(documento, {1: "Chapter one"})
-    engines.native_pdf(documento, {1: "Chapter two"})
-    assert len(contador) == 2
-    engines.native_pdf(documento, {1: "Chapter two"})
-    assert len(contador) == 2, "the same titles are the same extraction"
+    document = tmp_path / "book.pdf"
+    engines.native_pdf(document, {1: "Chapter one"})
+    engines.native_pdf(document, {1: "Chapter two"})
+    assert len(counter) == 2
+    engines.native_pdf(document, {1: "Chapter two"})
+    assert len(counter) == 2, "the same titles are the same extraction"
 
 
-def test_what_a_caller_is_given_is_its_own_to_edit(contador, tmp_path):
+def test_what_a_caller_is_given_is_its_own_to_edit(counter, tmp_path):
     """_read_shapes replaces the pages it recovers a table from, in place.
 
     Handing out the stored list would give the next engine a document the
     previous one had already rewritten -- the same fault as sharing a cache
     between two packages, and as quiet.
     """
-    documento = tmp_path / "book.pdf"
-    primero, meta_primero = engines._native_pages(documento, None)
-    primero[0] = "REWRITTEN BY THE FIRST ENGINE"
+    document = tmp_path / "book.pdf"
+    first, meta_primero = engines._native_pages(document, None)
+    first[0] = "REWRITTEN BY THE FIRST ENGINE"
     meta_primero["unresolved"].append(99)
 
-    segundo, meta_segundo = engines._native_pages(documento, None)
-    assert len(contador) == 1, "it should still have been extracted only once"
-    assert segundo[0] != "REWRITTEN BY THE FIRST ENGINE", (
+    second, meta_segundo = engines._native_pages(document, None)
+    assert len(counter) == 1, "it should still have been extracted only once"
+    assert second[0] != "REWRITTEN BY THE FIRST ENGINE", (
         "the second engine was handed the first engine's edits")
     assert meta_segundo["unresolved"] == [], (
         "the second engine was handed the first engine's pending pages")

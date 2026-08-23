@@ -114,16 +114,16 @@ def _batch_size() -> int:
     """
     import os
 
-    declarado = os.environ.get("MDCX_TATR_BATCH")
-    if declarado:
+    declared = os.environ.get("MDCX_TATR_BATCH")
+    if declared:
         try:
-            return max(1, int(declarado))
+            return max(1, int(declared))
         except ValueError:
             pass
     return BATCH_FLOOR
 
 
-def batch_for(libre_mib: int | None, procesos: int) -> int:
+def batch_for(free_mib: int | None, processes: int) -> int:
     """The batch that fits once `procesos` workers are seated on the card.
 
     Each worker is first guaranteed the floor, which is what the per-worker
@@ -132,13 +132,13 @@ def batch_for(libre_mib: int | None, procesos: int) -> int:
     worker holds is an estimate and the cost of being wrong is the whole run
     slowing down rather than one page.
     """
-    if not libre_mib or procesos < 1:
+    if not free_mib or processes < 1:
         return BATCH_FLOOR
-    asentados = procesos * (MODELS_MIB + BATCH_FLOOR * BATCH_MIB)
-    sobrante = libre_mib - asentados
-    if sobrante <= 0:
+    settled = processes * (MODELS_MIB + BATCH_FLOOR * BATCH_MIB)
+    leftover = free_mib - settled
+    if leftover <= 0:
         return BATCH_FLOOR
-    extra = int(sobrante * SPARE_SHARE / procesos / BATCH_MIB)
+    extra = int(leftover * SPARE_SHARE / processes / BATCH_MIB)
     return max(BATCH_FLOOR, min(BATCH_CEILING, BATCH_FLOOR + extra))
 
 

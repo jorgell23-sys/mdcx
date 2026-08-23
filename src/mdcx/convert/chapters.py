@@ -46,13 +46,13 @@ class Chapter:
 
     def slug(self) -> str:
         """Readable, stable file name for the chapter."""
-        limpio = re.sub(r"[\\/:*?\"<>|\r\n\t]+", " ", self.title).strip()
-        limpio = re.sub(r"\s+", " ", limpio)
-        if len(limpio) > 70:
-            limpio = limpio[:70].rstrip()
-        if not limpio:
-            limpio = f"Paginas {self.first_page}-{self.last_page}"
-        return f"{self.index:02d} - {limpio}"
+        clean = re.sub(r"[\\/:*?\"<>|\r\n\t]+", " ", self.title).strip()
+        clean = re.sub(r"\s+", " ", clean)
+        if len(clean) > 70:
+            clean = clean[:70].rstrip()
+        if not clean:
+            clean = f"Paginas {self.first_page}-{self.last_page}"
+        return f"{self.index:02d} - {clean}"
 
 def _toc_chapters(toc: list, page_count: int) -> list[Chapter]:
     """Build chapters from the embedded table of contents."""
@@ -60,46 +60,46 @@ def _toc_chapters(toc: list, page_count: int) -> list[Chapter]:
         return []
 
     niveles = sorted({lv for lv, _t, _p in toc})
-    elegido: list[tuple[str, int]] = []
+    chosen: list[tuple[str, int]] = []
 
     for level in niveles:
-        entradas = [(title, page) for lv, title, page in toc
+        entries = [(title, page) for lv, title, page in toc
                     if lv == level and 1 <= page <= page_count]
-        if not entradas:
+        if not entries:
             continue
         # Discard out-of-order entries: a malformed outline can point backwards.
         # negativos y chapters vacios.
-        entradas = sorted(entradas, key=lambda e: e[1])
-        promedio = page_count / len(entradas)
-        elegido = entradas
-        if promedio <= TARGET_CHAPTER_PAGES * 1.6:
+        entries = sorted(entries, key=lambda e: e[1])
+        average = page_count / len(entries)
+        chosen = entries
+        if average <= TARGET_CHAPTER_PAGES * 1.6:
             break  # this level already yields ranges of a reasonable size
 
-    if not elegido:
+    if not chosen:
         return []
 
     chapters: list[Chapter] = []
-    if elegido[0][1] > 1:
-        chapters.append(Chapter(1, "Preliminares", 1, elegido[0][1] - 1, True))
+    if chosen[0][1] > 1:
+        chapters.append(Chapter(1, "Preliminares", 1, chosen[0][1] - 1, True))
 
-    for i, (title, page) in enumerate(elegido):
-        fin = elegido[i + 1][1] - 1 if i + 1 < len(elegido) else page_count
-        if fin < page:
+    for i, (title, page) in enumerate(chosen):
+        end = chosen[i + 1][1] - 1 if i + 1 < len(chosen) else page_count
+        if end < page:
             continue  # two entries on one page: the next absorbs the range
-        chapters.append(Chapter(len(chapters) + 1, title.strip(), page, fin, True))
+        chapters.append(Chapter(len(chapters) + 1, title.strip(), page, end, True))
 
     return [c for c in chapters if c.pages > 0]
 
 def _block_chapters(page_count: int, block: int = FALLBACK_BLOCK_PAGES) -> list[Chapter]:
     """Fixed-size ranges, for documents without a table of contents."""
     chapters: list[Chapter] = []
-    inicio = 1
-    while inicio <= page_count:
-        fin = min(inicio + block - 1, page_count)
+    start = 1
+    while start <= page_count:
+        end = min(start + block - 1, page_count)
         chapters.append(
-            Chapter(len(chapters) + 1, f"Paginas {inicio} a {fin}", inicio, fin, False)
+            Chapter(len(chapters) + 1, f"Paginas {start} a {end}", start, end, False)
         )
-        inicio = fin + 1
+        start = end + 1
     return chapters
 
 def plan_chapters(pdf_path: Path, threshold: int = SPLIT_THRESHOLD_PAGES) -> list[Chapter]:
@@ -114,25 +114,25 @@ def plan_chapters(pdf_path: Path, threshold: int = SPLIT_THRESHOLD_PAGES) -> lis
     chapters = _toc_chapters(toc, page_count)
 
     if chapters:
-        refinados: list[Chapter] = []
+        refined: list[Chapter] = []
         for cap in chapters:
             if cap.pages > TARGET_CHAPTER_PAGES * 2:
-                inicio = cap.first_page
-                parte = 1
-                while inicio <= cap.last_page:
-                    fin = min(inicio + TARGET_CHAPTER_PAGES - 1, cap.last_page)
-                    title = cap.title if parte == 1 else f"{cap.title} (cont. {parte})"
-                    refinados.append(
-                        Chapter(len(refinados) + 1, title, inicio, fin, cap.from_toc)
+                start = cap.first_page
+                part = 1
+                while start <= cap.last_page:
+                    end = min(start + TARGET_CHAPTER_PAGES - 1, cap.last_page)
+                    title = cap.title if part == 1 else f"{cap.title} (cont. {part})"
+                    refined.append(
+                        Chapter(len(refined) + 1, title, start, end, cap.from_toc)
                     )
-                    inicio = fin + 1
-                    parte += 1
+                    start = end + 1
+                    part += 1
             else:
-                refinados.append(
-                    Chapter(len(refinados) + 1, cap.title, cap.first_page, cap.last_page,
+                refined.append(
+                    Chapter(len(refined) + 1, cap.title, cap.first_page, cap.last_page,
                             cap.from_toc)
                 )
-        return refinados
+        return refined
 
     return _block_chapters(page_count)
 

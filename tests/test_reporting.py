@@ -98,9 +98,9 @@ def test_coverage_is_measured_over_what_could_be_measured():
     It contributes no reference tokens, so including it would require deciding
     what fraction of nothing was recovered.
     """
-    con_escaneo = summarise([
+    with_scan = summarise([
         record("good.pdf", True, "ok", 1.0, 100, 0),
         record("scan.pdf", False, "no-reference"),
     ])
-    solo_medible = summarise([record("good.pdf", True, "ok", 1.0, 100, 0)])
-    assert con_escaneo["global_token_coverage"] == solo_medible["global_token_coverage"]
+    only_measurable = summarise([record("good.pdf", True, "ok", 1.0, 100, 0)])
+    assert with_scan["global_token_coverage"] == only_measurable["global_token_coverage"]

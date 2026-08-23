@@ -39,9 +39,9 @@ def test_the_front_matter_is_never_what_is_sampled(total):
     Only where there is front matter to skip. A document of six pages is a
     leaflet, and its second page is as good a witness as any.
     """
-    elegidas = paths._pages_to_sample(total)
-    assert min(elegidas) > 2, (
-        f"a document of {total} pages is judged by page {min(elegidas)}, "
+    chosen = paths._pages_to_sample(total)
+    assert min(chosen) > 2, (
+        f"a document of {total} pages is judged by page {min(chosen)}, "
         f"which is front matter")
 
 
@@ -54,19 +54,19 @@ def test_a_document_shorter_than_the_sample_is_read_whole(total):
 @pytest.mark.parametrize("total", [10, 225, 581, 1745])
 def test_the_sample_is_spread_rather_than_clustered(total):
     """One region of a book can be atlas, index or bibliography."""
-    elegidas = paths._pages_to_sample(total)
-    assert len(elegidas) >= 2
-    assert max(elegidas) - min(elegidas) > total // 3, (
+    chosen = paths._pages_to_sample(total)
+    assert len(chosen) >= 2
+    assert max(chosen) - min(chosen) > total // 3, (
         "the pages looked at sit too close together to describe the document")
 
 
 @pytest.mark.parametrize("total", [1, 2, 5, 10, 225, 581, 1745, 20000])
 def test_every_page_sampled_exists(total):
     """An index past the end is a crash on a document nobody has yet."""
-    elegidas = paths._pages_to_sample(total)
-    assert elegidas, "no page at all would be looked at"
-    assert all(0 <= i < total for i in elegidas)
-    assert len(set(elegidas)) == len(elegidas), "the same page counted twice"
+    chosen = paths._pages_to_sample(total)
+    assert chosen, "no page at all would be looked at"
+    assert all(0 <= i < total for i in chosen)
+    assert len(set(chosen)) == len(chosen), "the same page counted twice"
 
 
 def test_a_title_page_does_not_decide_for_the_body(tmp_path, monkeypatch):
@@ -76,36 +76,36 @@ def test_a_title_page_does_not_decide_for_the_body(tmp_path, monkeypatch):
     front matter as a publisher leaves them, and a body that plainly has a text
     layer. Judged from the front it reads as a scanned document.
     """
-    class Pagina:
-        def __init__(self, texto):
-            self.texto = texto
+    class Page:
+        def __init__(self, text):
+            self.text = text
 
-    class Documento:
-        def __init__(self, paginas):
-            self.paginas = paginas
+    class Document:
+        def __init__(self, pages):
+            self.pages = pages
 
         def __len__(self):
-            return len(self.paginas)
+            return len(self.pages)
 
         def __getitem__(self, i):
-            return self.paginas[i]
+            return self.pages[i]
 
         def close(self):
             pass
 
-    cuerpo = "x" * 2700
-    paginas = [Pagina(""), Pagina(""), Pagina("y" * 146)]
-    paginas += [Pagina(cuerpo) for _ in range(578)]
+    body = "x" * 2700
+    pages = [Page(""), Page(""), Page("y" * 146)]
+    pages += [Page(body) for _ in range(578)]
 
     from mdcx.convert import pdf as _pdf
 
-    monkeypatch.setattr(_pdf, "open_document", lambda ruta: Documento(paginas))
-    monkeypatch.setattr(_pdf, "page_text", lambda pagina: pagina.texto)
-    monkeypatch.setattr(_pdf, "count_images", lambda pagina: 0)
+    monkeypatch.setattr(_pdf, "open_document", lambda path: Document(pages))
+    monkeypatch.setattr(_pdf, "page_text", lambda page: page.text)
+    monkeypatch.setattr(_pdf, "count_images", lambda page: 0)
 
-    libro = tmp_path / "book.pdf"
-    libro.write_bytes(b"%PDF-1.4\n")
-    job = paths.Job(source=libro, rel_source=Path("book.pdf"),
+    book = tmp_path / "book.pdf"
+    book.write_bytes(b"%PDF-1.4\n")
+    job = paths.Job(source=book, rel_source=Path("book.pdf"),
                     rel_target=Path("book.md"), kind="pdf", size=9)
 
     assert paths.classify_lane(job) == paths.LANE_CPU, (

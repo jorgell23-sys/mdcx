@@ -141,15 +141,15 @@ def segment_for_index(text: str) -> str:
     if not _has_unspaced(text):
         return text
     out = []
-    previo_cjk = False
+    previous_cjk = False
     for c in text:
-        actual_cjk = _is_cjk(c)
-        if actual_cjk and out and not out[-1].isspace():
+        current_cjk = _is_cjk(c)
+        if current_cjk and out and not out[-1].isspace():
             out.append(" ")
-        elif previo_cjk and not actual_cjk and not c.isspace():
+        elif previous_cjk and not current_cjk and not c.isspace():
             out.append(" ")
         out.append(c)
-        previo_cjk = actual_cjk
+        previous_cjk = current_cjk
     return "".join(out)
 
 
@@ -243,15 +243,15 @@ def load_documents(output_root: Path) -> list[dict]:
 def _paragraphs(text: str) -> list[str]:
     return [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
 
-def _trim_table(bloque: str, aguja: str) -> str:
+def _trim_table(block: str, needle: str) -> str:
     """For tables, keep the header row and the rows containing the term."""
-    lines = bloque.splitlines()
+    lines = block.splitlines()
     if sum(1 for l in lines if l.strip().startswith("|")) < 3:
-        return bloque
+        return block
     header = [l for l in lines[:2]]
-    rows = [l for l in lines[2:] if aguja in _normalize(l)]
+    rows = [l for l in lines[2:] if needle in _normalize(l)]
     if not rows:
-        return bloque
+        return block
     return "\n".join(header + rows)
 
 BM25_K1 = 1.5
@@ -273,8 +273,8 @@ def _bm25_index(docs: list[dict], only: str | None) -> dict:
         if only and d["source"] != only.upper():
             continue
         blocks = d.setdefault("blocks", _paragraphs(d["text"]))
-        normas = d.setdefault("bloques_norm", [_normalize(b) for b in blocks])
-        for i, bn in enumerate(normas):
+        rules = d.setdefault("bloques_norm", [_normalize(b) for b in blocks])
+        for i, bn in enumerate(rules):
             tk = tokenize_text(bn)
             passages.append({"doc": d, "i": i, "frec": Counter(tk), "largo": len(tk)})
     df = Counter()
@@ -395,71 +395,71 @@ def expand_terms(terms: list[str], language: str | None = None) -> list[str]:
     for t in terms:
         if t in stopwords:
             continue
-        equivalentes = GLOSSARY.get(t)
-        if equivalentes is None:
+        equivalents = GLOSSARY.get(t)
+        if equivalents is None:
             out.append(t)
-        elif equivalentes:
+        elif equivalents:
             out.append(t)
-            out.extend(equivalentes)
-    vistos = set()
-    resultado = [t for t in out if not (t in vistos or vistos.add(t))]
+            out.extend(equivalents)
+    seen = set()
+    result = [t for t in out if not (t in seen or seen.add(t))]
     # Filtering must never leave nothing to search for. "The Who" is a band and
     # "in vitro" is a technique; if every term was a function word, the query is
     # about those words.
-    if not resultado:
-        return [t for t in terms if not (t in vistos or vistos.add(t))]
-    return resultado
+    if not result:
+        return [t for t in terms if not (t in seen or seen.add(t))]
+    return result
 
 def rank_passages(docs: list[dict], query_text: str, context: int = 1,
                     only: str | None = None, limit: int = 12,
-                    minimo_terminos: int = 2) -> list[dict]:
+                    min_terms: int = 2) -> list[dict]:
     """Rank passages by BM25, aggregating scores per document."""
-    consulta_tk = searchable_terms(_normalize(query_text))
-    consulta_tk = expand_terms(consulta_tk)
-    if not consulta_tk:
+    query_tokens = searchable_terms(_normalize(query_text))
+    query_tokens = expand_terms(query_tokens)
+    if not query_tokens:
         return []
     idx = _bm25_index(docs, only)
     n, df, lm = idx["n"], idx["df"], idx["avg_length"]
-    distintos = len(set(consulta_tk))
+    distinct = len(set(query_tokens))
 
-    por_documento: dict[str, list[dict]] = {}
+    by_document: dict[str, list[dict]] = {}
     for p in idx["passages"]:
-        presentes = [t for t in consulta_tk if p["frec"].get(t)]
-        if len(presentes) < min(minimo_terminos, len(consulta_tk)):
+        present = [t for t in query_tokens if p["frec"].get(t)]
+        if len(present) < min(min_terms, len(query_tokens)):
             continue
         score = 0.0
-        for t in presentes:
+        for t in present:
             idf = math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5))
             f = p["frec"][t]
             score += idf * (f * (BM25_K1 + 1)) / (
                 f + BM25_K1 * (1 - BM25_B + BM25_B * p["largo"] / lm))
         d, i = p["doc"], p["i"]
         ini = max(0, i - context)
-        por_documento.setdefault(d["name"], []).append({
+        by_document.setdefault(d["name"], []).append({
             "document": d["name"],
             "source": d["source"],
             "pseudopath": d["pseudopath"],
             "folder": d["folder"],
             "score": round(score, 3),
-            "terms": presentes,
-            "passage": _trim_table(d["blocks"][i], presentes[0] if presentes else ""),
+            "terms": present,
+            "passage": _trim_table(d["blocks"][i], present[0] if present else ""),
             "pasaje": "\n\n".join(d["blocks"][ini: i + context + 1]),
         })
 
     ranking = []
-    for name, passages in por_documento.items():
+    for name, passages in by_document.items():
         passages.sort(key=lambda r: -r["score"])
         base = sum(r["score"] for r in passages[:DOC_TOP_PASSAGES])
-        coverage = max(len(r["terms"]) for r in passages) / max(distintos, 1)
+        coverage = max(len(r["terms"]) for r in passages) / max(distinct, 1)
         ranking.append((base * coverage, passages))
-    ranking.sort(key=lambda par: -par[0])
+    ranking.sort(key=lambda pair: -pair[0])
 
     out: list[dict] = []
-    for vuelta in range(DOC_TOP_PASSAGES):
-        for puntaje, passages in ranking:
-            if vuelta < len(passages):
-                r = dict(passages[vuelta])
-                r["score_documento"] = round(puntaje, 3)
+    for round_no in range(DOC_TOP_PASSAGES):
+        for doc_score, passages in ranking:
+            if round_no < len(passages):
+                r = dict(passages[round_no])
+                r["score_documento"] = round(doc_score, 3)
                 out.append(r)
                 if len(out) >= limit:
                     return out
@@ -468,41 +468,41 @@ def rank_passages(docs: list[dict], query_text: str, context: int = 1,
 def search(docs: list[dict], query_text: str, context: int = 1,
                    only: str | None = None, limit: int = 12) -> list[dict]:
     """Rank by relevance, placing literal matches first when the phrase is specific."""
-    frase = query_text.strip().split(".")[0][:160].strip()
-    ordenados = rank_passages(docs, query_text, context, only, limit)
+    phrase = query_text.strip().split(".")[0][:160].strip()
+    ordered = rank_passages(docs, query_text, context, only, limit)
 
-    if len(frase.split()) < MIN_PHRASE_WORDS:
-        return ordenados
+    if len(phrase.split()) < MIN_PHRASE_WORDS:
+        return ordered
 
-    literales = search_literal(docs, frase, context, only, limit)
-    if not literales:
-        return ordenados
+    literals = search_literal(docs, phrase, context, only, limit)
+    if not literals:
+        return ordered
 
-    vistos = {(r["document"], r["passage"][:80]) for r in literales}
-    for r in ordenados:
+    seen = {(r["document"], r["passage"][:80]) for r in literals}
+    for r in ordered:
         key = (r["document"], r["passage"][:80])
-        if key in vistos:
+        if key in seen:
             continue
-        vistos.add(key)
-        literales.append(r)
-        if len(literales) >= limit:
+        seen.add(key)
+        literals.append(r)
+        if len(literals) >= limit:
             break
-    return literales[:limit]
+    return literals[:limit]
 
-def search_literal(docs: list[dict], frase: str, context: int = 1,
+def search_literal(docs: list[dict], phrase: str, context: int = 1,
            only: str | None = None, limit: int = 12) -> list[dict]:
     """Return passages containing the phrase verbatim."""
-    aguja = _normalize(frase)
-    if not aguja:
+    needle = _normalize(phrase)
+    if not needle:
         return []
     results = []
     for d in docs:
         if only and d["source"] != only.upper():
             continue
         blocks = d.setdefault("blocks", _paragraphs(d["text"]))
-        normas = d.setdefault("bloques_norm", [_normalize(b) for b in blocks])
-        for i, bn in enumerate(normas):
-            if aguja not in bn:
+        rules = d.setdefault("bloques_norm", [_normalize(b) for b in blocks])
+        for i, bn in enumerate(rules):
+            if needle not in bn:
                 continue
             ini = max(0, i - context)
             results.append({
@@ -510,7 +510,7 @@ def search_literal(docs: list[dict], frase: str, context: int = 1,
                 "source": d["source"],
                 "pseudopath": d["pseudopath"],
                 "folder": d["folder"],
-                "passage": _trim_table(blocks[i], aguja),
+                "passage": _trim_table(blocks[i], needle),
                 "pasaje": "\n\n".join(blocks[ini: i + context + 1]),
             })
             if len(results) >= limit:
@@ -548,17 +548,17 @@ def main() -> int:
         print("No converted documents found.", file=sys.stderr)
         return 2
 
-    frases = []
-    if args.frases:
-        frases = [l.strip() for l in Path(args.frases).read_text(encoding="utf-8").splitlines() if l.strip()]
-    elif args.frase:
-        frases = [args.frase]
+    phrases = []
+    if args.phrases:
+        phrases = [l.strip() for l in Path(args.phrases).read_text(encoding="utf-8").splitlines() if l.strip()]
+    elif args.phrase:
+        phrases = [args.phrase]
     else:
         print("Provide a phrase, or a file with --phrases.", file=sys.stderr)
         return 2
 
     out = {}
-    for f in frases:
+    for f in phrases:
         if args.literal:
             res = search_literal(docs, f, args.context, args.only, args.limit)
         elif args.bm25:
