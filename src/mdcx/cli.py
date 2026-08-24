@@ -38,8 +38,8 @@ from .convert.convert import convert_one_safe  # noqa: E402
 from .convert.paths import (  # noqa: E402
     LANE_CPU,
     LANE_GPU,
-    classify_lane,
     estimated_cost,
+    inspect_job,
     file_digest,
     make_chapter_jobs,
     plan_jobs,
@@ -204,6 +204,35 @@ def _free_vram_mib() -> int | None:
         return None
 
 
+def _dispatch(pending: list, use_docling: bool) -> tuple[dict, int]:
+    """Sort the work into lanes, and count how much of it will reach the card.
+
+    Two numbers out of one inspection per document, because they answer two
+    different questions and only one of them is the lane. A lane says where a
+    document waits. It does not say which engine resolves it, and the hybrid
+    engine reaches the model from the processor lane.
+
+    Reading the first as an answer to the second is the defect this returns a
+    second number for: with the card's lane correctly empty, the card's share
+    was computed as zero and fell to one process, while 28% of the documents
+    used the card anyway.
+
+    Without the structured engine nothing reaches the card at all, so there is
+    no inspection to do and no lane to choose.
+    """
+    lanes: dict[str, list] = {LANE_GPU: [], LANE_CPU: []}
+    card_bound = 0
+    for job in pending:
+        if use_docling:
+            lane, reaches_card = inspect_job(job)
+        else:
+            lane, reaches_card = LANE_CPU, False
+        lanes[lane].append(job)
+        if reaches_card:
+            card_bound += 1
+    return lanes, card_bound
+
+
 def _lane_sizes(total_cap: int, gpu_fraction: float, has_gpu: bool) -> tuple[int, int]:
     """How many workers each lane gets, from the machine and from the work.
 
@@ -216,9 +245,11 @@ def _lane_sizes(total_cap: int, gpu_fraction: float, has_gpu: bool) -> tuple[int
     measured three times slower than three workers.
 
     The work. A lane sized for documents that never arrive is a lane of idle
-    processes. What genuinely needs the model is what has no text layer to read,
-    which is what the classification now separates -- and which it could not
-    have told us while it was sending everything to that lane.
+    processes. What is counted is the work expected to reach the card, which is
+    not the same as the size of the card's lane: a document read from its own
+    text layer waits in the processor lane and still hands the model the pages
+    that announce a table. Counting the lane instead made this share collapse
+    to one process the moment the lane was correctly emptied.
 
     The rest of the machine. Without a third ceiling the formula breaks exactly
     where there is most to gain: a card of 11 GB would allow seven workers on the
@@ -470,10 +501,7 @@ def main() -> int:
     if reused and not pending:
         print("Nothing pending: the output is up to date.")
 
-    lanes: dict[str, list] = {LANE_GPU: [], LANE_CPU: []}
-    for job in pending:
-        lane = LANE_CPU if not use_docling else classify_lane(job)
-        lanes[lane].append(job)
+    lanes, card_bound = _dispatch(pending, use_docling)
 
     for lane in lanes:
         lanes[lane].sort(key=estimated_cost)
@@ -492,8 +520,9 @@ def main() -> int:
         print("Serial mode: one document at a time (timings are comparable across runs)")
         threads_per_worker = max(1, args.max_cores)
     else:
-        with_gpu = len(lanes[LANE_GPU])
-        gpu_fraction = with_gpu / max(1, with_gpu + len(lanes[LANE_CPU]))
+        # Of the work, not of the lane: what is expected to reach the card
+        # over everything there is to convert.
+        gpu_fraction = card_bound / max(1, len(pending))
         gpu_workers, cpu_workers = _lane_sizes(args.max_cores, gpu_fraction, has_gpu)
         # The formula is the default, not a ruling: a machine that knows better
         # says so, and is then held only to the total.
@@ -532,7 +561,8 @@ def main() -> int:
               f"CPU lane: {len(lanes[LANE_CPU])} documents in {cpu_workers} processes | "
               f"cap {args.max_cores} of {os.cpu_count() or '?'} cores, "
               f"{threads_per_worker} thread(s) each | "
-              f"card: up to {gpu_workers} process(es) at a time, batch {batch}")
+              f"card: {card_bound} document(s) expected to reach it, up to "
+              f"{gpu_workers} process(es) at a time, batch {batch}")
         if start_method == "spawn" and sys.platform != "win32":
             print("Workers start with spawn: a CUDA context does not survive fork, "
                   "which would disable docling in every child.")

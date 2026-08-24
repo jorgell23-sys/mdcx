@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mdcx import cli  # noqa: E402
 from mdcx.convert import engines  # noqa: E402
+from mdcx.convert import paths  # noqa: E402
 
 # Machine sizes worth checking: the small ones where a fixed cap oversubscribes,
 # and the large ones where reserving a single processor reserves nothing.
@@ -317,3 +318,153 @@ def test_the_turn_is_given_back_when_the_model_fails(monkeypatch):
             "a failure left the card held, and every other process waiting")
     finally:
         engines.set_gpu_gate(None)
+
+
+# --- The demand for the card is not the size of the card's lane -------------
+#
+# Correcting classify_lane emptied the GPU lane, which was right: 197 documents
+# to the processor lane and none to the card's. But the card's share was being
+# computed from that same lane, so it fell to a single process -- while 55 of
+# those 197 reached the model anyway, through the hybrid engine. Same output,
+# 30% longer: 420 s against 307 s.
+
+
+def _text_pdf(tmp_path, monkeypatch, page_text, pages=40):
+    """A PDF with a real text layer, whose pages say what is passed in."""
+    class Page:
+        def __init__(self, text):
+            self.text = text
+
+    class Document:
+        def __init__(self, pages):
+            self.pages = pages
+
+        def __len__(self):
+            return len(self.pages)
+
+        def __getitem__(self, i):
+            return self.pages[i]
+
+        def close(self):
+            pass
+
+    from mdcx.convert import pdf as _pdf
+
+    doc = Document([Page(page_text) for _ in range(pages)])
+    monkeypatch.setattr(_pdf, "open_document", lambda path: doc)
+    monkeypatch.setattr(_pdf, "page_text", lambda page: page.text)
+    monkeypatch.setattr(_pdf, "count_images", lambda page: 0)
+
+    book = tmp_path / "book.pdf"
+    book.write_bytes(b"%PDF-1.4\n")
+    return paths.Job(source=book, rel_source=Path("book.pdf"),
+                     rel_target=Path("book.md"), kind="pdf", size=9)
+
+
+def test_a_document_read_from_its_text_layer_can_still_reach_the_card(
+        tmp_path, monkeypatch):
+    """The lane says processor and the model is used anyway.
+
+    This is the whole of the defect. The page has a text layer, so it is not
+    sent to optical recognition, and it announces a table, so the hybrid engine
+    hands that page to the model -- which is on the card, from the processor
+    lane.
+    """
+    body = "x" * 2700 + "\nTable 3.1: measurements\n"
+    lane, reaches_card = paths.inspect_job(_text_pdf(tmp_path, monkeypatch, body))
+
+    assert lane == paths.LANE_CPU, "a readable document does not need recognition"
+    assert reaches_card, (
+        "a document announcing a table was counted as having no use for the "
+        "card, which is what left the card's share at one process")
+
+
+def test_prose_with_no_tables_does_not_ask_for_the_card(tmp_path, monkeypatch):
+    """The count has to discriminate, or it is the old constant again."""
+    body = "x" * 2700 + "\nAs table 4 shows, the figure rises.\n"
+    lane, reaches_card = paths.inspect_job(_text_pdf(tmp_path, monkeypatch, body))
+
+    assert lane == paths.LANE_CPU
+    assert not reaches_card, (
+        "a sentence mentioning a table was read as a table caption")
+
+
+def test_a_document_with_no_text_layer_still_asks_for_the_card(
+        tmp_path, monkeypatch):
+    """Optical recognition is the one thing that genuinely wants the card."""
+    lane, reaches_card = paths.inspect_job(_text_pdf(tmp_path, monkeypatch, ""))
+
+    assert lane == paths.LANE_GPU
+    assert reaches_card
+
+
+def test_sizing_the_card_by_its_lane_starves_it(monkeypatch):
+    """The two formulas on the measured run, side by side.
+
+    197 documents, none in the card's lane, 55 of them reaching the model. The
+    lane says nothing needs the card; the work says a quarter of it does.
+    """
+    by_lane, _ = _sizes(monkeypatch, total=8, fraction=0.0, vram_free=11000)
+    by_work, _ = _sizes(monkeypatch, total=8, fraction=55 / 197, vram_free=11000)
+
+    assert by_lane == 1, "the empty lane no longer collapses the share"
+    assert by_work >= 2, (
+        "the work that actually reaches the card still sizes it at one process")
+
+
+def test_an_empty_card_lane_does_not_mean_an_idle_card(tmp_path, monkeypatch):
+    """The measured run, in miniature: nothing in the card's lane, work on it.
+
+    Every document is readable, so classify_lane sends all of them to the
+    processor -- which is correct, and was the point of the previous fix. A
+    quarter of them announce tables, so the hybrid engine will put those on the
+    card. The share has to come from the second number, not the first.
+    """
+    class Page:
+        def __init__(self, text):
+            self.text = text
+
+    class Document:
+        def __init__(self, pages):
+            self.pages = pages
+
+        def __len__(self):
+            return len(self.pages)
+
+        def __getitem__(self, i):
+            return self.pages[i]
+
+        def close(self):
+            pass
+
+    prose = "x" * 2700
+    with_table = prose + "\nTable 3.1: measurements\n"
+
+    from mdcx.convert import pdf as _pdf
+
+    bodies: dict[Path, str] = {}
+    monkeypatch.setattr(_pdf, "open_document",
+                        lambda path: Document([Page(bodies[Path(path)])] * 40))
+    monkeypatch.setattr(_pdf, "page_text", lambda page: page.text)
+    monkeypatch.setattr(_pdf, "count_images", lambda page: 0)
+
+    pending = []
+    for i in range(197):
+        book = tmp_path / f"book{i}.pdf"
+        book.write_bytes(b"%PDF-1.4\n")
+        bodies[book] = with_table if i < 55 else prose
+        pending.append(paths.Job(source=book, rel_source=Path(f"book{i}.pdf"),
+                                 rel_target=Path(f"book{i}.md"), kind="pdf",
+                                 size=9))
+
+    lanes, card_bound = cli._dispatch(pending, use_docling=True)
+
+    assert not lanes[paths.LANE_GPU], "the card's lane holds what needs recognition"
+    assert card_bound == 55, "the work that reaches the card was miscounted"
+
+    gpu, cpu = _sizes(monkeypatch, total=8,
+                      fraction=card_bound / len(pending), vram_free=11000)
+    assert gpu >= 2, (
+        "the card was left with a single process while a quarter of the work "
+        "was queueing for it")
+    assert cpu >= 1

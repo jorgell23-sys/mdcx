@@ -241,6 +241,77 @@ def _pages_to_sample(total: int, how_many: int = SAMPLE_PAGES) -> list[int]:
     return sorted({min(total - 1, int(step * (i + 1))) for i in range(how_many)})
 
 
+def inspect_job(job: "Job") -> tuple[str, bool]:
+    """The lane for this document, and whether it is likely to reach the card.
+
+    Both answers come out of one sampling pass, because the same few pages
+    decide them and opening a document twice to ask two questions about it
+    costs about as much as the inspection itself.
+
+    The second answer is the one the lane cannot give. A lane says where a
+    document waits; it does not say which engine resolves it. Most documents
+    wait in the processor lane and are read from their own text layer, but the
+    hybrid engine hands the model every page that announces a table the cheap
+    path could not produce -- and the model is on the card. So a document can
+    sit in the processor lane and use the card anyway, and sizing the card's
+    share by the size of its lane counts the wrong thing.
+
+    That went unnoticed while the lane held everything. Once the lane was
+    correctly emptied the count became zero, the share fell to a single
+    process, and the 28% of documents that reach the card through the hybrid
+    engine queued behind one another: same output, 30% longer.
+
+    What is counted here instead is the table caption. It is the same signal
+    the hybrid engine acts on, it is already in text that has been extracted,
+    and it costs one match. Ruled pages also reach the model, but finding them
+    means walking the objects of the page, which is the expensive half of
+    reading it; a caption undercounts and never invents, which is the right
+    direction for a number that sizes a lane.
+    """
+    if job.kind in ("text", "html"):
+        return LANE_CPU, False
+    if job.kind != "pdf":
+        # DOCX/XLSX/PPTX still want the structured engine for their tables and
+        # headings, and now get it in either lane, so they no longer compete for
+        # the card they were never going to use. The native engine resolves
+        # them; layout analysis is the fallback, not the expectation.
+        return LANE_CPU, False
+
+    try:
+        from . import pdf as _pdf
+        from .tables import CAPTION
+
+        doc = _pdf.open_document(job.source)
+        try:
+            pages = len(doc)
+            chosen = _pages_to_sample(pages)
+            sample = len(chosen)
+            chars = 0
+            images = 0
+            announces = False
+            for i in chosen:
+                text = _pdf.page_text(doc[i])
+                chars += len(text.strip())
+                images += _pdf.count_images(doc[i])
+                if not announces and CAPTION.search(text):
+                    announces = True
+        finally:
+            doc.close()
+    except Exception:
+        return LANE_GPU, True
+
+    cpp = chars / max(1, sample)
+    if cpp < 60:
+        # Nothing to read. Optical recognition has to read it, and that is the
+        # one thing here that genuinely wants the card: measured on this corpus,
+        # such documents are 14.8% of the pages and 31% of the processor time.
+        return LANE_GPU, True
+    if pages <= 2 and images >= 1:
+        # drawing or diagram: measured, the heavy engine performs worse
+        return LANE_CPU, False
+    return LANE_CPU, announces
+
+
 def classify_lane(job: "Job") -> str:
     """Choose the execution lane from a cheap inspection of the original.
 
@@ -255,38 +326,7 @@ def classify_lane(job: "Job") -> str:
     none in the lane of thirteen. Raising --max-cores did nothing, because it
     was enlarging the empty lane.
     """
-    if job.kind in ("text", "html"):
-        return LANE_CPU
-    if job.kind != "pdf":
-        # DOCX/XLSX/PPTX still want the structured engine for their tables and
-        # headings, and now get it in either lane, so they no longer compete for
-        # the card they were never going to use.
-        return LANE_CPU
-
-    try:
-        from . import pdf as _pdf
-
-        doc = _pdf.open_document(job.source)
-        try:
-            pages = len(doc)
-            chosen = _pages_to_sample(pages)
-            sample = len(chosen)
-            chars = sum(len(_pdf.page_text(doc[i]).strip()) for i in chosen)
-            images = sum(_pdf.count_images(doc[i]) for i in chosen)
-        finally:
-            doc.close()
-    except Exception:
-        return LANE_GPU
-
-    cpp = chars / max(1, sample)
-    if cpp < 60:
-        # Nothing to read. Optical recognition has to read it, and that is the
-        # one thing here that genuinely wants the card: measured on this corpus,
-        # such documents are 14.8% of the pages and 31% of the processor time.
-        return LANE_GPU
-    if pages <= 2 and images >= 1:
-        return LANE_CPU  # drawing or diagram: measured, the heavy engine performs worse
-    return LANE_CPU
+    return inspect_job(job)[0]
 
 def estimated_cost(job: "Job") -> float:
     """Estimated conversion cost for this job, in equivalent pages."""
