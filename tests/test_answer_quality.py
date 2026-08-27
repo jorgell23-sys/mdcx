@@ -257,3 +257,84 @@ def test_a_query_of_only_stopwords_changes_nothing():
     """There is nothing to look up, so there is nothing to decide."""
     package = {"connection": Index({"acid"})}
     assert mcp_server._mode_for(package, "de la que el") == "auto"
+
+
+# --- The second signal has to be inside the range it measures ---------------
+#
+# Eighteen questions over a corpus of five statistics books, ten the corpus
+# answers and eight deliberately unrelated. Measured on 1.8.0, cosine of the
+# best passage and how far it rises out of the tail.
+
+STATISTICS_BANK = [
+    # (closeness, clearance, the corpus answers it)
+    (0.6511, 0.0924, True),
+    (0.7093, 0.1108, True),
+    (0.6337, 0.1501, True),   # marked in 1.8.0, by 13 ten-thousandths
+    (0.6757, 0.1515, True),
+    (0.6586, 0.1087, True),
+    (0.7176, 0.1225, True),
+    (0.6924, 0.0856, True),
+    (0.6080, 0.1046, True),   # marked in 1.8.0
+    (0.6495, 0.1187, True),
+    (0.6516, 0.1007, True),
+    (0.4658, 0.0775, False),
+    (0.4978, 0.1024, False),  # the unrelated question that rises furthest
+    (0.4464, 0.0793, False),
+    (0.4824, 0.0605, False),
+    (0.4566, 0.0753, False),
+    (0.4535, 0.0395, False),
+    (0.3291, 0.0000, False),
+    (0.4467, 0.0656, False),
+]
+
+
+def _warns(closeness, clearance):
+    return (closeness < mcp_server.NOTHING_NEAR
+            and clearance < mcp_server.STANDS_CLEAR)
+
+
+def test_no_unrelated_question_escapes_the_warning():
+    """What the warning is for, and the constraint any change has to keep."""
+    escaped = [(c, cl) for c, cl, answered in STATISTICS_BANK
+               if not answered and not _warns(c, cl)]
+
+    assert not escaped, f"unrelated questions came back unmarked: {escaped}"
+
+
+def test_the_two_banks_overlap_so_no_clearance_threshold_separates_them():
+    """Why STANDS_CLEAR was not simply lowered, recorded so it is not retried.
+
+    On the statistics corpus every clearance falls below 0.1515, so 0.25 never
+    fails there and the second signal looks dead. Lowering it into that range
+    is the obvious repair and it does not hold: on the corpus this constant was
+    measured on, an unrelated question clears 0.172 and an answered one clears
+    0.331. A threshold under 0.172 lets that unrelated question through.
+    """
+    unrelated_elsewhere = 0.172        # measured, and unrelated
+    answered_elsewhere = 0.331         # measured, and answered
+
+    highest_here = max(cl for _, cl, _ in STATISTICS_BANK)
+    would_rescue = [cl for _, cl, answered in STATISTICS_BANK
+                    if answered and cl > unrelated_elsewhere]
+
+    assert highest_here < unrelated_elsewhere, (
+        "the statistics bank now reaches the other corpus's unrelated range, "
+        "so this argument needs re-measuring")
+    assert not would_rescue, (
+        "a threshold that keeps the unrelated question out rescues nothing "
+        "here, which is the finding: the ranges overlap between corpora")
+    assert answered_elsewhere > unrelated_elsewhere, (
+        "on that corpus the signal did separate, which is why it exists")
+
+
+def test_the_question_missed_by_a_hair_is_still_marked_and_that_is_known():
+    """0.6337 against 0.635: thirteen ten-thousandths, and still wrong.
+
+    Recorded rather than fixed. The corpus answers it out of the chapter where
+    the subject is explained, five passages of five, and the warning still
+    fires. Nothing here can fix it without breaking the other bank; what it
+    needs is a threshold measured from the corpus rather than carried into it.
+    """
+    assert _warns(0.6337, 0.1501), (
+        "this now passes -- if the thresholds were changed, the report that "
+        "measured this case should be re-run rather than this test relaxed")

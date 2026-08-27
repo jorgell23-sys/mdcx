@@ -138,6 +138,31 @@ RELEVANCE_MARGIN = 0.10
 NOTHING_NEAR = 0.635
 STANDS_CLEAR = 0.25
 
+# Both were left where they are on purpose, and the reason is worth keeping
+# because the obvious repair was tried and does not survive its own evidence.
+#
+# Measured over eighteen questions on a corpus of five statistics books, this
+# threshold is above every clearance that corpus produces -- the range there is
+# 0.0000 to 0.1515 -- so on that corpus the second condition holds for all
+# eighteen and the warning is decided by the first signal alone. Read from
+# there, 0.25 looks like a threshold measuring nothing, and lowering it into
+# that range looks free.
+#
+# It is not. On the corpus this constant was measured on, an unrelated question
+# clears 0.172 and an answered one clears 0.331; the two ranges genuinely
+# overlap, and 0.14 would let that unrelated question through while rescuing
+# only one of the two answered questions the statistics corpus marks wrongly.
+# There is no value that separates both banks, which is the finding, not a
+# number to move.
+#
+# NOTHING_NEAR has the same problem from the other side: on the statistics
+# corpus it sits inside the answered range rather than below it, and the band
+# that would fix that bank -- 0.4978 to 0.6080 -- belongs to that package.
+# Moving it has been tried twice on evidence that looked as good.
+#
+# What the two banks together say is that the shape is wrong rather than the
+# values, which is what the comment above already suspected.
+
 # Which passage stands in for the tail. Far enough down that a handful of real
 # answers do not drag it up, near enough that it is still the same corpus.
 TAIL_AT = 50
