@@ -233,10 +233,64 @@ def _dispatch(pending: list, use_docling: bool) -> tuple[dict, int]:
     return lanes, card_bound
 
 
+# What a process holds on the card by having loaded the models, without
+# calculating anything. It is paid on loading, so a process pays it whether or
+# not the gate ever lets it compute -- which is the whole of the defect this
+# number exists to bound.
+#
+# Not the 484 MiB a single process shows in isolation. Solved instead from two
+# measured runs on the same 6 GB card, which is the only way to separate the
+# two costs:
+#
+#     2 computing + 5 resident = 5,884 MiB   (stopped)
+#     3 computing + 3 resident = 5,800 MiB   (finished, at the limit)
+#
+# giving 1,261 MiB for a process that is computing and 672 for one that has
+# merely loaded. The isolated figure undercounts because it does not include
+# what the context and the allocator keep per process once several coexist.
+VRAM_RESIDENT_MIB = 672
+
+# The former spelling of the per-worker peak, kept readable alongside the new
+# one; the resident figure has its own so a card whose models measure
+# differently can say so without touching the peak.
+RESIDENT_ENV_VARS = ("MDCX_VRAM_RESIDENT",)
+
+# How much of the free video memory the sizing may commit. The remainder is the
+# difference between working and thrashing rather than slack: measured on a
+# 6 GB card, a run that filled 96% of it stopped advancing altogether, and one
+# that filled 88% finished and was slightly faster than one at 95%.
+VRAM_USABLE_SHARE = 0.85
+
+
+def _vram_resident_mib() -> int:
+    for name in RESIDENT_ENV_VARS:
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return VRAM_RESIDENT_MIB
+    return VRAM_RESIDENT_MIB
+
+
+def _resident_cap(free: int, gpu_workers: int) -> int:
+    """How many processes may hold models on the card at once.
+
+    The processes that hold the gate need room to compute; whatever is left
+    over is what the others may occupy merely by having loaded. Both are
+    counted because both are on the card at the same time.
+    """
+    usable = int(free * VRAM_USABLE_SHARE)
+    for_turns = gpu_workers * _vram_per_worker_mib()
+    spare = usable - for_turns
+    return gpu_workers + max(0, spare // _vram_resident_mib())
+
+
 def _lane_sizes(total_cap: int, gpu_fraction: float, has_gpu: bool) -> tuple[int, int]:
     """How many workers each lane gets, from the machine and from the work.
 
-    Three ceilings, and the smallest wins. All three are needed, and leaving any
+    Four ceilings, and the smallest wins. All four are needed, and leaving any
     of them out breaks the sizing somewhere:
 
     The card. Free video memory divided by what a worker holds once its batch is
@@ -255,21 +309,41 @@ def _lane_sizes(total_cap: int, gpu_fraction: float, has_gpu: bool) -> tuple[int
     where there is most to gain: a card of 11 GB would allow seven workers on the
     card and leave one for everything else, which is backwards, the bulk of this
     work being processor work.
+
+    What is resident on the card, which bounds the processor lane rather than
+    the card's own. The gate says how many processes may compute; it says
+    nothing about how many may load, and a process pays for the models the
+    moment it builds the converter -- before it ever asks for a turn. Since the
+    hybrid engine is invoked from the processor lane, every process in that lane
+    ends up holding a CUDA context and a set of models. Measured: seven resident
+    on a 6 GB card filled it and the run stopped dead, 76 chapters in 109 s and
+    then none in 58 minutes; five finished the same work and were faster than
+    six. So the processor lane is capped by what the card can hold, not only by
+    what is left of the processor count.
+
+    That last one is the reverse of what intuition says. Because the processor
+    lane is the remainder, work that barely needs the card gets the most
+    processes loading models into it, and fewest turns to use them: the easiest
+    material is the likeliest to stall.
     """
     import math
 
     if total_cap <= 1:
         return 1, 1
 
+    free = _free_vram_mib() if has_gpu else None
+
     by_gpu = total_cap
-    if has_gpu:
-        free = _free_vram_mib()
-        if free is not None:
-            by_gpu = free // _vram_per_worker_mib()
+    if free is not None:
+        by_gpu = free // _vram_per_worker_mib()
 
     by_demand = math.ceil(total_cap * max(0.0, min(1.0, gpu_fraction)))
     gpu = max(1, min(by_gpu, by_demand, total_cap - 1))
-    return gpu, max(1, total_cap - gpu)
+
+    cpu = total_cap - gpu
+    if free is not None:
+        cpu = min(cpu, _resident_cap(free, gpu))
+    return gpu, max(1, cpu)
 
 
 def _worker_budget(threads: int, gate, batch: int | None = None) -> None:
@@ -557,12 +631,19 @@ def main() -> int:
         # workers rather than granted to each: otherwise the share it was
         # careful to leave free is spent again inside every process.
         threads_per_worker = max(1, args.max_cores // max(1, gpu_workers + cpu_workers))
+        # How many processes may end up holding models on the card. A lane with
+        # no documents starts no processes, and both lanes reach the model, so
+        # this is not the same number as the turns -- reading the turns as what
+        # the card will see is what hid a run filling the card and stopping.
+        resident = ((gpu_workers if lanes[LANE_GPU] else 0)
+                    + (cpu_workers if lanes[LANE_CPU] else 0))
         print(f"GPU lane: {len(lanes[LANE_GPU])} documents in {gpu_workers} processes | "
               f"CPU lane: {len(lanes[LANE_CPU])} documents in {cpu_workers} processes | "
               f"cap {args.max_cores} of {os.cpu_count() or '?'} cores, "
               f"{threads_per_worker} thread(s) each | "
-              f"card: {card_bound} document(s) expected to reach it, up to "
-              f"{gpu_workers} process(es) at a time, batch {batch}")
+              f"card: {card_bound} document(s) expected to reach it, "
+              f"{resident} process(es) with models resident, up to "
+              f"{gpu_workers} computing at a time, batch {batch}")
         if start_method == "spawn" and sys.platform != "win32":
             print("Workers start with spawn: a CUDA context does not survive fork, "
                   "which would disable docling in every child.")

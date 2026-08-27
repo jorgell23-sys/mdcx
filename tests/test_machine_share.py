@@ -99,7 +99,12 @@ def test_the_card_decides_when_it_is_the_scarce_one(monkeypatch):
     """
     gpu, cpu = _sizes(monkeypatch, total=12, fraction=0.20, vram_free=2000)
     assert gpu == 1, "more workers were put on the card than fit on it"
-    assert cpu == 11
+    # The processor lane used to take the whole remainder here -- eleven
+    # processes, every one of them loading models onto a card with 2 GB free.
+    # That is the stall this sizing now prevents: what is left of the processor
+    # count is not free when the processes it counts all reach the model.
+    assert cpu < 11, "eleven processes would load models onto a 2 GB card"
+    assert cpu >= 1
 
 
 def test_the_work_decides_when_little_of_it_needs_the_card(monkeypatch):
@@ -468,3 +473,90 @@ def test_an_empty_card_lane_does_not_mean_an_idle_card(tmp_path, monkeypatch):
         "the card was left with a single process while a quarter of the work "
         "was queueing for it")
     assert cpu >= 1
+
+
+# --- What is resident on the card, not only what is computing ---------------
+#
+# The gate bounds how many processes may use the model at once. It says nothing
+# about how many may load it, and a process pays for the models when it builds
+# the converter, before it ever asks for a turn. Since the hybrid engine runs in
+# the processor lane, every process there ends up holding a set of models.
+#
+# Measured on a 6 GB card: seven resident filled it and the run stopped dead --
+# 76 chapters in 109 s, then none in 58 minutes -- while five finished the same
+# work and were faster than six.
+
+CARD_MIB = 6144
+FREE_MIB = CARD_MIB - 257        # what the desktop was already using
+
+
+def _sizes_resident(monkeypatch, total, fraction, free=FREE_MIB):
+    monkeypatch.setattr(cli, "_free_vram_mib", lambda: free)
+    monkeypatch.setattr(cli, "_vram_per_worker_mib", lambda: 1384)
+    return cli._lane_sizes(total, fraction, True)
+
+
+def test_the_processor_lane_is_bounded_by_what_the_card_can_hold(monkeypatch):
+    """The run that stopped: 325 chapters, few of them needing the card.
+
+    The processor lane used to be simply the remainder of the cap, so it took
+    seven processes and all seven loaded models. This is the defect, and the
+    lane must now come out smaller than the leftover.
+    """
+    gpu, cpu = _sizes_resident(monkeypatch, total=9, fraction=57 / 325)
+
+    assert cpu < 9 - gpu or gpu + cpu < 9, (
+        "the processor lane is still just the remainder of the processor count")
+    assert cpu <= 6, (
+        f"{cpu} processes would hold models on a 6 GB card; seven stopped the run")
+
+
+def test_easy_material_is_the_likeliest_to_stall(monkeypatch):
+    """The reversal worth a test: less card demand, more processes loading.
+
+    Because the processor lane is the remainder, a low card fraction gives the
+    most processes -- and the fewest turns. The bound has to hold precisely
+    there, which is where nothing looks wrong.
+    """
+    _, cpu_easy = _sizes_resident(monkeypatch, total=12, fraction=0.05)
+    _, cpu_heavy = _sizes_resident(monkeypatch, total=12, fraction=0.90)
+
+    assert cpu_easy <= 6, (
+        f"material that barely needs the card put {cpu_easy} processes on it")
+    assert cpu_heavy >= 1
+
+
+def test_the_configuration_that_stopped_is_no_longer_reachable(monkeypatch):
+    """`--max-cores 12` with three turns gave nine resident, and it stopped."""
+    gpu, cpu = _sizes_resident(monkeypatch, total=12, fraction=134 / 153)
+
+    assert cpu <= 6, f"{cpu} resident processes is the configuration that stalled"
+    assert gpu >= 1 and cpu >= 1
+
+
+def test_a_bigger_card_is_allowed_more_resident(monkeypatch):
+    """The bound is the card's, not a constant: 24 GB should hold more than 6."""
+    _, small = _sizes_resident(monkeypatch, total=16, fraction=0.20, free=6000)
+    _, large = _sizes_resident(monkeypatch, total=16, fraction=0.20, free=24000)
+
+    assert large > small, "the resident bound does not follow the card"
+
+
+def test_a_machine_with_no_card_keeps_the_whole_remainder(monkeypatch):
+    """Nothing is resident where there is nothing to be resident on."""
+    monkeypatch.setattr(cli, "_free_vram_mib", lambda: None)
+    gpu, cpu = cli._lane_sizes(9, 0.20, False)
+
+    assert gpu + cpu == 9, "processors were withheld for a card that is not there"
+
+
+def test_the_resident_bound_leaves_a_margin(monkeypatch):
+    """Filling the card is not using it: 96% stopped, 88% finished and was faster."""
+    monkeypatch.setattr(cli, "_vram_per_worker_mib", lambda: 1384)
+    gpu = 3
+    cap = cli._resident_cap(FREE_MIB, gpu)
+    committed = gpu * 1384 + max(0, cap - gpu) * cli.VRAM_RESIDENT_MIB
+
+    assert committed <= FREE_MIB * 0.90, (
+        f"the sizing commits {committed} of {FREE_MIB} MiB, which is the "
+        "fraction at which the measured run stopped advancing")
