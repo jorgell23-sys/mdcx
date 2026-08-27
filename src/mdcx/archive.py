@@ -443,10 +443,100 @@ def _embed_passages(connection: sqlite3.Connection,
         if not dimensions:
             dimensions = len(known[0][1]) // np.dtype(np.float16).itemsize
 
-    return {"embedding_model": semantic.model_name(),
-            "embedding_dimensions": dimensions,
-            "passages_encoded": len(to_encode),
-            "passages_reused": len(known)}
+    summary = {"embedding_model": semantic.model_name(),
+               "embedding_dimensions": dimensions,
+               "passages_encoded": len(to_encode),
+               "passages_reused": len(known)}
+    reach = _answerable_at(connection)
+    if reach is not None:
+        summary["answerable_at"] = reach
+    return summary
+
+
+# How many passages are used to measure the corpus against itself. Enough for a
+# median to mean something, few enough that packing does not pay for a second
+# encoding of the whole corpus.
+REACH_SAMPLE = 64
+
+
+def _answerable_at(connection: sqlite3.Connection) -> float | None:
+    """How near this corpus comes to a question it can actually answer.
+
+    The warning that says nothing here is about your question needs a threshold,
+    and a constant cannot be one: how near a corpus comes depends on the corpus.
+    Measured on packages of twelve and twenty-four passages, the same questions
+    reach 0.51 and 0.55 -- a fixed cut lands inside the answered range of one and
+    below the other, which is exactly how the constant has failed each time it
+    was moved.
+
+    Packing has no questions to calibrate against. What it has is passages, and
+    a passage used as a query -- with the query prefix, so the asymmetry the
+    model was trained with is preserved -- stands in for one: it asks something
+    the corpus demonstrably contains. Its own passage is excluded, or the
+    measurement would be of a text against itself.
+
+    The earlier attempt at this compared passages as passages and produced 0.87,
+    higher than any question reaches, because two passages of one book resemble
+    each other more than a short question resembles either. The prefix is the
+    difference between that number and this one.
+
+    The median, not the mean: a corpus with a handful of near-duplicate passages
+    would otherwise report a reach nothing else in it can attain.
+    """
+    import numpy as np
+
+    from . import semantic
+
+    rows = connection.execute(
+        "SELECT id, text FROM passage ORDER BY id").fetchall()
+    if len(rows) < 8:
+        # Too few to say anything about the shape of the corpus.
+        return None
+
+    step = max(1, len(rows) // REACH_SAMPLE)
+    chosen = [rows[i] for i in range(0, len(rows), step)][:REACH_SAMPLE]
+
+    try:
+        identifiers, matrix = _vectors(connection)
+        if not len(matrix):
+            return None
+        probes = np.asarray(
+            semantic.encode([t for _, t in chosen], role="query"),
+            dtype=np.float32)
+    except Exception:  # noqa: BLE001 - a package without this is still a package
+        return None
+
+    # The probe's own passage is excluded by its identifier rather than by
+    # position: the two coincide today and a gap in the ids would make them
+    # disagree silently, which is the kind of thing that reads as a worse corpus.
+    place = {identifier: i for i, identifier in enumerate(identifiers)}
+    best: list[float] = []
+    for (identifier, _), probe in zip(chosen, probes):
+        sims = matrix @ probe
+        own = place.get(identifier)
+        if own is not None:
+            sims[own] = -1.0
+        best.append(float(sims.max()))
+    return round(float(np.median(best)), 4)
+
+
+def answerable_at(connection: sqlite3.Connection) -> float | None:
+    """The reach this package measured against itself when it was packed.
+
+    None for a package made before this was measured, which is what lets the
+    caller fall back rather than guess: an absent measurement is not a low one.
+    """
+    try:
+        row = connection.execute(
+            "SELECT value FROM meta WHERE key='answerable_at'").fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    if not row:
+        return None
+    try:
+        return float(json.loads(row[0]))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def has_vectors(connection: sqlite3.Connection) -> bool:

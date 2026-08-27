@@ -338,3 +338,70 @@ def test_the_question_missed_by_a_hair_is_still_marked_and_that_is_known():
     assert _warns(0.6337, 0.1501), (
         "this now passes -- if the thresholds were changed, the report that "
         "measured this case should be re-run rather than this test relaxed")
+
+
+# --- A threshold the corpus measures about itself ---------------------------
+#
+# Both constants failed the same way: they describe a collection they cannot
+# see. Measured on packages built for this, the same questions reach 0.51 on one
+# corpus and 0.55 on another, so a fixed cut lands inside the answered range of
+# one and below the other's.
+#
+# What packing can measure is how near the corpus comes to a question it does
+# answer: a passage used as a query, with the query prefix, standing in for one.
+
+
+def test_a_package_without_the_measurement_answers_as_it_always_did():
+    """No regression for a package built before this existed.
+
+    An absent measurement is not a low one, so the two constants decide exactly
+    as they did rather than a missing number being read as zero.
+    """
+    for closeness, clearance, _ in STATISTICS_BANK:
+        old = closeness < mcp_server.NOTHING_NEAR and clearance < mcp_server.STANDS_CLEAR
+        assert mcp_server._nothing_near(closeness, clearance, None) is old
+
+
+def test_the_measured_reach_rescues_the_questions_the_constant_condemned():
+    """The two the report measured, on a corpus whose reach is known.
+
+    Built and packed for this: twenty-four passages of statistics, reach 0.8185.
+    The two questions are the same ones -- mean, median and mode, in both
+    languages -- and the absolute threshold marked both.
+    """
+    reach = 0.8185
+    for closeness in (0.5534, 0.5934):
+        assert closeness < mcp_server.NOTHING_NEAR, "premise: the constant marks it"
+        assert not mcp_server._nothing_near(closeness, 0.10, reach), (
+            f"a question the corpus answers at {closeness} is still marked")
+
+
+def test_no_unrelated_question_escapes_the_measured_reach():
+    """Measured against the same package: unrelated questions reach 0.30-0.33."""
+    reach = 0.8185
+    for closeness in (0.3136, 0.3290, 0.3056):
+        assert mcp_server._nothing_near(closeness, 0.05, reach), (
+            f"an unrelated question at {closeness} came back unmarked")
+
+
+def test_the_same_question_is_judged_against_the_corpus_it_is_asked_of():
+    """What no constant could do, and the whole point of measuring the corpus.
+
+    The statistics questions against a corpus of botany reach 0.31-0.39, and
+    that corpus reaches 0.8327 of its own. The question is unanswerable there
+    and answerable in the other, and the judgement follows the corpus.
+    """
+    assert mcp_server._nothing_near(0.3316, 0.05, 0.8327), (
+        "a question this corpus cannot answer was let through")
+    assert not mcp_server._nothing_near(0.5534, 0.10, 0.8185), (
+        "the same question, on the corpus that answers it, is still marked")
+
+
+def test_the_share_sits_between_what_was_measured():
+    """The cut is between the worst answered and the best unrelated, not on one."""
+    worst_answered = 0.5534 / 0.8185
+    best_unrelated = 0.3883 / 0.8327
+
+    assert best_unrelated < mcp_server.ANSWERS_AT_SHARE < worst_answered, (
+        f"the share {mcp_server.ANSWERS_AT_SHARE} is outside the measured gap "
+        f"{best_unrelated:.4f} to {worst_answered:.4f}")

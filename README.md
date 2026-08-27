@@ -438,6 +438,15 @@ about the question. The passages are returned either way: the nearest passage is
 worth seeing even when it is not an answer, and a corpus that answers in another
 language must not be hidden by this.
 
+How near counts as near is measured from the corpus rather than fixed. Packing
+records `answerable_at`, how near this corpus comes to a question it does
+answer, estimated by using its own passages as questions; the reply reports it,
+and the warning is judged against it. A fixed threshold could not do this: the
+same questions reach 0.51 on one corpus and 0.55 on another, so any single cut
+falls inside the answered range of one collection or below another's, which is
+how it behaved before this was measured. A package built before this exists has
+no such number and is judged by the previous thresholds, unchanged.
+
 ## Language support
 
 Retrieval by word is script-aware. A query matches the words present in the

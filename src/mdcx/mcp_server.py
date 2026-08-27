@@ -168,6 +168,47 @@ STANDS_CLEAR = 0.25
 TAIL_AT = 50
 
 
+# What share of its own reach a corpus has to come, for the question to count as
+# one it is about. Measured over four packages built for this: the worst
+# question the corpus answers reaches 0.68 of its reach and the best unrelated
+# one 0.53, so the cut goes between them.
+#
+# This is still a constant, but not the same kind. It is a constant about how
+# questions relate to corpora, applied to a number each corpus measured about
+# itself -- which is what the absolute threshold could never be, and why that
+# one landed inside the answered range of one corpus and below another's.
+ANSWERS_AT_SHARE = 0.60
+
+
+def _reach_of_open_packages() -> float | None:
+    """What the open packages measured as their own reach, or None if none did.
+
+    The smallest, when several are open: a question is about the corpus if it
+    is about any of them, and holding it to the reach of the widest would
+    condemn a question the narrow one answers.
+    """
+    reaches = []
+    for package in _open_packages():
+        value = archive.answerable_at(package["connection"])
+        if value:
+            reaches.append(value)
+    return min(reaches) if reaches else None
+
+
+def _nothing_near(closeness: float, clearance: float,
+                  reach: float | None) -> bool:
+    """Whether to say the corpus is not about the question.
+
+    With a reach measured at packing time the question is judged against what
+    this corpus can actually reach. Without one -- a package built before that
+    was measured -- the two constants above decide, exactly as they did, so an
+    existing package answers as it always has.
+    """
+    if reach:
+        return closeness < reach * ANSWERS_AT_SHARE
+    return closeness < NOTHING_NEAR and clearance < STANDS_CLEAR
+
+
 def _closest_to(query: str) -> tuple[float, float] | None:
     """How near the corpus comes to a question, and how far that stands clear.
 
@@ -453,7 +494,10 @@ def create_server():
             closeness, clearance = measured
             answer["similarity"] = round(closeness, 4)
             answer["stands_clear"] = round(clearance, 4)
-            if closeness < NOTHING_NEAR and clearance < STANDS_CLEAR:
+            reach = _reach_of_open_packages()
+            if reach is not None:
+                answer["answerable_at"] = round(reach, 4)
+            if _nothing_near(closeness, clearance, reach):
                 answer["warning"] = (
                     "nothing in this corpus is about the question: the best "
                     "passage is no nearer than the rest, so the passages below "
