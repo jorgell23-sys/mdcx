@@ -20,6 +20,7 @@ appended verbatim in a recovery section rather than reported as lost.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -495,10 +496,70 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
     record["seconds"] = round(time.time() - started, 2)
     return record
 
+class DocumentTimeout(Exception):
+    """A document took longer than the run allows for one."""
+
+
+@contextlib.contextmanager
+def _time_limit(seconds: float | None):
+    """Give up on the body after so long, from inside the worker.
+
+    A document that never finishes holds its worker for as long as the run
+    lasts, and with six workers six such documents stop the conversion
+    altogether. Measured on real material: two workers spent three hours and
+    twenty minutes of processor time on documents of two to eight A4 pages,
+    while equivalent ones in the same batch took six seconds natively and
+    thirty-five through layout analysis. The content is ordinary; something in
+    the structured engine does not terminate on it.
+
+    Raised into the working thread rather than by killing the process, so the
+    worker records the document as unfinished and goes on to the next one. A
+    killed worker would take the pool with it and lose the batch, which is the
+    outcome this exists to avoid.
+
+    The interruption lands when the interpreter next runs bytecode, so a call
+    that stays inside a C extension is not cut short at the instant the limit
+    expires -- the model returns to Python between layers, which is where it
+    takes effect. It is a bound on the document, not on the instruction.
+    """
+    if not seconds or seconds <= 0:
+        yield
+        return
+
+    import ctypes
+    import threading
+
+    target = threading.get_ident()
+    fired = threading.Event()
+
+    def expire():
+        fired.set()
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(target), ctypes.py_object(DocumentTimeout))
+
+    alarm = threading.Timer(seconds, expire)
+    alarm.daemon = True
+    alarm.start()
+    try:
+        yield
+    except DocumentTimeout:
+        raise DocumentTimeout(
+            f"gave up after {seconds:.0f}s") from None
+    finally:
+        alarm.cancel()
+        if fired.is_set():
+            # The exception may have been raised while another one was already
+            # travelling, in which case it is still pending against this thread
+            # and would surface inside whatever runs next. Clear it.
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                ctypes.c_ulong(target), ctypes.c_void_p(0))
+
+
 def convert_one_safe(args) -> dict:
     """Process pool wrapper: one broken file must not bring down the batch."""
     job, output_root, use_docling, save_lossless, *rest = args
     compact = rest[0] if rest else True
+    timeout = rest[1] if len(rest) > 1 else None
     # A worker is a new process and does not inherit the streams the parent
     # configured, so it configures its own before writing anything.
     console.configure()
@@ -508,7 +569,26 @@ def convert_one_safe(args) -> dict:
         label += f"  [cap. {job.chapter_index}: {job.chapter_title[:40]}]"
     console.safe_print(f">>> {label}", flush=True)
     try:
-        return convert_one(job, output_root, use_docling, save_lossless, compact)
+        with _time_limit(timeout):
+            return convert_one(job, output_root, use_docling, save_lossless, compact)
+    except DocumentTimeout as expired:
+        console.safe_print(f"!!! {label}: {expired}", flush=True)
+        return {
+            "source_pseudopath": job.source_pseudopath,
+            "markdown_pseudopath": job.pseudopath,
+            "source_name": job.rel_source.name,
+            "folder": job.rel_source.parent.as_posix() or ".",
+            "format": job.kind,
+            "bytes": job.size,
+            "engine": "none",
+            "ok": False,
+            # Its own status rather than "error": nothing was found wrong with
+            # this document, and a reader deciding what to retry needs to tell
+            # "the conversion failed on it" from "it was still going".
+            "verification": {"status": "timeout", "measurable": False,
+                             "coverage": None, "numeric_coverage": None},
+            "errors": [f"DocumentTimeout: {expired}"],
+        }
     except Exception:  # noqa: BLE001
         return {
             "source_pseudopath": job.source_pseudopath,

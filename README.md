@@ -227,6 +227,25 @@ Every one of these can be overridden — `--max-cores`, `--gpu-workers`,
 `--cpu-workers`, and `MDCX_TATR_BATCH` — and the derived figure is the default
 rather than a ruling. A machine that measures differently says so.
 
+### A document the engine does not finish
+
+There is material the structured engine does not terminate on, and it cannot be
+recognised beforehand: measured against documents that convert normally, the
+ones that hang have fewer pages, the same size, the same images per page and
+slightly more text. About 4% of one real collection behaved this way — two to
+eight ordinary A4 pages that ran for hours while their neighbours took seconds.
+
+Without a bound, one such document holds its worker for the length of the run,
+and as many of them as there are workers stop the conversion altogether: the
+batch waits for everyone. So `--timeout` gives up on a document after twenty
+minutes by default, records it with the status `TIMED OUT` — its own status,
+not an error, because nothing was found wrong with it — and goes on to the next.
+`--timeout 0` waits indefinitely.
+
+The limit is deliberately generous. Abandoning a good document loses all of its
+work, while waiting too long for a bad one costs one worker for the excess, so
+it is sized for the first mistake being the expensive one.
+
 ### Checking a conversion before packaging
 
 `mdcx-search` searches the converted Markdown directly, before there is a

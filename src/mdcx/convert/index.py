@@ -34,12 +34,13 @@ INDEX_FILENAME = "00_INDEX.md"
 
 _STATUS_LABEL = {
     "ok": "OK",
-    "warn": "REVISAR",
+    "warn": "REVIEW",
     "fail": "INCOMPLETE",
     "no-reference": "NO TEXT",
     "unreadable": "UNREADABLE",
     "only-ocr": "VISUAL REVIEW",
     "error": "ERROR",
+    "timeout": "TIMED OUT",
 }
 
 def _rel_link(from_dir: str, target_pseudo: str) -> str:
@@ -49,7 +50,7 @@ def _rel_link(from_dir: str, target_pseudo: str) -> str:
 
 def _fmt_pct(value) -> str:
     if value is None:
-        return "n/d"
+        return "n/a"
     return f"{value * 100:.2f}%"
 
 def _fmt_size(n: int) -> str:
@@ -79,9 +80,9 @@ def build_manifest(records: list[dict], input_root: Path, skipped: list[Path],
     total_missing = sum(r["verification"].get("missing_tokens", 0) for r in measurable)
 
     return {
-        "generado_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "esquema": "pdftomd/1",
-        "convencion_pseudopath": (
+        "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "schema": "pdftomd/1",
+        "pseudopath_convention": (
             "'@/' denotes the root of this output folder. Resolve against the current "
             "location of the folder; it never contains absolute paths or drive letters."
         ),
@@ -121,7 +122,7 @@ def write_index(records: list[dict], output_root: Path, manifest: dict) -> Path:
     lines: list[str] = [
         "# Index of converted documents",
         "",
-        f"Generated: {manifest['generado_utc']}  ",
+        f"Generated: {manifest['generated_utc']}  ",
         f"Documents: **{res['documents']}**  |  Conforming: **{res['converted_ok']}**  "
         f"|  With findings: **{res['with_findings']}**  "
         + (f"|  Unverifiable: **{res['unverifiable']}**  " if res.get("unverifiable") else ""),
@@ -135,11 +136,11 @@ def write_index(records: list[dict], output_root: Path, manifest: dict) -> Path:
         "with `@/`, resolved against the folder holding this index, wherever it is "
         "(local disk, network share or cloud). No output artefact contains absolute paths.",
         "",
-        "| Campo | Significado |",
+        "| Field | Meaning |",
         "|---|---|",
         "| `@/...md` | Converted document, relative to this folder |",
         "| Fidelity | Percentage of the original text present in the Markdown |",
-        "| Status | `OK` conforme; `REVISAR` diferencias menores; `INCOMPLETO` falta contenido; "
+        "| Status | `OK` conforming; `REVIEW` minor differences; `INCOMPLETE` content missing; `TIMED OUT` the engine did not finish and the run moved on; "
         "`VISUAL REVIEW` the text comes from optical recognition only and is not verifiable; "
         "`UNREADABLE` the original exposes no text and recognition produced nothing |",
         "| Engine | Tool that produced the conversion |",
@@ -156,7 +157,7 @@ def write_index(records: list[dict], output_root: Path, manifest: dict) -> Path:
 
     for folder in sorted(by_folder, key=lambda f: (f != ".", f.lower())):
         rows = sorted(by_folder[folder], key=lambda r: r["source_name"].lower())
-        title = "(raiz)" if folder == "." else folder
+        title = "(root)" if folder == "." else folder
         lines.append(f"### {title}")
         lines.append("")
         lines.append("| Document | Source | Format | Size | Fidelity | Status | Engine |")
@@ -366,7 +367,7 @@ def write_results_txt(records: list[dict], output_root: Path, manifest: dict,
     L.append("=" * 78)
     L.append("MARKDOWN CONVERSION RESULT")
     L.append("=" * 78)
-    L.append(f"Date (UTC)        : {manifest['generado_utc']}")
+    L.append(f"Date (UTC)        : {manifest['generated_utc']}")
     L.append(f"Source folder     : {input_root}")
     L.append(f"Output folder     : {output_root}")
     ejec = manifest.get("run") or {}

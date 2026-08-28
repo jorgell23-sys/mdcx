@@ -92,6 +92,27 @@ def _configure_tls() -> None:
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
+# How long one document may take before the run gives up on it and moves on.
+#
+# There is material the structured engine does not finish on. Measured: two
+# workers spent three hours and twenty minutes of processor time on documents of
+# two to eight A4 pages, while equivalent documents in the same batch took six
+# seconds natively and up to thirty-five through layout analysis. Nothing about
+# those documents is unusual -- compared against sixty that convert normally
+# they have fewer pages, the same megabytes, the same images per page and
+# slightly more text -- so there is nothing to screen for beforehand. Roughly
+# 4% of a real collection behaved this way.
+#
+# Without a limit one such document holds its worker for the length of the run,
+# and six of them stop the conversion altogether: the batch cannot close because
+# it waits for everyone.
+#
+# Twenty minutes rather than something tight. A long book with many tables can
+# legitimately take a while, and abandoning a good document costs more than
+# waiting too long for a bad one -- the whole of the document's work is lost,
+# while waiting costs one worker for the excess. It is a backstop, not a budget.
+DOCUMENT_TIMEOUT_SECONDS = 1200.0
+
 PROGRESS_FILENAME = "_progress.jsonl"
 
 # What the file was called before. A run interrupted under the old name is
@@ -443,6 +464,11 @@ def main() -> int:
                     help="do not split long documents into chapters")
     ap.add_argument("--split-threshold", type=int, default=chapters.SPLIT_THRESHOLD_PAGES,
                     help=f"page count above which to split (default {chapters.SPLIT_THRESHOLD_PAGES})")
+    ap.add_argument("--timeout", type=float, default=DOCUMENT_TIMEOUT_SECONDS,
+                    metavar="SECONDS",
+                    help=f"give up on a document after this long and go on to "
+                         f"the next (default {DOCUMENT_TIMEOUT_SECONDS:.0f}; "
+                         f"0 waits indefinitely)")
     args = ap.parse_args()
 
     _configure_tls()
@@ -457,8 +483,15 @@ def main() -> int:
     jobs, skipped = plan_jobs(input_root)
     if args.only:
         jobs = [j for j in jobs if fnmatch.fnmatch(j.rel_source.name.lower(), args.only.lower())]
+    planned = len(jobs)
     if args.limit:
         jobs = jobs[: args.limit]
+    # A run cut short by --limit finishes exactly as asked and still leaves work
+    # behind, so the progress file survives -- and a reader cannot tell it from
+    # a run that died. Both facts are recorded rather than the file being
+    # removed, which would lose the ability to resume a limited run that failed
+    # halfway.
+    limited = bool(args.limit) and len(jobs) < planned
 
     if args.no_gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -677,7 +710,7 @@ def main() -> int:
                     try:
                         rec = convert_one_safe(
                             (job, output_root, allow_docling, not args.no_lossless,
-                             not args.no_compact)
+                             not args.no_compact, args.timeout)
                         )
                     except Exception as exc:  # noqa: BLE001
                         rec = _error_record(job, exc)
@@ -702,13 +735,15 @@ def main() -> int:
                 futures = {}
                 for job in lanes[LANE_GPU]:
                     fut = gpu_pool.submit(
-                        convert_one_safe, (job, output_root, use_docling, not args.no_lossless, not args.no_compact)
+                        convert_one_safe, (job, output_root, use_docling, not args.no_lossless, not args.no_compact,
+                         args.timeout)
                     )
                     futures[fut] = (job, LANE_GPU)
                 for job in lanes[LANE_CPU]:
                     fut = cpu_pool.submit(
                         convert_one_safe,
-                        (job, output_root, use_docling, not args.no_lossless, not args.no_compact)
+                        (job, output_root, use_docling, not args.no_lossless, not args.no_compact,
+                         args.timeout)
                     )
                     futures[fut] = (job, LANE_CPU)
 
@@ -773,10 +808,23 @@ def main() -> int:
     print(f"Index           : {index_path}")
     print(f"Results         : {results_path}")
 
-    try:
-        progress_path.unlink(missing_ok=True)
-    except Exception:
-        pass
+    if limited:
+        print(f"Partial run     : {len(jobs)} of {planned} files, as asked by "
+              f"--limit; the progress file is kept and says so")
+        try:
+            with progress_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"run": "complete",
+                                     "limited_to": len(jobs),
+                                     "of": planned}) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        except Exception:
+            pass
+    else:
+        try:
+            progress_path.unlink(missing_ok=True)
+        except Exception:
+            pass
     print("=" * 72)
     return 0 if res["with_findings"] == 0 else 1
 
