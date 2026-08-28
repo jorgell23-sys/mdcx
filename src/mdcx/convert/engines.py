@@ -27,6 +27,8 @@ import html
 import re
 from pathlib import Path
 
+from .. import console
+
 _CONVERTERS: dict = {}
 
 _DEVICE_CACHE: dict = {}
@@ -58,23 +60,86 @@ def set_gpu_gate(gate) -> None:
     _GPU_GATE = gate
 
 
+# Permits this process is holding. A count rather than a flag, because the
+# hybrid engine can take a turn inside a document that already has one.
+_TURNS_HELD = 0
+
+# How long to wait for a turn before going ahead without one.
+#
+# The gate exists to keep several processes off the card at once, and it is
+# worth waiting for. What it must never do is stop the run: a permit that is
+# never returned would otherwise block every worker for the rest of the run,
+# which is what happened -- four workers waiting in acquire(), none of them
+# holding anything, the card idle and the count at zero. Going ahead without a
+# turn risks contention; waiting for one that will not come is certain death.
+TURN_WAIT_SECONDS = 300.0
+
+
 class _Turn:
     """The right to use the card, released as soon as the model is done with it.
 
     Held around the model call rather than around the document, so a process
     that spends most of its time extracting text is not occupying a place on
     the card while it does.
+
+    The permit is counted here as well as held in the semaphore, so that it can
+    be returned by whoever ends the document rather than only by the block that
+    took it. A block does not always end: layout analysis can leave a thread in
+    a blocking call and abandon it, and a document can be given up on by the
+    timeout. Either way __exit__ may never run, and a permit that is not
+    returned is gone for good -- with two of them on this machine, two such
+    documents were enough to stop everything.
     """
 
     def __enter__(self):
-        if _GPU_GATE is not None:
-            _GPU_GATE.acquire()
+        global _TURNS_HELD
+        if _GPU_GATE is None:
+            return self
+        # Waited for in slices rather than in one blocking call, so the wait
+        # returns to Python often enough to be interrupted by the document
+        # timeout instead of sitting inside C until the run ends.
+        waited = 0.0
+        while waited < TURN_WAIT_SECONDS:
+            if _GPU_GATE.acquire(timeout=1.0):
+                _TURNS_HELD += 1
+                return self
+            waited += 1.0
+        console.safe_print(
+            f"!!! no turn on the card after {TURN_WAIT_SECONDS:.0f}s; going "
+            "ahead without one", flush=True)
         return self
 
     def __exit__(self, *exception) -> bool:
-        if _GPU_GATE is not None:
-            _GPU_GATE.release()
+        release_turns(1)
         return False
+
+
+def release_turns(how_many: int | None = None) -> int:
+    """Give back permits this process is holding, and say how many.
+
+    Called at the end of every document as well as by the block that took the
+    permit, because the block is not guaranteed to end. Returning a permit
+    twice would raise the ceiling for the rest of the run, so what is returned
+    is only ever what this process is recorded as holding.
+    """
+    global _TURNS_HELD
+    if _GPU_GATE is None:
+        return 0
+    wanted = _TURNS_HELD if how_many is None else min(how_many, _TURNS_HELD)
+    given = 0
+    while given < wanted:
+        try:
+            _GPU_GATE.release()
+        except ValueError:  # already at its ceiling; nothing of ours is out
+            break
+        given += 1
+        _TURNS_HELD -= 1
+    return given
+
+
+def turns_held() -> int:
+    """How many permits this process has out. For tests and for reporting."""
+    return _TURNS_HELD
 
 
 def gpu_turn() -> "_Turn":

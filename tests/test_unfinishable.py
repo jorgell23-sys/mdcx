@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mdcx import cli  # noqa: E402
 from mdcx.convert import convert as convert_module  # noqa: E402
+from mdcx.convert import engines  # noqa: E402
 from mdcx.convert.convert import DocumentTimeout, _time_limit  # noqa: E402
 from mdcx.convert.paths import Job  # noqa: E402
 
@@ -208,3 +209,116 @@ def test_the_mark_does_not_disturb_the_records_around_it(tmp_path):
 
     assert len(documents) == 2, "the mark was counted as a document"
     assert all(d.get("run") is None for d in documents)
+
+
+# --- A permit for the card outlives the block that took it ------------------
+#
+# The gate limits how many processes use the card at once, taken on entering
+# the model call and returned on leaving it. That is correct while the block
+# ends -- and it does not always: layout analysis can leave a thread in a
+# blocking call and abandon it, and the document timeout can cut in between
+# taking the permit and entering the body. Either way __exit__ never runs.
+#
+# With two permits on the measured machine, two such documents were enough:
+# four workers waiting in acquire(), none of them holding anything, the card
+# idle, and the run never advancing again. The rate had been falling from 1,152
+# to 180 chapters an hour before anyone understood why.
+
+
+@pytest.fixture
+def gate(monkeypatch):
+    """A gate of two permits, as the machine in the report had."""
+    import multiprocessing
+
+    semaphore = multiprocessing.Semaphore(2)
+    monkeypatch.setattr(engines, "_GPU_GATE", semaphore)
+    monkeypatch.setattr(engines, "_TURNS_HELD", 0)
+    monkeypatch.setattr(engines, "TURN_WAIT_SECONDS", 2.0)
+    yield semaphore
+    engines.release_turns()
+
+
+def test_a_permit_is_returned_when_the_block_ends(gate):
+    """The ordinary path, which has to keep working."""
+    with engines.gpu_turn():
+        assert engines.turns_held() == 1
+    assert engines.turns_held() == 0
+
+
+def test_a_permit_survives_a_block_that_never_ends(gate):
+    """The defect: two documents that do not leave the block, and the gate is
+    empty for the rest of the run."""
+    engines._Turn().__enter__()
+    engines._Turn().__enter__()
+    assert engines.turns_held() == 2, "premise: both permits are out"
+
+    recovered = engines.release_turns()
+
+    assert recovered == 2, "the permits could not be recovered"
+    assert engines.turns_held() == 0
+    # And the gate works again, which is what the run needs.
+    with engines.gpu_turn():
+        pass
+
+
+def test_a_document_squares_up_its_permits(tmp_path, monkeypatch, gate):
+    """The boundary that always ends is the document, so it is where they are
+    returned -- including when the document is given up on."""
+    def takes_a_permit_and_hangs(*args, **kwargs):
+        engines._Turn().__enter__()      # taken, never returned
+        while True:
+            sum(range(10_000))
+
+    monkeypatch.setattr(convert_module, "convert_one", takes_a_permit_and_hangs)
+
+    record = convert_module.convert_one_safe(
+        (_job(tmp_path), tmp_path / "out", False, False, True, 0.5))
+
+    assert record["verification"]["status"] == "timeout"
+    assert engines.turns_held() == 0, (
+        "the abandoned document kept its permit, which is how the gate emptied")
+
+
+def test_an_exhausted_gate_does_not_stop_the_run(gate):
+    """The belt to the braces: even if a permit were lost beyond recovery.
+
+    Waiting for a turn that will not come is certain death; going ahead without
+    one risks contention. The report measured the first.
+    """
+    gate.acquire()
+    gate.acquire()                       # both gone, and not ours to return
+    assert engines.turns_held() == 0
+
+    started = time.time()
+    with engines.gpu_turn():
+        pass
+    waited = time.time() - started
+
+    assert waited < 30, "the run would have waited for a turn that never comes"
+    assert engines.turns_held() == 0, "it invented a permit it does not hold"
+    gate.release()
+    gate.release()
+
+
+def test_returning_is_never_more_than_was_taken(gate):
+    """Handing back a permit twice would raise the ceiling for the whole run."""
+    with engines.gpu_turn():
+        pass
+    assert engines.release_turns() == 0
+
+    for _ in range(5):
+        engines.release_turns()
+
+    # The gate still holds exactly two, which is what it was built with.
+    assert gate.acquire(timeout=1)
+    assert gate.acquire(timeout=1)
+    assert not gate.acquire(timeout=0.2), "the gate now allows more than it should"
+    gate.release()
+    gate.release()
+
+
+def test_workers_are_replaced_so_an_abandoned_thread_frees_its_core():
+    """A thread cannot be cancelled, so the process holding it is replaced."""
+    assert cli.RECYCLE_AFTER_DOCUMENTS > 0
+    assert cli.RECYCLE_AFTER_DOCUMENTS <= 200, (
+        "a lifetime this long leaves a burnt core in place for most of a run")

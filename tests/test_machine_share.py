@@ -283,15 +283,19 @@ def test_the_card_is_bounded_by_a_gate_and_not_by_a_lane(monkeypatch):
             self.dentro = 0
             self.maximo = 0
 
-        def acquire(self):
+        def acquire(self, timeout=None):
+            # Waited for in slices, so the wait can be interrupted by the
+            # document timeout; a gate says whether it granted the turn.
             self.dentro += 1
             self.maximo = max(self.maximo, self.dentro)
+            return True
 
         def release(self):
             self.dentro -= 1
 
     gate = CallCounter()
     engines.set_gpu_gate(gate)
+    monkeypatch.setattr(engines, "_TURNS_HELD", 0)
     try:
         with engines.gpu_turn():
             assert gate.dentro == 1, "the model call did not take its turn"
@@ -307,18 +311,20 @@ def test_the_turn_is_given_back_when_the_model_fails(monkeypatch):
         def __init__(self):
             self.dentro = 0
 
-        def acquire(self):
+        def acquire(self, timeout=None):
             self.dentro += 1
+            return True
 
         def release(self):
             self.dentro -= 1
 
     gate = CallCounter()
     engines.set_gpu_gate(gate)
+    monkeypatch.setattr(engines, "_TURNS_HELD", 0)
     try:
         with pytest.raises(RuntimeError):
             with engines.gpu_turn():
-                raise RuntimeError("el modelo fallo")
+                raise RuntimeError("the model failed")
         assert gate.dentro == 0, (
             "a failure left the card held, and every other process waiting")
     finally:

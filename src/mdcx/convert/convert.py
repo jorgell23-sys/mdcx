@@ -603,3 +603,19 @@ def convert_one_safe(args) -> dict:
                              "coverage": None, "numeric_coverage": None},
             "errors": [traceback.format_exc(limit=3)],
         }
+    finally:
+        # A permit for the card is returned by the block that took it, and that
+        # block is not guaranteed to end: layout analysis can leave a thread in
+        # a blocking call and abandon it, and the timeout can cut the document
+        # short between taking the permit and entering the body. Either way the
+        # permit would be gone for the rest of the run -- and with two of them,
+        # two such documents were enough to leave every worker waiting on a
+        # turn that never came.
+        #
+        # The document is the boundary that always ends, so it is where the
+        # permits are squared up.
+        stranded = engines.release_turns()
+        if stranded:
+            console.safe_print(
+                f"!!! {label}: {stranded} turn(s) on the card recovered",
+                flush=True)

@@ -113,6 +113,22 @@ def _configure_tls() -> None:
 # while waiting costs one worker for the excess. It is a backstop, not a budget.
 DOCUMENT_TIMEOUT_SECONDS = 1200.0
 
+# After how many documents a worker is replaced by a fresh one.
+#
+# Giving up on a document does not undo what it started. Layout analysis says so
+# itself -- "thread is likely stuck in a blocking call and will be abandoned" --
+# and an abandoned thread keeps running: measured, three of them held a core
+# each at 100% for twenty minutes while producing nothing, and the run crawled
+# to a stop. A Python thread cannot be cancelled, so the only way to get the
+# core back is to replace the process holding it.
+#
+# Every so many documents rather than on demand, because a pool cannot be told
+# to retire one particular worker; what it offers is a lifetime. Fifty bounds
+# the loss to fifty documents on one worker instead of to the rest of the run,
+# and costs one reload of the models in that time -- against documents that take
+# tens of seconds each, a small share.
+RECYCLE_AFTER_DOCUMENTS = 50
+
 PROGRESS_FILENAME = "_progress.jsonl"
 
 # What the file was called before. A run interrupted under the old name is
@@ -464,6 +480,12 @@ def main() -> int:
                     help="do not split long documents into chapters")
     ap.add_argument("--split-threshold", type=int, default=chapters.SPLIT_THRESHOLD_PAGES,
                     help=f"page count above which to split (default {chapters.SPLIT_THRESHOLD_PAGES})")
+    ap.add_argument("--recycle-after", type=int, default=RECYCLE_AFTER_DOCUMENTS,
+                    metavar="N",
+                    help=f"replace a worker after this many documents, so a "
+                         f"thread left running by an abandoned one does not "
+                         f"hold a core for the rest of the run "
+                         f"(default {RECYCLE_AFTER_DOCUMENTS}; 0 never)")
     ap.add_argument("--timeout", type=float, default=DOCUMENT_TIMEOUT_SECONDS,
                     metavar="SECONDS",
                     help=f"give up on a document after this long and go on to "
@@ -726,11 +748,14 @@ def main() -> int:
             # said once and applies to every worker, whichever lane it is in.
             gate = multiprocessing.Semaphore(gpu_workers)
 
+            recycle = args.recycle_after or None
             with ProcessPoolExecutor(
                     max_workers=gpu_workers, initializer=_worker_budget,
+                    max_tasks_per_child=recycle,
                     initargs=(threads_per_worker, gate, batch)) as gpu_pool, \
                  ProcessPoolExecutor(
                     max_workers=cpu_workers, initializer=_worker_budget,
+                    max_tasks_per_child=recycle,
                     initargs=(threads_per_worker, gate, batch)) as cpu_pool:
                 futures = {}
                 for job in lanes[LANE_GPU]:

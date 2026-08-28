@@ -246,6 +246,22 @@ The limit is deliberately generous. Abandoning a good document loses all of its
 work, while waiting too long for a bad one costs one worker for the excess, so
 it is sized for the first mistake being the expensive one.
 
+Giving up does not undo what was started. Layout analysis says as much — *the
+thread is likely stuck in a blocking call and will be abandoned* — and an
+abandoned thread keeps running: measured, three of them held a core each at 100%
+for twenty minutes while producing nothing. A Python thread cannot be cancelled,
+so the only way to get the core back is to replace the process holding it, which
+is what `--recycle-after` does every fifty documents. `--recycle-after 0` never
+replaces one.
+
+A permit for the card is squared up per document rather than only by the block
+that took it, for the same reason: a block that is abandoned never returns its
+permit, and with two permits, two such documents left every worker waiting on a
+turn that never came — the card idle, the count at zero, and the run never
+advancing again. And if a permit were still lost beyond recovery, the run goes
+ahead without a turn rather than waiting forever: contention is a risk, waiting
+for a turn that will not come is not.
+
 ### Checking a conversion before packaging
 
 `mdcx-search` searches the converted Markdown directly, before there is a
