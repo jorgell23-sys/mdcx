@@ -1126,7 +1126,7 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
 
 def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
           only: str | None = None, mode: str = "auto",
-          prefer: str | None = None) -> list[dict]:
+          prefer: str | None = None, notes: dict | None = None) -> list[dict]:
     """Resolve a query, by word and by meaning where the package allows it.
 
     The two engines answer different questions. The lexical one finds documents
@@ -1143,11 +1143,33 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
     The mode selects the engines. Left at auto, meaning is used when the package
     carries vectors and the dependency is installed, and the query falls back to
     words alone whenever it is not, without failing.
+
+    A preference can be asked for and be impossible to honour: it orders the
+    fusion of two engines, so there has to be a fusion, and it orders by date, so
+    something in the answer has to carry one. Neither is an error and neither
+    changes the answer, but from outside they are indistinguishable from a
+    preference that applied and moved nothing. Pass a dict as `notes` to be told
+    which happened: it comes back with `prefer_applied`, and with
+    `prefer_reason` when the answer is no.
     """
     if mode not in ("auto", "lexical", "semantic"):
         raise ValueError(f"mode must be auto, lexical or semantic, not {mode!r}")
     if prefer not in (None, "recent"):
         raise ValueError(f"prefer must be None or 'recent', not {prefer!r}")
+
+    def note(applied: bool, why: str = "") -> None:
+        """Say whether the preference was honoured, when one was asked for.
+
+        Silent when none was asked for: a caller that never mentioned `prefer`
+        should not have to read about it.
+        """
+        if notes is None or not prefer:
+            return
+        notes["prefer_applied"] = applied
+        if applied:
+            notes.pop("prefer_reason", None)
+        else:
+            notes["prefer_reason"] = why
 
     # The direction is stored uppercase and arrives lowercase: the CLI declares
     # its choices that way and the MCP server lowercases whatever it is handed.
@@ -1158,12 +1180,23 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
     # nothing. Folding it once here leaves both engines comparing the same form.
     only = only.upper() if only else None
 
+    # Every early return below leaves a preference unapplied, and each for a
+    # different reason. Saying which one is the whole point of `notes`: from
+    # outside, a preference that could not be applied looks exactly like one
+    # that applied and moved nothing.
     lexical = [] if mode == "semantic" else lexical_query(
         connection, query_text, limit * 3, only)
     if mode == "lexical":
+        note(False, "the query ran on words alone, and the preference orders "
+                    "the fusion of both engines")
         return lexical[:limit]
 
     if not _semantic_ready(connection):
+        note(False, "the package carries no meaning index, so there is no "
+                    "fusion to order"
+             if not has_vectors(connection) else
+             "retrieval by meaning is not installed here: "
+             "pip install 'mdcx[multilingual]'")
         if mode == "semantic":
             return []
         return lexical[:limit]
@@ -1172,11 +1205,13 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
     if only:
         dense = [r for r in dense if r.get("source") == only]
     if mode == "semantic":
+        note(False, "the query ran on meaning alone, and the preference orders "
+                    "the fusion of both engines")
         return dense[:limit]
-    if not dense:
-        return lexical[:limit]
-    if not lexical:
-        return dense[:limit]
+    if not dense or not lexical:
+        note(False, "only one engine answered, and the preference orders "
+                    "the fusion of both")
+        return (lexical or dense)[:limit]
 
     from . import semantic as S
 
@@ -1202,8 +1237,37 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
             newest = sorted(dated, key=lambda r: str(r["dated"]), reverse=True)
             rankings.append([key(r) for r in newest])
             weights = (1.0, 1.0, RECENCY_WEIGHT)
+            note(True)
+        else:
+            note(False, _why_no_dates(connection))
     order = S.fuse(rankings, weights=weights)
     return [by_key[k] for k in order[:limit]]
+
+
+def _why_no_dates(connection: sqlite3.Connection) -> str:
+    """Which of the three ways an answer ends up with no date to order by.
+
+    They are worth telling apart because each is undone differently, and only
+    the third is about this particular query:
+
+    - the package predates dates entirely, and has no column to hold one;
+    - it has the column and nothing in it, which is what packing without
+      `--dates` leaves behind on a corpus whose documents carry no front matter;
+    - it is dated, and this answer happens to have drawn passages from the
+      documents that are not.
+
+    Answering all three with one sentence would send someone repacking a corpus
+    that is already dated.
+    """
+    if not has_dates(connection):
+        return ("this package records no dates: it was written before mdcx "
+                "stored them")
+    dated = connection.execute(
+        "SELECT 1 FROM document WHERE dated IS NOT NULL LIMIT 1").fetchone()
+    if not dated:
+        return ("no document in this package is dated: pack it again with "
+                "--dates to supply them")
+    return "nothing in this answer carries a date, though the package has some"
 
 
 def _semantic_ready(connection: sqlite3.Connection) -> bool:
@@ -1453,9 +1517,16 @@ def main() -> int:
         return 0
 
     connection, header = open_package(Path(args.path), resolve_key(args))
+    notes: dict = {}
     results = query(connection, args.query_text, args.limit, args.only, args.mode,
-                    prefer=args.prefer)
-    print(f"{len(results)} passage(s)\n")
+                    prefer=args.prefer, notes=notes)
+    print(f"{len(results)} passage(s)")
+    # Only when a preference was asked for and could not be honoured. Saying
+    # nothing when it worked keeps the line meaningful: an unchanged order with
+    # no line under it means the preference ran and found nothing to move.
+    if notes.get("prefer_applied") is False:
+        print(f"--prefer {args.prefer} was NOT applied: {notes['prefer_reason']}")
+    print()
     # The position, not the score. The list is merged by reciprocal rank, and
     # the numbers behind it share no scale: a BM25 score is unbounded and
     # depends on the corpus it was measured in, a cosine runs from zero to one

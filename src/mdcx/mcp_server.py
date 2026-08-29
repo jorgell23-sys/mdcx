@@ -407,9 +407,32 @@ def _mode_for(package: dict, query: str) -> str:
     return "auto"
 
 
+def _merge_notes(collected: list[dict], into: dict | None) -> None:
+    """One answer is served, so one verdict is reported about it.
+
+    Applied anywhere counts as applied: the preference did reorder part of what
+    came back, and claiming otherwise would be the same silence in reverse. It
+    is only when no package could honour it that a reason is worth giving, and
+    the reason given is the one the most packages had -- with several packages
+    the reasons usually differ, and listing all of them says less than naming
+    the common one.
+    """
+    if into is None or not collected:
+        return
+    if any(n.get("prefer_applied") for n in collected):
+        into["prefer_applied"] = True
+        return
+    reasons = [n["prefer_reason"] for n in collected if n.get("prefer_reason")]
+    if not reasons:
+        return
+    into["prefer_applied"] = False
+    into["prefer_reason"] = max(set(reasons), key=reasons.count)
+
+
 def search_packages(query: str, limit: int = 5,
                     only: str | None = None,
-                    prefer: str | None = None) -> list[dict]:
+                    prefer: str | None = None,
+                    notes: dict | None = None) -> list[dict]:
     """Search every configured package and return one ranked list.
 
     Scores from different packages are computed over different corpus
@@ -422,24 +445,36 @@ def search_packages(query: str, limit: int = 5,
     far from the query never reaches the merge.
     """
     configured = _open_packages()
+    collected: list[dict] = []
     if len(configured) == 1:
-        return archive.query(configured[0]["connection"], query, limit=limit,
-                             only=only, mode=_mode_for(configured[0], query),
-                             prefer=prefer)
+        one: dict = {}
+        found = archive.query(configured[0]["connection"], query, limit=limit,
+                              only=only, mode=_mode_for(configured[0], query),
+                              prefer=prefer, notes=one)
+        _merge_notes([one], notes)
+        return found
 
     packages = _packages_worth_asking(configured, query)
 
-    def labelled(package):
-        """Results carry the package they came from, since several are served."""
-        for item in archive.query(package["connection"], query, limit=limit,
-                                  only=only, mode=_mode_for(package, query),
-                                  prefer=prefer):
-            item = dict(item)
-            item["package"] = package["name"]
-            yield item
+    def labelled(package) -> list[dict]:
+        """Results carry the package they came from, since several are served.
+
+        A list rather than a generator: the note about the preference is only
+        complete once the package has been asked, and hanging that on a
+        generator being exhausted would make a `break` somewhere else lose it
+        silently.
+        """
+        one: dict = {}
+        found = archive.query(package["connection"], query, limit=limit,
+                              only=only, mode=_mode_for(package, query),
+                              prefer=prefer, notes=one)
+        collected.append(one)
+        return [dict(item, package=package["name"]) for item in found]
 
     if len(packages) == 1:
-        return list(labelled(packages[0]))[:limit]
+        answer = labelled(packages[0])[:limit]
+        _merge_notes(collected, notes)
+        return answer
 
     from .semantic import fuse
 
@@ -452,6 +487,7 @@ def search_packages(query: str, limit: int = 5,
             by_key[key] = item
             items.append(key)
         item_lists.append(items)
+    _merge_notes(collected, notes)
     return [by_key[c] for c in fuse(item_lists)[:limit]]
 
 
@@ -499,7 +535,10 @@ def create_server():
             "Set `prefer` to `recent` to order comparable answers newest "
             "first. It orders and does not filter: an older work that answers "
             "better still comes back, which is deliberate, because the corpus "
-            "does not know that newer is better and often it is not."
+            "does not know that newer is better and often it is not. When the "
+            "preference could not be applied at all the reply says so, in "
+            "`prefer_applied` and `prefer_reason`; a reply without those "
+            "fields is one where it was applied."
         ),
     )
     async def search(query: str, limit: int = 5,
@@ -522,7 +561,9 @@ def create_server():
         wanted = (prefer or "").lower().strip() or None
         if wanted != "recent":
             wanted = None
-        results = search_packages(query, top, scope, prefer=wanted)
+        notes: dict = {}
+        results = search_packages(query, top, scope, prefer=wanted,
+                                  notes=notes)
         # What comes back is a position, not a measurement. The two engines
         # score on scales with nothing in common -- BM25 has no upper bound and
         # depends on the corpus it was measured in, cosine runs from zero to one
@@ -553,6 +594,13 @@ def create_server():
                 for position, item in enumerate(results, start=1)
             ],
         }
+        # A preference that could not be applied looks, from here, exactly
+        # like one that applied and moved nothing. Said only when the answer is
+        # no: an answer with no such field is one where the preference ran.
+        if notes.get("prefer_applied") is False:
+            answer["prefer_applied"] = False
+            answer["prefer_reason"] = notes["prefer_reason"]
+
         measured = _closest_to(query)
         if measured is not None:
             closeness, clearance = measured
@@ -595,7 +643,23 @@ def create_server():
             "language": header.get("language") or "(not detected)",
             "integrity": "intact" if header.get("_intact") else "ALTERED",
             "conversion": header.get("conversion", {}),
+            # How many works are dated, and over what span. The CLI has printed
+            # this since dates existed and here there was no equivalent, so
+            # there was no way to know in advance whether `prefer` would have
+            # anything to work with. Absent on a package written before dates,
+            # which is itself the answer.
+            **_dated(header),
         }
+
+    def _dated(header: dict) -> dict:
+        counted = header.get("dated_documents")
+        if not counted:
+            return {}
+        dated, total = counted
+        span = header.get("dated_range") or []
+        return {"dated": {"documents": dated, "of": total,
+                          **({"from": span[0], "to": span[1]} if len(span) == 2
+                             else {})}}
 
     @server.tool(
         name="info",
@@ -617,12 +681,23 @@ def create_server():
         # Several packages are queried as one corpus, so the totals describe the
         # whole of it and the list says where each part comes from.
         parts = [_describe(p) for p in packages]
+        counted = [p["dated"] for p in parts if p.get("dated")]
+        spans = [d for p in parts for d in
+                 (p.get("dated", {}).get("from"), p.get("dated", {}).get("to")) if d]
         return {
             "packages": len(parts),
             "documents": sum(p["documents"] or 0 for p in parts),
             "passages": sum(p["passages"] or 0 for p in parts),
             "integrity": ("intact" if all(p["integrity"] == "intact" for p in parts)
                           else "ALTERED"),
+            # Out of every document served, not only out of the packages that
+            # record dates: a corpus half of which is undated is a corpus where
+            # a preference reorders half the answer, and the total is what says
+            # so.
+            **({"dated": {"documents": sum(d["documents"] for d in counted),
+                          "of": sum(p["documents"] or 0 for p in parts),
+                          **({"from": min(spans), "to": max(spans)} if spans else {})}}
+               if counted else {}),
             "cross_language_search": _cross_language(),
             "each": parts,
         }

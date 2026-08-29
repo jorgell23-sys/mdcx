@@ -315,6 +315,17 @@ still comes back, which matters because a work from 1970 can be the right
 answer, and in mathematics often is. Where both engines agree which passage is
 best, the date does not move it; where they disagree, it decides.
 
+A preference can also be impossible to honour: it orders the fusion of two
+engines, so there has to be a fusion, and it orders by date, so something in the
+answer has to carry one. Neither case is an error and neither changes the
+answer, but from outside they look exactly like a preference that applied and
+found nothing to move — so the reply says which happened. The command line
+prints a line only when it could not be applied, and the MCP reply carries
+`prefer_applied` and `prefer_reason` only then; an answer without them is one
+where the preference ran. The reason names what to do about it, because the
+remedies differ: a package with no meaning index is repacked with
+`--multilingual`, one with no dates with `--dates`.
+
 ### Where works come from
 
 mdcx converts, packages and answers; it does not fetch, and depends on no
