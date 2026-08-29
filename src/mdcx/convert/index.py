@@ -243,6 +243,12 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
         for c in chapters
     )
     conforming = sum(1 for c in chapters if c.get("ok"))
+    # What the original had, beside what the chapters cover. Equal when the
+    # split spans the document and smaller when it does not, which is the
+    # difference that says a conversion is truncated -- and the one nobody
+    # could see: seven originals were deleted in the belief that the conversion
+    # was whole. Absent for a document converted before this was recorded.
+    total_pages = info.get("pages_total") or 0
 
     lines = [
         "---",
@@ -253,13 +259,20 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
         "type: document_index",
         f"chapters: {len(chapters)}",
         f"pages: {pages}",
+    ]
+    if total_pages:
+        lines.append(f"pages_total: {total_pages}")
+    lines += [
         f"fidelity: {round(coverage, 5) if coverage is not None else 'not-measurable'}",
         f"split: {'document outline' if info.get('from_pdf_outline') else 'page ranges'}",
         "---",
         "",
         f"# {rel_source.stem}",
         "",
-        f"Document of **{pages} pages**, split into **{len(chapters)} chapters** "
+        (f"Document of **{pages} of {total_pages} pages**"
+         if total_pages and total_pages != pages
+         else f"Document of **{pages} pages**")
+        + f", split into **{len(chapters)} chapters** "
         + ("following the document's own outline." if info.get("from_pdf_outline")
            else "in page ranges, because the original has no outline."),
         "",
@@ -324,6 +337,7 @@ def write_document_index(info: dict, chapters: list[dict], output_root: Path) ->
         "bytes": chapters[0].get("bytes", 0) if chapters else 0,
         "engine": "split into chapters",
         "pages": pages,
+        "pages_total": total_pages,
         "is_document_index": True,
         "chapters": len(chapters),
         "chapters_pseudopaths": [c["markdown_pseudopath"] for c in chapters],

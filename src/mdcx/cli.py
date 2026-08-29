@@ -33,6 +33,7 @@ from pathlib import Path
 
 from . import console  # noqa: E402
 from .convert import chapters, engines, index  # noqa: E402
+from .convert import pdf as _pdf  # noqa: E402
 from .convert import compact as compact_module  # noqa: E402
 from .convert.convert import convert_one_safe  # noqa: E402
 from .convert.paths import (  # noqa: E402
@@ -587,6 +588,13 @@ def main() -> int:
                 "pseudopath_index": to_pseudopath(job.rel_target),
                 "chapters_folder": to_pseudopath(job.rel_target.with_suffix("")),
                 "chapters": len(caps),
+                # What the original had, beside what the chapters cover. The
+                # two are not the same number and the difference is the whole
+                # point: a document split into chapters that do not span it is
+                # a truncated conversion, and with only the covered count there
+                # is no way to tell -- someone deleted seven originals believing
+                # the conversion was whole. The count is already known here.
+                "pages_total": _pdf.count_pages(job.source),
                 "from_pdf_outline": caps[0].from_toc,
                 "rel_target": job.rel_target,
                 "rel_source": job.rel_source,

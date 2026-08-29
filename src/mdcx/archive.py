@@ -85,6 +85,39 @@ class _Package(sqlite3.Connection):
 
     digest: str | None = None
 
+def resolve_key(args) -> str:
+    """The passphrase, from whichever way it was given.
+
+    Four, and the order is what they cost rather than a preference. A command
+    line is readable by any process on the machine, and packaging a large corpus
+    takes tens of minutes: the ways that keep the secret out of the process
+    table come first, and --key is the explicit way for whoever does not mind.
+
+        MDCX_KEY        the environment, which the MCP server already reads
+        --key-file      a file, whose permissions can protect it
+        --key -         standard input, as tools that handle secrets do
+        --key           the command line, visible while the command runs
+    """
+    from_file = getattr(args, "key_file", None)
+    if from_file:
+        return Path(from_file).read_text(encoding="utf-8").strip("\r\n")
+
+    given = getattr(args, "key", None)
+    if given == "-":
+        return sys.stdin.readline().strip("\r\n")
+    if given is not None:
+        return given
+
+    from_env = os.environ.get("MDCX_KEY")
+    if from_env is not None:
+        return from_env
+
+    raise SystemExit(
+        "no key given. Use MDCX_KEY in the environment, --key-file, --key - to "
+        "read it from standard input, or --key (which is visible in the "
+        "process table while the command runs)")
+
+
 def _derive_key(key: str, salt: bytes) -> bytes:
     memory = 128 * SCRYPT_N * SCRYPT_R
     return hashlib.scrypt(key.encode("utf-8"), salt=salt,
@@ -291,6 +324,21 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
 
     if not folder.is_dir():
         raise ValueError(f"Not a folder: {folder}")
+
+    # An empty key is not a key. scrypt derives from b"" as happily as from
+    # anything else, so the whole circuit succeeded: the package was written,
+    # encrypted, reported as packed, and opened again by anyone who thought to
+    # try the empty string. Nothing in the output said so.
+    #
+    # It is caught here rather than on opening, because refusing it there would
+    # make packages already written this way unreadable. What has to be stopped
+    # is creating them.
+    if not key or not key.strip():
+        raise ValueError(
+            "the key is empty: --key was given without a value, or the "
+            "variable it was read from resolved to nothing. The package would "
+            "be encrypted with no secret and open to anyone who tries the "
+            "empty string")
 
     reuse = None
     if semantic and reuse_from is not None:
@@ -1021,10 +1069,31 @@ def main() -> int:
     ap.add_argument("--version", action="version", version=f"mdcx {__version__}")
     sub = ap.add_subparsers(dest="action", required=True)
 
+    def key_argument(parser) -> None:
+        """The ways a key may arrive, and what each one costs.
+
+        --key is kept because removing it would break everyone, and for a test
+        package on one's own machine it is perfectly reasonable. What it cannot
+        be is the only way: a command line is readable by any process on the
+        machine -- /proc/<pid>/cmdline on Linux, equivalents elsewhere -- and
+        packaging a large corpus takes tens of minutes, during which the secret
+        that protects it is in the process table for anyone to read. It was
+        found that way: a ps to check on progress returned the key.
+        """
+        parser.add_argument(
+            "--key", default=None,
+            help="the passphrase. Visible in the process table while the "
+                 "command runs; prefer MDCX_KEY, --key-file or --key - for "
+                 "anything that matters")
+        parser.add_argument(
+            "--key-file", metavar="PATH", default=None,
+            help="read the passphrase from this file, whose permissions can "
+                 "protect it")
+
     e = sub.add_parser("pack")
     e.add_argument("--output", default="Output")
     e.add_argument("--target", default="corpus.mdcx")
-    e.add_argument("--key", required=True)
+    key_argument(e)
     e.add_argument("--issuer", default="")
     e.add_argument("--signing-key", default="",
                    help="hex private key to sign the package with")
@@ -1050,12 +1119,12 @@ def main() -> int:
     x = sub.add_parser("export")
     x.add_argument("path")
     x.add_argument("--target", required=True)
-    x.add_argument("--key", required=True)
+    key_argument(x)
 
     b = sub.add_parser("search")
     b.add_argument("path")
     b.add_argument("query_text")
-    b.add_argument("--key", required=True)
+    key_argument(b)
     b.add_argument("--limit", type=int, default=5)
     b.add_argument("--only", choices=["received", "sent"])
     b.add_argument("--mode", choices=["auto", "lexical", "semantic"], default="auto",
@@ -1064,7 +1133,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.action == "pack":
-        r = pack(Path(args.output), Path(args.target), args.key, args.issuer,
+        r = pack(Path(args.output), Path(args.target), resolve_key(args), args.issuer,
                  args.signing_key, semantic=args.multilingual,
                  reuse_from=Path(args.reuse) if args.reuse else None)
         print(f"Packed: {args.target}")
@@ -1110,11 +1179,11 @@ def main() -> int:
         return 0
 
     if args.action == "export":
-        r = export(Path(args.path), args.key, Path(args.target))
+        r = export(Path(args.path), resolve_key(args), Path(args.target))
         print(f"Exported {r['documents']} documents to {r['target']}")
         return 0
 
-    connection, header = open_package(Path(args.path), args.key)
+    connection, header = open_package(Path(args.path), resolve_key(args))
     results = query(connection, args.query_text, args.limit, args.only, args.mode)
     print(f"{len(results)} passage(s)\n")
     # The position, not the score. The list is merged by reciprocal rank, and

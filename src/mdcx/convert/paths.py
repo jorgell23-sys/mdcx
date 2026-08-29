@@ -22,9 +22,12 @@ Example:  @/Received/01 Contract/DOC-001 Scope of Work.md
 from __future__ import annotations
 
 import hashlib
+import stat
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .. import console
 
 PSEUDO_PREFIX = "@"
 
@@ -174,20 +177,74 @@ class Job:
     def source_pseudopath(self) -> str:
         return to_pseudopath(self.rel_source)
 
+def _walk(root: Path) -> list[Path]:
+    """Every file under a folder, skipping what the system will not walk.
+
+    rglob yields lazily, so an error partway through ends the iteration and
+    silently truncates the collection -- a long path on Windows, a directory
+    without permission, a link that leads nowhere. Walking it here means the
+    rest of the tree is still planned, and what was skipped is said out loud
+    rather than quietly missing.
+    """
+    found: list[Path] = []
+    pending = [root]
+    while pending:
+        folder = pending.pop()
+        try:
+            entries = sorted(folder.iterdir())
+        except OSError as unreachable:
+            console.safe_print(
+                f"WARNING: cannot list {folder}, skipped: {unreachable}",
+                flush=True)
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir():
+                    pending.append(entry)
+                    continue
+            except OSError:
+                # Cannot tell what it is. It is still something the folder
+                # listed, so it is handed on rather than dropped: the caller
+                # interrogates it once more and says out loud that it could not
+                # be read. Dropping it here would lose content in silence,
+                # which is the failure this walk exists to avoid.
+                pass
+            found.append(entry)
+    return sorted(found)
+
+
 def plan_jobs(input_root: Path) -> tuple[list[Job], list[Path]]:
     """Walk the input folder and plan one .md per file."""
     jobs: list[Job] = []
     skipped: list[Path] = []
     by_target: dict[str, list[Job]] = {}
 
-    for path in sorted(input_root.rglob("*")):
-        if not path.is_file():
+    for path in _walk(input_root):
+        # One interrogation decides both questions, and its failure is not the
+        # same answer as "not a file". is_file() swallows the error and returns
+        # False, so an unreadable document would be dropped in silence -- and
+        # silence is the wrong outcome for content that exists and cannot be
+        # reached. It used to be worse: this call was unguarded, so one such
+        # path ended planning and with it the conversion of everything else.
+        # Measured elsewhere on the same class of fault, eleven files stopped
+        # two stages of a pipeline on every pass for a day.
+        try:
+            info = path.stat()
+        except OSError as unreachable:
+            console.safe_print(
+                f"WARNING: cannot read {path.name}, skipped: {unreachable}",
+                flush=True)
+            skipped.append(path)
             continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
+
         kind = resolve_format(path)
         if kind is None:
             skipped.append(path)
             continue
 
+        size = info.st_size
         rel_source = path.relative_to(input_root)
         rel_target = rel_source.with_suffix(".md")
         job = Job(
@@ -195,7 +252,7 @@ def plan_jobs(input_root: Path) -> tuple[list[Job], list[Path]]:
             rel_source=rel_source,
             rel_target=rel_target,
             kind=kind,
-            size=path.stat().st_size,
+            size=size,
         )
         by_target.setdefault(_normalize(rel_target.as_posix()).lower(), []).append(job)
         jobs.append(job)

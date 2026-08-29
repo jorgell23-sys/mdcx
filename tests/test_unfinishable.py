@@ -322,3 +322,89 @@ def test_workers_are_replaced_so_an_abandoned_thread_frees_its_core():
     assert cli.RECYCLE_AFTER_DOCUMENTS > 0
     assert cli.RECYCLE_AFTER_DOCUMENTS <= 200, (
         "a lifetime this long leaves a burnt core in place for most of a run")
+
+
+# --- One unreadable file is one file, not the run ---------------------------
+#
+# Measured on a real pipeline: eleven files Windows could not open took down the
+# conversion stage 86 times and the packaging stage 86 times in a single day.
+# The exception did not stay with the document -- it rose and ended the stage,
+# so one unreachable chapter left everything else in that pass unconverted, and
+# the next pass planned exactly the same work again.
+#
+# mdcx had the same shape of fault in planning: the walk and the size lookup
+# were both unguarded.
+
+
+def test_one_unreadable_file_does_not_end_the_planning(tmp_path, monkeypatch):
+    """The rest of the collection is still planned."""
+    from mdcx.convert import paths
+
+    source = tmp_path / "in"
+    source.mkdir()
+    for i in range(4):
+        (source / f"doc{i}.txt").write_text("text", encoding="utf-8")
+
+    real = Path.stat
+
+    def unreachable(self, *args, **kwargs):
+        if self.name == "doc2.txt":
+            raise OSError(3, "the system cannot find the path specified")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", unreachable)
+    jobs, skipped = paths.plan_jobs(source)
+
+    assert len(jobs) == 3, "one unreadable file took the whole collection down"
+    assert {j.rel_source.name for j in jobs} == {"doc0.txt", "doc1.txt", "doc3.txt"}
+
+
+def test_an_unreadable_file_is_reported_rather_than_dropped(tmp_path, monkeypatch, capsys):
+    """Silence is the wrong outcome for content that exists and cannot be read.
+
+    is_file() swallows the error and answers False, so the obvious way to make
+    the walk survive is to lose the document without a word. It has to be said.
+    """
+    from mdcx.convert import paths
+
+    source = tmp_path / "in"
+    source.mkdir()
+    (source / "fine.txt").write_text("text", encoding="utf-8")
+    (source / "broken.txt").write_text("text", encoding="utf-8")
+
+    real = Path.stat
+
+    def unreachable(self, *args, **kwargs):
+        if self.name == "broken.txt":
+            raise OSError(3, "the system cannot find the path specified")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", unreachable)
+    jobs, skipped = paths.plan_jobs(source)
+
+    assert [p.name for p in skipped] == ["broken.txt"], (
+        "the unreadable file was dropped instead of being set aside")
+    assert "broken.txt" in capsys.readouterr().out
+
+
+def test_a_folder_that_cannot_be_listed_does_not_end_the_walk(tmp_path, monkeypatch, capsys):
+    """A directory without permission, or one behind a path too long."""
+    from mdcx.convert import paths
+
+    source = tmp_path / "in"
+    (source / "reachable").mkdir(parents=True)
+    (source / "closed").mkdir()
+    (source / "reachable" / "doc.txt").write_text("text", encoding="utf-8")
+
+    real = Path.iterdir
+
+    def unreachable(self):
+        if self.name == "closed":
+            raise OSError(13, "permission denied")
+        return real(self)
+
+    monkeypatch.setattr(Path, "iterdir", unreachable)
+    jobs, _ = paths.plan_jobs(source)
+
+    assert [j.rel_source.name for j in jobs] == ["doc.txt"]
+    assert "closed" in capsys.readouterr().out
