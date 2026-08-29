@@ -179,6 +179,42 @@ TAIL_AT = 50
 # one landed inside the answered range of one corpus and below another's.
 ANSWERS_AT_SHARE = 0.60
 
+# The same idea for a package that was given its questions, where the reach is
+# already the threshold rather than an estimate of one: the lowest any of the
+# declared questions reached.
+#
+# Not 1.0, which is where the arithmetic points and where it fails. Setting the
+# cut exactly at the worst declared question marks that very question, because
+# the reach is stored rounded to four places and the cosine computed at query
+# time falls a little either side of it. This is the width of that rounding and
+# of the fine variation around it, and no more: the cut stays against what was
+# declared rather than drifting below it.
+ASKED_MARGIN = 0.95
+
+
+def _calibrated_from_questions() -> bool:
+    """Whether the reach was measured against real questions rather than probes.
+
+    It changes what the number means. Estimated from passages it is how near a
+    question that the corpus answers would come, and the share above turns that
+    into a threshold. Taken from the questions themselves it already is the
+    threshold -- the lowest any of them reached -- and scaling it again would
+    put the cut well below anything measured.
+    """
+    try:
+        packages = _open_packages()
+    except Exception:  # noqa: BLE001 - no package open is not "from focus"
+        return False
+    for package in packages:
+        try:
+            row = package["connection"].execute(
+                "SELECT value FROM meta WHERE key='answerable_at_from'").fetchone()
+        except Exception:  # noqa: BLE001
+            continue
+        if row and json.loads(row[0]) == "focus":
+            return True
+    return False
+
 
 def _reach_of_open_packages() -> float | None:
     """What the open packages measured as their own reach, or None if none did.
@@ -196,7 +232,8 @@ def _reach_of_open_packages() -> float | None:
 
 
 def _nothing_near(closeness: float, clearance: float,
-                  reach: float | None) -> bool:
+                  reach: float | None,
+                  from_questions: bool = False) -> bool:
     """Whether to say the corpus is not about the question.
 
     With a reach measured at packing time the question is judged against what
@@ -205,7 +242,8 @@ def _nothing_near(closeness: float, clearance: float,
     existing package answers as it always has.
     """
     if reach:
-        return closeness < reach * ANSWERS_AT_SHARE
+        return closeness < reach * (ASKED_MARGIN if from_questions
+                                    else ANSWERS_AT_SHARE)
     return closeness < NOTHING_NEAR and clearance < STANDS_CLEAR
 
 
@@ -497,7 +535,8 @@ def create_server():
             reach = _reach_of_open_packages()
             if reach is not None:
                 answer["answerable_at"] = round(reach, 4)
-            if _nothing_near(closeness, clearance, reach):
+            if _nothing_near(closeness, clearance, reach,
+                             _calibrated_from_questions()):
                 answer["warning"] = (
                     "nothing in this corpus is about the question: the best "
                     "passage is no nearer than the rest, so the passages below "

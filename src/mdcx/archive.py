@@ -134,7 +134,8 @@ def _decrypt(body: bytes, derived_key: bytes, nonce: bytes) -> bytes:
     return AESGCM(derived_key).decrypt(nonce, body, None)
 
 def _build_database(folder: Path, semantic: bool = False,
-                    reuse: dict | None = None) -> tuple[bytes, dict]:
+                    reuse: dict | None = None,
+                    focus: list[str] | None = None) -> tuple[bytes, dict]:
     """Build the in-memory database with documents, index and provenance."""
     from . import search as B
 
@@ -254,7 +255,7 @@ def _build_database(folder: Path, semantic: bool = False,
         except Exception:  # noqa: BLE001
             pass
     if semantic:
-        summary.update(_embed_passages(connection, reuse))
+        summary.update(_embed_passages(connection, reuse, focus))
 
     for k, v in summary.items():
         connection.execute("INSERT INTO meta VALUES (?,?)",
@@ -318,7 +319,8 @@ def verify_signature(path: Path, public_key: str) -> bool:
 
 def pack(folder: Path, target: Path, key: str, issuer: str = "",
          signing_key: str = "", semantic: bool = False,
-         reuse_from: Path | None = None) -> dict:
+         reuse_from: Path | None = None,
+         focus: list[str] | None = None) -> dict:
     """Write the .mdcx file and return its figures."""
     import lzma
 
@@ -350,7 +352,8 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         reuse = reusable_vectors(Path(reuse_from), key, _S.model_name())
 
     t0 = time.perf_counter()
-    base_score, summary = _build_database(folder, semantic=semantic, reuse=reuse)
+    base_score, summary = _build_database(folder, semantic=semantic, reuse=reuse,
+                                          focus=focus)
     t_base = time.perf_counter() - t0
 
     # An empty package is written without complaint and fails only when queried,
@@ -390,6 +393,12 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         "signature": "",
         "public_key": "",
         "conversion": summary.get("conversion", {}),
+        # In the header, which is readable without the key, because it is
+        # what decides whether a package is worth opening. The questions
+        # themselves stay inside the encrypted body: they would say what
+        # the corpus is for, which is the owner's to disclose.
+        "answerable_at": summary.get("answerable_at"),
+        "answerable_at_from": summary.get("answerable_at_from"),
     }
     if signing_key:
         from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -451,7 +460,8 @@ def reusable_vectors(path: Path, key: str, model: str) -> dict[str, bytes]:
 
 
 def _embed_passages(connection: sqlite3.Connection,
-                    reuse: dict[str, bytes] | None = None) -> dict:
+                    reuse: dict[str, bytes] | None = None,
+                    focus: list[str] | None = None) -> dict:
     """Compute and store the vector of every passage, reusing what is known.
 
     Encoding a corpus costs far more than encoding a query, and it is done once,
@@ -495,9 +505,18 @@ def _embed_passages(connection: sqlite3.Connection,
                "embedding_dimensions": dimensions,
                "passages_encoded": len(to_encode),
                "passages_reused": len(known)}
-    reach = _answerable_at(connection)
+    reach = _answerable_at_focus(connection, focus) if focus else None
     if reach is not None:
+        # Taken from the questions themselves, so it is the threshold
+        # rather than an estimate of one; the reader is told which.
         summary["answerable_at"] = reach
+        summary["answerable_at_from"] = "focus"
+        summary["focus"] = list(focus)
+    else:
+        reach = _answerable_at(connection)
+        if reach is not None:
+            summary["answerable_at"] = reach
+            summary["answerable_at_from"] = "passages"
     return summary
 
 
@@ -505,6 +524,46 @@ def _embed_passages(connection: sqlite3.Connection,
 # median to mean something, few enough that packing does not pay for a second
 # encoding of the whole corpus.
 REACH_SAMPLE = 64
+
+
+def _answerable_at_focus(connection: sqlite3.Connection,
+                         questions: list[str]) -> float | None:
+    """The threshold taken from the questions the corpus is meant to answer.
+
+    Calibrating against passages used as probes is an approximation, and it is
+    only as good as passages resembling questions. On a corpus of catalogue
+    records it is not good at all: those are all back-cover blurbs and share a
+    rhetorical shape, so probes drawn from them reach each other far closer
+    than any short question does. Measured, such a catalogue calibrated at
+    0.7588 where a corpus of books calibrates at 0.580 -- and at 0.7588 the
+    warning fires on questions the catalogue answers well, which is the false
+    positive of three earlier reports, returning through the other side and for
+    the same underlying reason: calibrating without questions.
+
+    Given the questions, there is nothing to approximate. The value returned is
+    the *lowest* they reach, not the median: they are all questions this corpus
+    is meant to answer, so the weakest of them marks the floor of what counts
+    as answered. Anything reaching as near as the worst of them deserves the
+    same treatment.
+    """
+    import numpy as np
+
+    from . import semantic
+
+    wanted = [q.strip() for q in questions if q and q.strip()]
+    if not wanted:
+        return None
+    try:
+        _, matrix = _vectors(connection)
+        if not len(matrix):
+            return None
+        asked = np.asarray(semantic.encode(wanted, role="query"),
+                           dtype=np.float32)
+    except Exception:  # noqa: BLE001 - a package without this is still a package
+        return None
+
+    reached = [float((matrix @ vector).max()) for vector in asked]
+    return round(min(reached), 4)
 
 
 def _answerable_at(connection: sqlite3.Connection) -> float | None:
@@ -1097,6 +1156,12 @@ def main() -> int:
     e.add_argument("--issuer", default="")
     e.add_argument("--signing-key", default="",
                    help="hex private key to sign the package with")
+    e.add_argument("--focus", action="append", metavar="QUESTION",
+                   help="a question this package is meant to answer. Given "
+                        "one or more, the threshold for 'nothing here is "
+                        "about that' is taken from them instead of being "
+                        "estimated from passages, which a corpus of "
+                        "similarly shaped records estimates badly. Repeatable.")
     e.add_argument("--reuse", metavar="PACKAGE",
                    help="reuse the vectors of an existing package for passages "
                         "whose text is unchanged, so that packaging costs what "
@@ -1135,7 +1200,8 @@ def main() -> int:
     if args.action == "pack":
         r = pack(Path(args.output), Path(args.target), resolve_key(args), args.issuer,
                  args.signing_key, semantic=args.multilingual,
-                 reuse_from=Path(args.reuse) if args.reuse else None)
+                 reuse_from=Path(args.reuse) if args.reuse else None,
+                 focus=args.focus)
         print(f"Packed: {args.target}")
         print(f"  documents {r['documents']}   passages {r['passages']}")
         print(f"  database {r['bytes_database']:,} -> compressed {r['bytes_compressed']:,} "
@@ -1174,6 +1240,12 @@ def main() -> int:
         print(f"Integrity : {'intact' if header['_intact'] else 'ALTERED'}")
         print(f"Signature : {'present' if header.get('_signed') else 'none'}"
               + (f" (public key {header['public_key'][:16]}...)" if header.get('public_key') else ""))
+        if header.get("answerable_at"):
+            origin = header.get("answerable_at_from") or "passages"
+            print(f"Answerable: {header['answerable_at']} "
+                  + ("(taken from the questions the package was given)"
+                     if origin == "focus"
+                     else "(estimated from its own passages)"))
         if header.get("conversion"):
             print(f"Conversion: {json.dumps(header['conversion'], ensure_ascii=False)[:200]}")
         return 0

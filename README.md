@@ -476,7 +476,16 @@ language must not be hidden by this.
 How near counts as near is measured from the corpus rather than fixed. Packing
 records `answerable_at`, how near this corpus comes to a question it does
 answer, estimated by using its own passages as questions; the reply reports it,
-and the warning is judged against it. A fixed threshold could not do this: the
+and the warning is judged against it.
+
+That estimate is only as good as passages resembling questions, and on some
+collections they do not. A catalogue of 80,844 records — all back-cover blurbs,
+all sharing a rhetorical shape — calibrated at 0.759 where a corpus of books
+calibrates at 0.580, and at 0.759 the warning fires on questions the catalogue
+answers well. `pack --focus "<question>"` is for that case: given the questions
+a package exists to answer, the threshold is taken from them instead of
+estimated, and `info` reports which of the two it was. Repeat the option to give
+several; the cut goes just under the weakest of them. A fixed threshold could not do this: the
 same questions reach 0.51 on one corpus and 0.55 on another, so any single cut
 falls inside the answered range of one collection or below another's, which is
 how it behaved before this was measured. A package built before this exists has

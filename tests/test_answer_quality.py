@@ -405,3 +405,62 @@ def test_the_share_sits_between_what_was_measured():
     assert best_unrelated < mcp_server.ANSWERS_AT_SHARE < worst_answered, (
         f"the share {mcp_server.ANSWERS_AT_SHARE} is outside the measured gap "
         f"{best_unrelated:.4f} to {worst_answered:.4f}")
+
+
+# --- A package can be told the questions it exists to answer -----------------
+#
+# Calibrating against passages used as probes is only as good as passages
+# resembling questions, and on some corpora they do not. A catalogue of
+# 80,844 records -- all back-cover blurbs, all sharing a rhetorical shape --
+# calibrated at 0.7588 where a corpus of books calibrates at 0.580. At 0.7588
+# the warning fires on questions the catalogue answers well: the same false
+# positive three reports have measured, returning through the other side and
+# for the same underlying reason, which is calibrating without questions.
+
+
+def test_the_two_calibrations_mean_different_things():
+    """One is an estimate of the threshold; the other is the threshold."""
+    assert mcp_server.ANSWERS_AT_SHARE < mcp_server.ASKED_MARGIN <= 1.0, (
+        "a reach taken from the questions themselves needs no discount for "
+        "being an estimate, and scaling it like one puts the cut far below "
+        "anything that was measured")
+
+
+def test_the_margin_only_absorbs_the_rounding():
+    """Not 1.0, which is where the arithmetic points and where it fails.
+
+    The reach is stored rounded to four places and the cosine computed at query
+    time falls either side of it, so a cut set exactly at the worst declared
+    question marks that very question.
+    """
+    worst_declared = 0.6281
+    assert worst_declared * mcp_server.ASKED_MARGIN < worst_declared, (
+        "the cut sits at the declared question and will mark it")
+    assert worst_declared * mcp_server.ASKED_MARGIN > worst_declared * 0.9, (
+        "the cut drifted well below what was declared, which is what "
+        "calibrating from questions was meant to avoid")
+
+
+def test_a_question_the_package_was_given_is_not_marked():
+    """Measured on a package of catalogue records built for this.
+
+    Probes drawn from those records reach 0.695 between themselves while the
+    question they exist to answer reaches 0.628 -- the shape of the defect this
+    corrects, in miniature.
+    """
+    reach_from_questions = 0.6281
+    assert not mcp_server._nothing_near(0.6281, 0.10, reach_from_questions,
+                                    from_questions=True), (
+        "the question the package was told about is marked as one nothing in "
+        "it is about")
+    assert not mcp_server._nothing_near(0.6786, 0.10, reach_from_questions,
+                                    from_questions=True)
+
+
+def test_unrelated_questions_are_still_marked_when_calibrated_from_questions():
+    """The cut moved up, so this is the side that had to be checked."""
+    reach_from_questions = 0.6281
+    for closeness in (0.4032, 0.2380):
+        assert mcp_server._nothing_near(closeness, 0.05, reach_from_questions,
+                                from_questions=True), (
+            f"an unrelated question at {closeness} came back unmarked")
