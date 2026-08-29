@@ -133,9 +133,88 @@ def _decrypt(body: bytes, derived_key: bytes, nonce: bytes) -> bytes:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     return AESGCM(derived_key).decrypt(nonce, body, None)
 
+# Provenances a date may carry, worst last. The order is what they are worth:
+# a date from the source that published the work is the work's; a modification
+# time is the file's, and saying so is the whole point of recording where it
+# came from.
+DATE_PROVENANCES = ("source", "sidecar", "front-matter", "isbn", "mtime")
+
+# Deliberately absent: the copyright year found in the text of the document. It
+# was measured and it answers badly -- a textbook reprints its front matter, so
+# the year in the page is the year of the printing rather than of the edition.
+# A date nobody can trust is worse than none, because none is visible.
+
+
+def read_dates(path: Path) -> dict[str, tuple[str, str]]:
+    """Dates supplied alongside a collection, by pseudopath or relative path.
+
+    One record per line: ``path,date`` or ``path,date,provenance``. The third
+    column is what lets whoever recovered a date from the publisher say so --
+    the difference between `source` and `sidecar` is the difference between the
+    work's date and one somebody typed, and only the caller knows which it is.
+    """
+    import csv
+
+    dates: dict[str, tuple[str, str]] = {}
+    with Path(path).open("r", encoding="utf-8", newline="") as fh:
+        for row in csv.reader(fh):
+            if not row or row[0].strip().startswith("#") or len(row) < 2:
+                continue
+            key = row[0].strip()
+            date = row[1].strip()
+            if not key or not date:
+                continue
+            origin = (row[2].strip() if len(row) > 2 and row[2].strip()
+                      else "sidecar")
+            dates[key] = (date, origin)
+    return dates
+
+
+_DATE_FIELDS = ("dated:", "date:", "published:", "issued:")
+
+
+def _date_of(document: dict, supplied: dict[str, tuple[str, str]],
+             use_mtime: bool) -> tuple[str | None, str | None]:
+    """When a work is from, from the best source that has it.
+
+    In order: what the caller supplied, then the document's own front matter,
+    then -- only if asked for -- the modification time of the file. That last
+    one is the file's date and not the work's, so it is never taken unless
+    requested and always says what it is.
+    """
+    for key in (document.get("pseudopath"), document.get("rel"),
+                document.get("name")):
+        if key and key in supplied:
+            date, origin = supplied[key]
+            return date, (origin if origin in DATE_PROVENANCES else "sidecar")
+
+    for line in (document.get("front_matter") or "").splitlines():
+        lowered = line.strip().lower()
+        for field in _DATE_FIELDS:
+            if lowered.startswith(field):
+                value = line.split(":", 1)[1].strip().strip('"')
+                if value:
+                    return value, "front-matter"
+
+    if use_mtime:
+        origin_path = document.get("path")
+        try:
+            stamp = Path(origin_path).stat().st_mtime
+        except Exception:  # noqa: BLE001
+            return None, None
+        import datetime
+
+        return (datetime.datetime.fromtimestamp(
+            stamp, datetime.timezone.utc).strftime("%Y-%m-%d"), "mtime")
+
+    return None, None
+
+
 def _build_database(folder: Path, semantic: bool = False,
                     reuse: dict | None = None,
-                    focus: list[str] | None = None) -> tuple[bytes, dict]:
+                    focus: list[str] | None = None,
+                    dates: dict | None = None,
+                    use_mtime: bool = False) -> tuple[bytes, dict]:
     """Build the in-memory database with documents, index and provenance."""
     from . import search as B
 
@@ -156,6 +235,14 @@ def _build_database(folder: Path, semantic: bool = False,
             folder TEXT,
             archive TEXT,
             verification_status TEXT,
+            -- When the work is from, and where that was learned. Two columns
+            -- rather than one, because a date without its provenance confuses
+            -- "when the work was published" with "when the file was touched",
+            -- and whoever reads it has no way to notice. NULL where nothing
+            -- reliable was found, which is an honest answer and a different one
+            -- from an invented date.
+            dated TEXT,
+            dated_from TEXT,
             -- Normalised text of the whole document. Literal matching runs here rather
             -- than over passages, because a quoted phrase often crosses the boundary
             -- between paragraphs.
@@ -191,8 +278,10 @@ def _build_database(folder: Path, semantic: bool = False,
         CREATE TABLE df (term TEXT PRIMARY KEY, passages INTEGER NOT NULL);
     """)
 
+    supplied = dates or {}
     n_passages = 0
     for i, d in enumerate(docs, 1):
+        d["dated"], d["dated_from"] = _date_of(d, supplied, use_mtime)
         text = d["text"]
         archive = ""
         status = ""
@@ -202,9 +291,9 @@ def _build_database(folder: Path, semantic: bool = False,
             elif line.startswith("verification_status:"):
                 status = line.split(":", 1)[1].strip()
         connection.execute(
-            "INSERT INTO document VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO document VALUES (?,?,?,?,?,?,?,?,?,?)",
             (i, d["name"], d["pseudopath"], d["source"], d["folder"], archive, status,
-             d["norm"]))
+             d.get("dated"), d.get("dated_from"), d["norm"]))
         for j, block in enumerate(d["blocks"] if "blocks" in d else _split_blocks(text)):
             if not block.strip():
                 continue
@@ -252,6 +341,13 @@ def _build_database(folder: Path, semantic: bool = False,
         "mean_passage_length": round(avg_length, 2),
         "indexed_terms": len(df_count),
     }
+    fechados = sorted(d["dated"] for d in docs if d.get("dated"))
+    if fechados:
+        summary["dated_range"] = [fechados[0], fechados[-1]]
+    # Reported whether or not any were found: "0 of 8 dated" is the signal
+    # that the dates were lost on the way in, which is the defect this exists
+    # to make visible.
+    summary["dated_documents"] = [len(fechados), len(docs)]
     manifest = folder / "_manifest.json"
     if manifest.exists():
         try:
@@ -325,7 +421,8 @@ def verify_signature(path: Path, public_key: str) -> bool:
 def pack(folder: Path, target: Path, key: str, issuer: str = "",
          signing_key: str = "", semantic: bool = False,
          reuse_from: Path | None = None,
-         focus: list[str] | None = None) -> dict:
+         focus: list[str] | None = None,
+         dates: dict | None = None, use_mtime: bool = False) -> dict:
     """Write the .mdcx file and return its figures."""
     import lzma
 
@@ -358,7 +455,8 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
 
     t0 = time.perf_counter()
     base_score, summary = _build_database(folder, semantic=semantic, reuse=reuse,
-                                          focus=focus)
+                                          focus=focus, dates=dates,
+                                          use_mtime=use_mtime)
     t_base = time.perf_counter() - t0
 
     # An empty package is written without complaint and fails only when queried,
@@ -404,6 +502,11 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         # the corpus is for, which is the owner's to disclose.
         "answerable_at": summary.get("answerable_at"),
         "answerable_at_from": summary.get("answerable_at_from"),
+        # The span of the collection, in the header so that it can be read
+        # without the key: deciding whether a package is worth opening is
+        # exactly what the header is for, and "how old is this" is part of it.
+        "dated_range": summary.get("dated_range"),
+        "dated_documents": summary.get("dated_documents"),
     }
     if signing_key:
         from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -733,18 +836,22 @@ def semantic_query(connection: sqlite3.Connection, query_text: str,
     best_ones = np.argsort(-scores)[:limit]
 
     columna = document_column(connection)
+    fechas = ", d.dated, d.dated_from" if has_dates(connection) else ""
     output = []
     for position in best_ones:
         pid = identifiers[int(position)]
         row = connection.execute(
-            f"SELECT d.name, d.pseudopath, d.source, p.text "
+            f"SELECT d.name, d.pseudopath, d.source, p.text{fechas} "
             f"FROM passage p JOIN document d ON d.id = p.{columna} WHERE p.id = ?",
             (pid,)).fetchone()
         if row is None:
             continue
-        output.append({"document": row[0], "pseudopath": row[1], "source": row[2],
-                       "passage": row[3], "score": float(scores[int(position)]),
-                       "engine": "semantic"})
+        item = {"document": row[0], "pseudopath": row[1], "source": row[2],
+                "passage": row[3], "score": float(scores[int(position)]),
+                "engine": "semantic"}
+        if fechas:
+            item["dated"], item["dated_from"] = row[4], row[5]
+        output.append(item)
     return output
 
 
@@ -858,12 +965,26 @@ def open_package(path: Path, key: str) -> tuple[sqlite3.Connection, dict]:
     return connection, header
 
 _SQL_TEMPLATE = """
-    SELECT d.name, d.pseudopath, d.source, p.text, bm25(passage_fts) AS score
+    SELECT d.name, d.pseudopath, d.source, p.text, bm25(passage_fts) AS score{dates}
     FROM passage_fts
     JOIN passage p ON p.id = passage_fts.rowid
     JOIN document d ON d.id = p.{document_column}
     WHERE passage_fts MATCH ?
 """
+
+def has_dates(connection: sqlite3.Connection) -> bool:
+    """Whether this package carries a date per document.
+
+    Packages written before the columns existed do not, and asking them for one
+    would fail rather than answer "unknown" -- so the query is built around what
+    the package has instead of assuming a shape.
+    """
+    try:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(document)")}
+    except Exception:  # noqa: BLE001
+        return False
+    return "dated" in columns and "dated_from" in columns
+
 
 def document_column(connection: sqlite3.Connection) -> str:
     """Name of the column linking a passage to its document.
@@ -885,7 +1006,9 @@ def document_column(connection: sqlite3.Connection) -> str:
 
 def _run_match(connection: sqlite3.Connection, expr: str, limit: int,
               only: str | None) -> list[dict]:
-    sql = _SQL_TEMPLATE.format(document_column=document_column(connection))
+    fechas = ", d.dated, d.dated_from" if has_dates(connection) else ""
+    sql = _SQL_TEMPLATE.format(document_column=document_column(connection),
+                               dates=fechas)
     params: list = [expr]
     if only:
         sql += " AND d.source = ?"
@@ -897,9 +1020,35 @@ def _run_match(connection: sqlite3.Connection, expr: str, limit: int,
             rows = connection.execute(sql, params).fetchall()
     except sqlite3.OperationalError:
         return []
-    return [{"document": r[0], "pseudopath": r[1], "source": r[2],
-             "passage": r[3], "score": round(-r[4], 3)}
-            for r in rows]
+    out = []
+    for r in rows:
+        item = {"document": r[0], "pseudopath": r[1], "source": r[2],
+                "passage": r[3], "score": round(-r[4], 3)}
+        if fechas:
+            item["dated"], item["dated_from"] = r[5], r[6]
+        out.append(item)
+    return out
+
+# How much a date is allowed to weigh against what the question is about.
+#
+# Small on purpose, and declared rather than implicit. Recency is a
+# preference of whoever asks, not a property of the corpus: a work from 1970
+# can be the right answer, and in mathematics it often is. At equal footing a
+# third ranking would decide a third of the outcome, which would let the date
+# overrule the subject.
+#
+# What that buys, exactly, because the arithmetic of reciprocal rank is not
+# obvious: where the two engines disagree about which passage comes first, the
+# date decides between them -- measured, a work of 2025 rises above one of 2015
+# and the older one stays in the list. Where both engines put the same passage
+# first, no small weight moves it: with k=60 the gap between consecutive places
+# is 2*(1/61 - 1/62), and outweighing it would take a weight above 2, which is
+# more than either engine carries.
+#
+# That boundary is the feature rather than a limitation of it. A preference
+# should reorder what relevance considers comparable and should not be able to
+# overrule what both engines agree answers better.
+RECENCY_WEIGHT = 0.25
 
 K1 = 1.5
 B_LENGTH = 0.45
@@ -976,7 +1125,8 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
 
 
 def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
-          only: str | None = None, mode: str = "auto") -> list[dict]:
+          only: str | None = None, mode: str = "auto",
+          prefer: str | None = None) -> list[dict]:
     """Resolve a query, by word and by meaning where the package allows it.
 
     The two engines answer different questions. The lexical one finds documents
@@ -996,6 +1146,8 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
     """
     if mode not in ("auto", "lexical", "semantic"):
         raise ValueError(f"mode must be auto, lexical or semantic, not {mode!r}")
+    if prefer not in (None, "recent"):
+        raise ValueError(f"prefer must be None or 'recent', not {prefer!r}")
 
     # The direction is stored uppercase and arrives lowercase: the CLI declares
     # its choices that way and the MCP server lowercases whatever it is handed.
@@ -1034,7 +1186,23 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
     by_key = {}
     for r in lexical + dense:
         by_key.setdefault(key(r), r)
-    order = S.fuse([[key(r) for r in lexical], [key(r) for r in dense]])
+    rankings = [[key(r) for r in lexical], [key(r) for r in dense]]
+    weights: tuple[float, ...] | None = None
+    if prefer == "recent":
+        # A third ranking, by date, rather than a decay multiplying the
+        # cosine: weighting scores that share no scale reintroduces exactly
+        # the arbitrariness that fusing by rank avoids. An order by date is a
+        # legitimate ranking and fuses like the others.
+        #
+        # Undated passages keep their place instead of sinking. The absence
+        # of a date says nothing about the age of the work, and treating it
+        # as old would let a gap in the metadata decide the answer.
+        dated = [r for r in by_key.values() if r.get("dated")]
+        if dated:
+            newest = sorted(dated, key=lambda r: str(r["dated"]), reverse=True)
+            rankings.append([key(r) for r in newest])
+            weights = (1.0, 1.0, RECENCY_WEIGHT)
+    order = S.fuse(rankings, weights=weights)
     return [by_key[k] for k in order[:limit]]
 
 
@@ -1163,6 +1331,16 @@ def main() -> int:
     e.add_argument("--issuer", default="")
     e.add_argument("--signing-key", default="",
                    help="hex private key to sign the package with")
+    e.add_argument("--dates", metavar="FILE",
+                   help="a CSV of path,date[,provenance] giving when each "
+                        "work is from. The third column is how a date "
+                        "recovered from the publisher says so: without it a "
+                        "reader cannot tell the work's date from one somebody "
+                        "typed")
+    e.add_argument("--date-from-mtime", action="store_true",
+                   help="fall back to the file's modification time, recorded "
+                        "as such. It is the file's date and not the work's, so "
+                        "it is never used unless asked for")
     e.add_argument("--focus", action="append", metavar="QUESTION",
                    help="a question this package is meant to answer. Given "
                         "one or more, the threshold for 'nothing here is "
@@ -1201,6 +1379,10 @@ def main() -> int:
     b.add_argument("--only", choices=["received", "sent"])
     b.add_argument("--mode", choices=["auto", "lexical", "semantic"], default="auto",
                    help="which engines answer: words, meaning, or both")
+    b.add_argument("--prefer", choices=["recent"],
+                   help="order comparable answers newest first. It orders "
+                        "rather than filters: an older work that answers "
+                        "better still comes back")
 
     args = ap.parse_args()
 
@@ -1208,7 +1390,9 @@ def main() -> int:
         r = pack(Path(args.output), Path(args.target), resolve_key(args), args.issuer,
                  args.signing_key, semantic=args.multilingual,
                  reuse_from=Path(args.reuse) if args.reuse else None,
-                 focus=args.focus)
+                 focus=args.focus,
+                 dates=read_dates(Path(args.dates)) if args.dates else None,
+                 use_mtime=args.date_from_mtime)
         print(f"Packed: {args.target}")
         print(f"  documents {r['documents']}   passages {r['passages']}")
         print(f"  database {r['bytes_database']:,} -> compressed {r['bytes_compressed']:,} "
@@ -1247,6 +1431,12 @@ def main() -> int:
         print(f"Integrity : {'intact' if header['_intact'] else 'ALTERED'}")
         print(f"Signature : {'present' if header.get('_signed') else 'none'}"
               + (f" (public key {header['public_key'][:16]}...)" if header.get('public_key') else ""))
+        fechados = header.get("dated_documents")
+        if fechados:
+            span = header.get("dated_range")
+            print(f"Dated     : {fechados[0]} of {fechados[1]} documents"
+                  + (f", {span[0]} to {span[1]}" if span else
+                     " (none carries a date)"))
         if header.get("answerable_at"):
             origin = header.get("answerable_at_from") or "passages"
             print(f"Answerable: {header['answerable_at']} "
@@ -1263,7 +1453,8 @@ def main() -> int:
         return 0
 
     connection, header = open_package(Path(args.path), resolve_key(args))
-    results = query(connection, args.query_text, args.limit, args.only, args.mode)
+    results = query(connection, args.query_text, args.limit, args.only, args.mode,
+                    prefer=args.prefer)
     print(f"{len(results)} passage(s)\n")
     # The position, not the score. The list is merged by reciprocal rank, and
     # the numbers behind it share no scale: a BM25 score is unbounded and

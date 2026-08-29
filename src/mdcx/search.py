@@ -228,8 +228,10 @@ def load_documents(output_root: Path) -> list[dict]:
         except Exception:
             continue
         body = text.split("---", 2)[-1] if text.startswith("---") else text
+        front = text.split("---", 2)[1] if text.startswith("---") else ""
         docs.append({
             "path": p,
+            "front_matter": front,
             "rel": rel.as_posix(),
             "pseudopath": "@/" + rel.as_posix(),
             "source": source,

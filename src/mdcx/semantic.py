@@ -223,7 +223,8 @@ def dimensions(name: str | None = None) -> int:
         f"{type(model).__name__} reports no embedding dimension")
 
 
-def fuse(rankings: list[list[str]], k: int = 60) -> list[str]:
+def fuse(rankings: list[list[str]], k: int = 60,
+         weights: tuple[float, ...] | None = None) -> list[str]:
     """Merge ranked lists by reciprocal rank.
 
     Each list contributes 1/(k+position) to the items it ranks. Position is used
@@ -235,9 +236,19 @@ def fuse(rankings: list[list[str]], k: int = 60) -> list[str]:
     The constant damps the influence of the first places, so that an item ranked
     highly by both engines outranks an item ranked first by one and ignored by
     the other.
+
+    Weights exist for a list that is a secondary criterion rather than a third
+    opinion on the same question. Recency is one: ordering by date is a
+    legitimate ranking and fuses like any other, but given equal footing it
+    would decide a third of the outcome, which is far too much for a preference
+    the corpus does not hold. Unweighted lists all count one, which is what the
+    two engines want.
     """
     score: dict[str, float] = {}
-    for ranking in rankings:
+    for index, ranking in enumerate(rankings):
+        weight = 1.0 if weights is None or index >= len(weights) else weights[index]
+        if not weight:
+            continue
         for position, item in enumerate(ranking, start=1):
-            score[item] = score.get(item, 0.0) + 1.0 / (k + position)
+            score[item] = score.get(item, 0.0) + weight / (k + position)
     return sorted(score, key=lambda item: -score[item])

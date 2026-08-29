@@ -286,6 +286,35 @@ file per document only to read it back is work with nothing to show for it: on
 that cannot be read is skipped and named, because one bad record should cost
 that record.
 
+### When a work is from
+
+A package records a date per document and, beside it, where that date came
+from. Both or neither: a date without its provenance confuses *when the work was
+published* with *when the file was touched*, and whoever reads it cannot tell.
+
+    pack --dates dates.csv          # path,date[,provenance]
+    pack --date-from-mtime          # the file's time, recorded as `mtime`
+
+The provenance is `source` when it came from the publisher, `sidecar` when
+somebody supplied it, `front-matter` when the document carried it, `mtime` when
+it is the file's time and not the work's. Where nothing reliable is found the
+date is absent, which is an honest answer and a different one from a guess. The
+copyright year printed in the text is deliberately not used: a textbook reprints
+its front matter, so that year is the printing's rather than the edition's.
+
+`info` reports how many documents carry a date and the span they cover — *0 of 8
+dated* being the signal that the dates were lost on the way in. Every passage in
+a reply carries `dated` and `dated_from`, so the age can be shown beside the
+citation.
+
+`search --prefer recent` orders comparable answers newest first. It enters as a
+third ranking fused by rank with the other two, never as a decay multiplying a
+score: weighting values that share no scale is precisely what fusing by rank
+avoids. It **orders rather than filters** — an older work that answers better
+still comes back, which matters because a work from 1970 can be the right
+answer, and in mathematics often is. Where both engines agree which passage is
+best, the date does not move it; where they disagree, it decides.
+
 ### Where works come from
 
 mdcx converts, packages and answers; it does not fetch, and depends on no

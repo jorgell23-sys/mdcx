@@ -408,7 +408,8 @@ def _mode_for(package: dict, query: str) -> str:
 
 
 def search_packages(query: str, limit: int = 5,
-                    only: str | None = None) -> list[dict]:
+                    only: str | None = None,
+                    prefer: str | None = None) -> list[dict]:
     """Search every configured package and return one ranked list.
 
     Scores from different packages are computed over different corpus
@@ -423,14 +424,16 @@ def search_packages(query: str, limit: int = 5,
     configured = _open_packages()
     if len(configured) == 1:
         return archive.query(configured[0]["connection"], query, limit=limit,
-                             only=only, mode=_mode_for(configured[0], query))
+                             only=only, mode=_mode_for(configured[0], query),
+                             prefer=prefer)
 
     packages = _packages_worth_asking(configured, query)
 
     def labelled(package):
         """Results carry the package they came from, since several are served."""
         for item in archive.query(package["connection"], query, limit=limit,
-                                  only=only, mode=_mode_for(package, query)):
+                                  only=only, mode=_mode_for(package, query),
+                                  prefer=prefer):
             item = dict(item)
             item["package"] = package["name"]
             yield item
@@ -488,22 +491,38 @@ def create_server():
             "Set `direction` to `received` or `sent` to restrict the search to "
             "one side of a correspondence; omit it to search all of them. Any "
             "other value is treated as omitted, so a search is never narrowed "
-            "by a word this tool does not recognise."
+            "by a word this tool does not recognise. "
+            "Where the package knows when a work is from, each passage carries "
+            "`dated` and `dated_from` -- the second saying how the date was "
+            "learned, since a date from the publisher and the time a file was "
+            "last written are not the same claim. "
+            "Set `prefer` to `recent` to order comparable answers newest "
+            "first. It orders and does not filter: an older work that answers "
+            "better still comes back, which is deliberate, because the corpus "
+            "does not know that newer is better and often it is not."
         ),
     )
     async def search(query: str, limit: int = 5,
-                     direction: str | None = None) -> dict:
+                     direction: str | None = None,
+                     prefer: str | None = None) -> dict:
         """Return passages answering the query.
 
         query: the question, phrased as it would be asked of a person.
         limit: number of passages to return, between 1 and 20.
         direction: "received" or "sent" to restrict the search; omit for all.
+        prefer: "recent" to order comparable answers newest first. It orders,
+            it does not filter: an older work that answers better still comes
+            back. Each passage carries "dated" and "dated_from" where the
+            package knows them, so the preference can also be exercised here.
         """
         top = max(1, min(int(limit), 20))
         scope = (direction or "").lower().strip() or None
         if scope not in ("received", "sent"):
             scope = None
-        results = search_packages(query, top, scope)
+        wanted = (prefer or "").lower().strip() or None
+        if wanted != "recent":
+            wanted = None
+        results = search_packages(query, top, scope, prefer=wanted)
         # What comes back is a position, not a measurement. The two engines
         # score on scales with nothing in common -- BM25 has no upper bound and
         # depends on the corpus it was measured in, cosine runs from zero to one
@@ -522,6 +541,13 @@ def create_server():
                     "path": item["pseudopath"],
                     "rank": position,
                     "text": item["passage"],
+                    # When the work is from, and how that was learned. Both or
+                    # neither: a date whose provenance is unknown cannot be
+                    # told apart from the date a file was last touched, and
+                    # whoever cites the passage needs to know which it is.
+                    **({"dated": item["dated"],
+                        "dated_from": item.get("dated_from")}
+                       if item.get("dated") else {}),
                     **({"package": item["package"]} if "package" in item else {}),
                 }
                 for position, item in enumerate(results, start=1)
