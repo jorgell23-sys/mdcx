@@ -17,6 +17,7 @@ encrypted file, and query it from an agent through the Model Context Protocol.
 - [Packaging and querying](#packaging-and-querying)
 - [Sent and received](#sent-and-received)
 - [Working incrementally](#working-incrementally)
+- [Writing often](#writing-often)
 - [MCP server](#mcp-server)
 - [Language support](#language-support)
 - [Cross-language retrieval](#cross-language-retrieval)
@@ -447,6 +448,13 @@ mdcx pack --output ./Documents_md --target corpus-2.mdcx --key "passphrase" \
 Measured over the chapters of one book, where 733 of 1,128 passages were
 unchanged, packaging took 15.4 seconds against 37.8 without reuse.
 
+Reuse also carries the calibration forward. A package given its questions with
+`--focus` hands them to the one built from it, so a corpus that grows keeps the
+threshold it was calibrated with instead of reverting to one estimated from
+passages — a change that barely moves the stored number and shifts the margin
+applied to it from 0.95 to 0.60. Passing `--focus` again overrides what was
+inherited, and the summary says when it inherited rather than doing it quietly.
+
 The vectors are read from the previous package, which already holds them and is
 already encrypted with the same key. No intermediate store is created: a vector
 allows the text it represents to be approximated, so keeping vectors outside the
@@ -567,6 +575,35 @@ same questions reach 0.51 on one corpus and 0.55 on another, so any single cut
 falls inside the answered range of one collection or below another's, which is
 how it behaved before this was measured. A package built before this exists has
 no such number and is judged by the previous thresholds, unchanged.
+
+The same judgement is available per package, which is what a consumer serving
+several of them needs in order to decide which one answers:
+
+```python
+archive.closeness(connection, text)   # (nearest cosine, its clearance) or None
+archive.answers(connection, text)     # by that package's own calibration
+```
+
+`answers` applies the margin that matches how the package was calibrated, which
+is the part easiest to get wrong and which raises no error when it is: applying
+the passage share to a threshold taken from questions was measured letting seven
+of eight unrelated queries through. Asking whether *anything* open is about a
+question is a different question — a property of the set — and stays where it
+was, in the warning the MCP server raises.
+
+## Writing often
+
+Compressing and encrypting are properties of the whole file, so they cost the
+same whether one document was added or the corpus was rebuilt. That is a fixed
+price per write, and it grows with the corpus rather than with what was added.
+`pack` reports it as `seconds_compress` and `seconds_encrypt`, so a caller
+writing often can decide how often to write.
+
+`--fast` trades size for time where that is the right trade — a package that is
+rewritten every few minutes and never leaves the machine, rather than one that
+is distributed and read many times. Measured on a 30 MiB database of 190
+documents: 1.03 s for 2,170 KiB against 6.22 s for 1,569 KiB. Six times the
+speed for 38 per cent more bytes. Nothing else about the package changes.
 
 ## Language support
 

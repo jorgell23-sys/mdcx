@@ -135,8 +135,10 @@ RELEVANCE_MARGIN = 0.10
 # reaches, because two passages of one chemistry book resemble each other far
 # more than a short question resembles either. It needs questions to calibrate
 # against, and packing has none.
-NOTHING_NEAR = 0.635
-STANDS_CLEAR = 0.25
+# Defined in archive, where the calibration lives, and named here because the
+# account below is about this warning. One definition, two places that need it.
+NOTHING_NEAR = archive.NOTHING_NEAR
+STANDS_CLEAR = archive.STANDS_CLEAR
 
 # Both were left where they are on purpose, and the reason is worth keeping
 # because the obvious repair was tried and does not survive its own evidence.
@@ -163,9 +165,7 @@ STANDS_CLEAR = 0.25
 # What the two banks together say is that the shape is wrong rather than the
 # values, which is what the comment above already suspected.
 
-# Which passage stands in for the tail. Far enough down that a handful of real
-# answers do not drag it up, near enough that it is still the same corpus.
-TAIL_AT = 50
+TAIL_AT = archive.TAIL_AT
 
 
 # What share of its own reach a corpus has to come, for the question to count as
@@ -177,7 +177,7 @@ TAIL_AT = 50
 # questions relate to corpora, applied to a number each corpus measured about
 # itself -- which is what the absolute threshold could never be, and why that
 # one landed inside the answered range of one corpus and below another's.
-ANSWERS_AT_SHARE = 0.60
+ANSWERS_AT_SHARE = archive.ANSWERS_AT_SHARE
 
 # The same idea for a package that was given its questions, where the reach is
 # already the threshold rather than an estimate of one: the lowest any of the
@@ -189,7 +189,7 @@ ANSWERS_AT_SHARE = 0.60
 # time falls a little either side of it. This is the width of that rounding and
 # of the fine variation around it, and no more: the cut stays against what was
 # declared rather than drifting below it.
-ASKED_MARGIN = 0.95
+ASKED_MARGIN = archive.ASKED_MARGIN
 
 
 def _calibrated_from_questions() -> bool:
@@ -205,15 +205,8 @@ def _calibrated_from_questions() -> bool:
         packages = _open_packages()
     except Exception:  # noqa: BLE001 - no package open is not "from focus"
         return False
-    for package in packages:
-        try:
-            row = package["connection"].execute(
-                "SELECT value FROM meta WHERE key='answerable_at_from'").fetchone()
-        except Exception:  # noqa: BLE001
-            continue
-        if row and json.loads(row[0]) == "focus":
-            return True
-    return False
+    return any(archive.calibrated_from_questions(p["connection"])
+               for p in packages)
 
 
 def _reach_of_open_packages() -> float | None:
@@ -241,10 +234,7 @@ def _nothing_near(closeness: float, clearance: float,
     was measured -- the two constants above decide, exactly as they did, so an
     existing package answers as it always has.
     """
-    if reach:
-        return closeness < reach * (ASKED_MARGIN if from_questions
-                                    else ANSWERS_AT_SHARE)
-    return closeness < NOTHING_NEAR and clearance < STANDS_CLEAR
+    return archive._below_reach(closeness, clearance, reach, from_questions)
 
 
 def _closest_to(query: str) -> tuple[float, float] | None:
@@ -262,15 +252,20 @@ def _closest_to(query: str) -> tuple[float, float] | None:
 
         from . import semantic
 
+        # Encoded once for every package: it is the expensive half and it does
+        # not depend on which package is being asked.
         vector = np.asarray(semantic.encode([query], role="query")[0],
                             dtype=np.float32)
-        todos: list[float] = []
-        for package in packages:
-            identifiers, matrix = archive._vectors(package["connection"])
-            if identifiers:
-                todos.extend((matrix @ vector).tolist())
     except Exception:  # noqa: BLE001
         return None
+
+    # Pooled rather than compared. What this answers is whether *anything* open
+    # is about the question, which is a property of the set: the tail is taken
+    # over all of them together. Which package answers is a different question,
+    # and archive.closeness() is where it is asked, per package.
+    todos: list[float] = []
+    for package in packages:
+        todos.extend(archive.cosines_of(package["connection"], vector))
     if not todos:
         return None
     todos.sort(reverse=True)

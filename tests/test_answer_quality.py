@@ -157,11 +157,19 @@ def test_a_package_without_vectors_offers_no_such_number(monkeypatch):
 
 
 def test_the_tail_is_what_the_best_passage_is_compared_against():
-    """Both numbers are reported, and the judgement rests on the second."""
-    source = (Path(__file__).resolve().parents[1]
-              / "src" / "mdcx" / "mcp_server.py").read_text(encoding="utf-8")
-    assert 'answer["stands_clear"]' in source
-    assert "clearance < STANDS_CLEAR" in source, (
+    """Both numbers are reported, and the judgement rests on the second.
+
+    The rule moved to archive when it had to serve more than this warning: a
+    consumer deciding which of several packages answers needs the same
+    judgement, per package. It is asserted where it now lives; what is checked
+    is unchanged.
+    """
+    root = Path(__file__).resolve().parents[1] / "src" / "mdcx"
+    served = (root / "mcp_server.py").read_text(encoding="utf-8")
+    assert 'answer["stands_clear"]' in served
+
+    rule = (root / "archive.py").read_text(encoding="utf-8")
+    assert "clearance < STANDS_CLEAR" in rule, (
         "the warning must rest on the clearance, not on the raw cosine")
 
 

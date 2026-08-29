@@ -418,11 +418,30 @@ def verify_signature(path: Path, public_key: str) -> bool:
     return True
 
 
+# How hard the package is compressed. A package is written once and read many
+# times, so the default buys size with time, and the arithmetic is not linear:
+# measured on a 30 MiB database of 190 documents, preset 6 takes 6.22 s for
+# 1,569 KiB while preset 3 takes 1.03 s for 2,170 KiB. Six times the speed for
+# 38 per cent more bytes.
+#
+# That trade is wrong for a package that is rewritten rather than distributed --
+# a corpus used as a memory, written every time something is learned, where
+# compressing and encrypting are a fixed price paid on every write because they
+# are properties of the whole file. `fast` is for that case and nothing else.
+#
+# Preset 1 was measured too and is not the choice: 0.84 s for 3,126 KiB, barely
+# faster than 3 and half again as large. Preset 0 is slower than 1 and larger,
+# so it is dominated outright.
+PRESET = 6
+FAST_PRESET = 3
+
+
 def pack(folder: Path, target: Path, key: str, issuer: str = "",
          signing_key: str = "", semantic: bool = False,
          reuse_from: Path | None = None,
          focus: list[str] | None = None,
-         dates: dict | None = None, use_mtime: bool = False) -> dict:
+         dates: dict | None = None, use_mtime: bool = False,
+         fast: bool = False) -> dict:
     """Write the .mdcx file and return its figures."""
     import lzma
 
@@ -445,13 +464,26 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
             "empty string")
 
     reuse = None
+    inherited_focus = False
     if semantic and reuse_from is not None:
         from . import semantic as _S
 
         # Reading the previous package needs the same key, which the caller
         # already holds: a package that cannot be decrypted holds no vectors
-        # that can be reused.
-        reuse = reusable_vectors(Path(reuse_from), key, _S.model_name())
+        # that can be reused. Both halves come out of the one opening.
+        reuse, previous = _reusable(Path(reuse_from), key, _S.model_name())
+
+        # A calibration outlives the vectors it was measured with. Reusing a
+        # package recovered the expensive half and dropped the cheap one, and
+        # the drop was invisible: the threshold stored barely moves -- 0.6393
+        # to 0.6316 in the case that found this -- while the margin applied to
+        # it goes from 0.95 to 0.60, so the effective threshold falls by a
+        # third and a corpus that grows loses its calibration on its first
+        # update. Passing --focus again still overrides this, so recalibrating
+        # against different questions works exactly as before.
+        if focus is None and previous:
+            focus = previous
+            inherited_focus = True
 
     t0 = time.perf_counter()
     base_score, summary = _build_database(folder, semantic=semantic, reuse=reuse,
@@ -469,7 +501,7 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         )
 
     t0 = time.perf_counter()
-    compressed = lzma.compress(base_score, preset=6)
+    compressed = lzma.compress(base_score, preset=FAST_PRESET if fast else PRESET)
     t_comp = time.perf_counter() - t0
 
     salt = os.urandom(16)
@@ -528,8 +560,17 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         "bytes_compressed": len(compressed),
         "bytes_file": target.stat().st_size,
         "seconds_index": round(t_base, 2),
+        # Compressing and encrypting are properties of the whole file, so they
+        # cost the same whether one document was added or the corpus was
+        # rebuilt. That is a fixed price per write, and it grows with the
+        # corpus rather than with what was added -- reported here so a caller
+        # writing often can decide how often to write, and use --fast when the
+        # package is being rewritten rather than distributed.
         "seconds_compress": round(t_comp, 2),
         "seconds_encrypt": round(t_encrypt, 2),
+        # Said out loud, because inheriting it silently would be the same fault
+        # as dropping it silently, only in the other direction.
+        **({"focus_inherited": True} if inherited_focus else {}),
         **summary,
     }
 
@@ -551,18 +592,50 @@ def reusable_vectors(path: Path, key: str, model: str) -> dict[str, bytes]:
     vectors from two models occupy different spaces and mixing them would
     produce a ranking over quantities that cannot be compared.
     """
+    return _reusable(path, key, model)[0]
+
+
+def stored_focus(path: Path, key: str) -> list[str] | None:
+    """The questions a package was calibrated against, if it was."""
+    return _reusable(path, key, model=None)[1]
+
+
+def _reusable(path: Path, key: str,
+              model: str | None) -> tuple[dict[str, bytes], list[str] | None]:
+    """What a package can hand to the one being built from it.
+
+    Two things, read in one opening. The vectors are the expensive half and the
+    reason `--reuse` exists; the questions it was calibrated against are the
+    cheap half, and losing them costs more than losing the vectors -- vectors
+    are recomputed at a price, a calibration that silently reverts to being
+    estimated from passages is not recovered at all.
+    """
     connection, _ = open_package(path, key)
     try:
+        stored = connection.execute(
+            "SELECT value FROM meta WHERE key = 'focus'").fetchone()
+        focus = None
+        if stored and stored[0]:
+            try:
+                focus = json.loads(stored[0]) or None
+            except (ValueError, TypeError):
+                focus = None
+
+        if model is None:
+            return {}, focus
+
         # The model is recorded in the package metadata rather than in the
         # header, which is the part readable without the key.
         row = connection.execute(
             "SELECT value FROM meta WHERE key = 'embedding_model'").fetchone()
         if not row or row[0] != model:
-            return {}
+            # A different model: the vectors are unusable, and the questions
+            # are not. They are text, and they calibrate whatever encodes them.
+            return {}, focus
         rows = connection.execute(
             "SELECT p.text, v.vector FROM passage p "
             "JOIN passage_vector v ON v.passage_id = p.id").fetchall()
-        return {passage_digest(text): vector for text, vector in rows}
+        return {passage_digest(text): vector for text, vector in rows}, focus
     finally:
         connection.close()
 
@@ -752,6 +825,163 @@ def answerable_at(connection: sqlite3.Connection) -> float | None:
         return float(json.loads(row[0]))
     except Exception:  # noqa: BLE001
         return None
+
+
+def calibrated_from_questions(connection: sqlite3.Connection) -> bool:
+    """Whether this package's reach was measured against real questions.
+
+    It changes what the number means, which is why it is worth asking rather
+    than assuming. Estimated from passages, the reach is how near a question the
+    corpus answers would come, and a share of it becomes the threshold. Taken
+    from the questions themselves it already is the threshold -- the lowest any
+    of them reached -- and scaling it again would put the cut well below
+    anything that was measured.
+    """
+    try:
+        row = connection.execute(
+            "SELECT value FROM meta WHERE key='answerable_at_from'").fetchone()
+    except Exception:  # noqa: BLE001
+        return False
+    if not row or not row[0]:
+        return False
+    # Meta stores a string as itself and everything else as JSON, so this value
+    # is the bare word `focus`. Reading it back through json.loads() raised on
+    # every calibrated package -- and the quoted form is accepted too, since
+    # nothing but this comparison depends on which was written.
+    return str(row[0]).strip().strip('"') == "focus"
+
+
+# Which passage stands in for the tail. Far enough down that a handful of real
+# answers do not drag it up, near enough that it is still the same corpus.
+TAIL_AT = 50
+
+# What share of its own reach a corpus has to come, for the question to count as
+# one it is about. Measured over four packages built for this: the worst
+# question the corpus answers reaches 0.68 of its reach and the best unrelated
+# one 0.53, so the cut goes between them.
+#
+# This is a constant about how questions relate to corpora, applied to a number
+# each corpus measured about itself -- which is what an absolute threshold could
+# never be, and why one landed inside the answered range of one corpus and below
+# another's.
+ANSWERS_AT_SHARE = 0.60
+
+# The same idea for a package that was given its questions, where the reach is
+# already the threshold rather than an estimate of one: the lowest any of the
+# declared questions reached.
+#
+# Not 1.0, which is where the arithmetic points and where it fails. Setting the
+# cut exactly at the worst declared question marks that very question, because
+# the reach is stored rounded to four places and the cosine computed at query
+# time falls a little either side of it. This is the width of that rounding and
+# of the fine variation around it, and no more.
+ASKED_MARGIN = 0.95
+
+# The pair that decides for a package that measured no reach of its own, which
+# is every package built before that was measured. Both are required: on a small
+# corpus the first fires wrongly and the second holds it back, on a large one the
+# second fires wrongly and the first holds it back. The long account of why
+# neither was moved is with the warning that uses them, in mcp_server.
+NOTHING_NEAR = 0.635
+STANDS_CLEAR = 0.25
+
+
+def _below_reach(closeness: float, clearance: float, reach: float | None,
+                 from_questions: bool = False) -> bool:
+    """Whether a corpus comes too near nothing to count as being about this.
+
+    One rule, in one place. It used to live only in the MCP server, where the
+    warning is raised, so anything else that wanted to branch on it -- a
+    consumer serving several packages with different roles, deciding which one
+    answers -- had to rebuild it out of private functions and a constant
+    imported from a server it was not otherwise using.
+
+    Choosing the margin is the part that is easiest to get wrong, and getting it
+    wrong raises no error: applying the passage share to a threshold calibrated
+    from questions was measured letting seven of eight unrelated queries
+    through.
+    """
+    if reach:
+        return closeness < reach * (ASKED_MARGIN if from_questions
+                                    else ANSWERS_AT_SHARE)
+    return closeness < NOTHING_NEAR and clearance < STANDS_CLEAR
+
+
+def closeness(connection: sqlite3.Connection,
+              text: str) -> tuple[float, float] | None:
+    """How near this package comes to a text, and how far that stands clear.
+
+    The best cosine against the package, and its distance from the tail of the
+    ranking. None where there is no such number -- a package that indexes words
+    alone has none, and inventing one from BM25 would be the mistake this
+    replaced: a BM25 score depends on the corpus it was measured in, so two
+    packages cannot be compared by it. A cosine means the same thing in every
+    package, because the model that computes it knows nothing of the corpus the
+    passage was drawn from.
+
+    Per package rather than over all of them, which is the whole point of it
+    being here. Whether *anything* open is about a question is a property of the
+    set and is what the MCP warning asks; which package answers is not, and no
+    aggregate can be taken apart afterwards.
+    """
+    scores = cosines(connection, text)
+    if not scores:
+        return None
+    tail = scores[min(TAIL_AT, len(scores) - 1)]
+    return float(scores[0]), float(scores[0] - tail)
+
+
+def cosines(connection: sqlite3.Connection, text: str) -> list[float]:
+    """Every passage of this package scored against the text, best first.
+
+    The raw material of both questions that get asked of it: which package
+    answers, decided per package, and whether anything open is about the
+    question at all, which pools the scores of several packages before looking
+    at the tail. Empty where the package has no meaning index.
+    """
+    if not _semantic_ready(connection):
+        return []
+    try:
+        import numpy as np
+
+        from . import semantic as S
+
+        vector = np.asarray(S.encode([text], role="query")[0], dtype=np.float32)
+    except Exception:  # noqa: BLE001
+        return []
+    return cosines_of(connection, vector)
+
+
+def cosines_of(connection: sqlite3.Connection, vector) -> list[float]:
+    """The same, for a query already encoded.
+
+    Separate because encoding is the expensive half and does not depend on the
+    package: a caller asking several packages about one question encodes it
+    once. Asking `cosines` per package instead would pay for that encoding
+    again for each of them.
+    """
+    try:
+        identifiers, matrix = _vectors(connection)
+        if not identifiers:
+            return []
+        return sorted((matrix @ vector).tolist(), reverse=True)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def answers(connection: sqlite3.Connection, text: str) -> bool:
+    """Whether this package is about the text, by its own calibration.
+
+    False for a package with no meaning index, which is honest rather than
+    conservative: without vectors there is no number, and a decision that cannot
+    be made should not be made optimistically.
+    """
+    measured = closeness(connection, text)
+    if measured is None:
+        return False
+    near, clear = measured
+    return not _below_reach(near, clear, answerable_at(connection),
+                            calibrated_from_questions(connection))
 
 
 def has_vectors(connection: sqlite3.Connection) -> bool:
@@ -1401,6 +1631,12 @@ def main() -> int:
                         "recovered from the publisher says so: without it a "
                         "reader cannot tell the work's date from one somebody "
                         "typed")
+    e.add_argument("--fast", action="store_true",
+                   help="compress the package for speed rather than size. "
+                        "Six times faster for about 38%% more bytes, measured. "
+                        "For a package that is rewritten often rather than "
+                        "distributed, where compressing is a fixed price paid "
+                        "on every write")
     e.add_argument("--date-from-mtime", action="store_true",
                    help="fall back to the file's modification time, recorded "
                         "as such. It is the file's date and not the work's, so "
@@ -1456,7 +1692,7 @@ def main() -> int:
                  reuse_from=Path(args.reuse) if args.reuse else None,
                  focus=args.focus,
                  dates=read_dates(Path(args.dates)) if args.dates else None,
-                 use_mtime=args.date_from_mtime)
+                 use_mtime=args.date_from_mtime, fast=args.fast)
         print(f"Packed: {args.target}")
         print(f"  documents {r['documents']}   passages {r['passages']}")
         print(f"  database {r['bytes_database']:,} -> compressed {r['bytes_compressed']:,} "
@@ -1469,6 +1705,11 @@ def main() -> int:
             if r.get("passages_reused"):
                 print(f"  passages encoded {r['passages_encoded']:,}   "
                       f"reused {r['passages_reused']:,}".replace(",", "."))
+        if r.get("answerable_at"):
+            print(f"  answerable at {r['answerable_at']} "
+                  f"(from {r['answerable_at_from']})"
+                  + ("  <- inherited from the reused package"
+                     if r.get("focus_inherited") else ""))
         return 0
 
     if args.action == "keygen":
