@@ -39,6 +39,7 @@ from .convert.convert import convert_one_safe  # noqa: E402
 from .convert.paths import (  # noqa: E402
     LANE_CPU,
     LANE_GPU,
+    _pages_to_sample,
     estimated_cost,
     inspect_job,
     file_digest,
@@ -240,6 +241,29 @@ def _free_vram_mib() -> int | None:
         return int(free // (1024 * 1024))
     except Exception:  # noqa: BLE001 - no card, no driver, no torch: same answer
         return None
+
+
+def _as_sample(job, how_many: int):
+    """The same job, converted from a spread sample rather than whole.
+
+    The pages are not the first ones. A book opens with a cover, a blank verso
+    and a title page, so a sample taken from the front describes the front
+    matter rather than the book -- which is the same reasoning, and the same
+    function, that decides whether a document has a text layer at all.
+    """
+    from dataclasses import replace
+
+    try:
+        total = _pdf.count_pages(job.source)
+    except Exception:  # noqa: BLE001
+        return job
+    if total <= how_many:
+        return job
+
+    chosen = _pages_to_sample(total, how_many)
+    return replace(job,
+                   sample_pages=tuple(p + 1 for p in chosen),
+                   pages_total=total)
 
 
 def _dispatch(pending: list, use_docling: bool) -> tuple[dict, int]:
@@ -481,6 +505,12 @@ def main() -> int:
                     help="do not split long documents into chapters")
     ap.add_argument("--split-threshold", type=int, default=chapters.SPLIT_THRESHOLD_PAGES,
                     help=f"page count above which to split (default {chapters.SPLIT_THRESHOLD_PAGES})")
+    ap.add_argument("--sample-pages", type=int, default=0, metavar="N",
+                    help="convert a spread sample of N pages of each PDF "
+                         "instead of the whole document, for deciding whether "
+                         "a book is worth converting entire. The sample keeps "
+                         "the headings the cut would otherwise lose, and says "
+                         "in its front matter what it is a sample of")
     ap.add_argument("--recycle-after", type=int, default=RECYCLE_AFTER_DOCUMENTS,
                     metavar="N",
                     help=f"replace a worker after this many documents, so a "
@@ -579,6 +609,13 @@ def main() -> int:
     units: list = []
     if not args.no_split:
         for job in jobs:
+            # A sample stands in for the document, so it is not also split
+            # into chapters: the two answer different questions and doing both
+            # would give chapters of a sample, which is nothing anyone asked
+            # for.
+            if args.sample_pages and job.kind == "pdf":
+                units.append(_as_sample(job, args.sample_pages))
+                continue
             caps = chapters.plan_chapters(job.source, args.split_threshold) if job.kind == "pdf" else []
             if len(caps) < 2:
                 units.append(job)

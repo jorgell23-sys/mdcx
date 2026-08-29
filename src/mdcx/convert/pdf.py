@@ -149,6 +149,25 @@ def outline_for_range(source: Path, first: int, last: int) -> dict[int, list[tup
             found.setdefault(page - first + 1, []).append((level, title))
     return found
 
+def outline_for_pages(source: Path, pages: list[int]) -> dict[int, list[tuple[int, str]]]:
+    """The bookmarks falling on a scattered set of pages, keyed by their place.
+
+    The same problem as outline_for_range and the same answer, for a sample
+    rather than a run of pages: the extract carries no bookmarks, so they are
+    fetched from the book and translated to where each page ended up. A sample
+    without them is a wall of prose, and the section titles an author wrote are
+    among the best answers a search can return.
+
+    Pages are one-based here, as they are in the outline itself.
+    """
+    place = {page: i + 1 for i, page in enumerate(sorted(set(pages)))}
+    found: dict[int, list[tuple[int, str]]] = {}
+    for level, title, page in outline(source):
+        if page in place:
+            found.setdefault(place[page], []).append((level, title))
+    return found
+
+
 def extract_page_list(source: Path, pages: list[int], target: Path) -> Path:
     """Write a new PDF holding the given pages, zero-based, in order.
 

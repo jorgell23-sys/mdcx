@@ -66,6 +66,12 @@ def _front_matter(job: Job, record: dict) -> str:
     ]
     if record.get("pages"):
         lines.append(f"pages: {record['pages']}")
+    # A sample says so, and says what it is a sample of. Without both numbers a
+    # sample of twenty pages of a book of six hundred is, by construction, a
+    # truncated document that looks whole.
+    if record.get("sampled_from"):
+        lines.append(f"pages_total: {record['sampled_from']}")
+        lines.append("sampled: true")
     if record.get("recovered_lines"):
         lines.append(f"recovered_lines: {record['recovered_lines']}")
     lines.append("---")
@@ -175,11 +181,18 @@ def _candidates(job: Job, ref_meta: dict, use_docling: bool) -> list[tuple[str, 
     # not the other leaves the second producing nothing structural, being
     # rejected for it, and sending the document to layout analysis anyway.
     titles = None
-    if job.kind == "pdf" and job.is_chapter and job.page_range:
+    if job.kind == "pdf" and (job.is_chapter or job.sample_pages):
         try:
             from . import pdf as _pdf
 
-            titles = _pdf.outline_for_range(job.source, *job.page_range)
+            if job.sample_pages:
+                # A sample loses its bookmarks the same way a chapter does, and
+                # a sample without headings is a wall of prose -- which is the
+                # opposite of what a sample is for, since the section titles
+                # are most of what says whether the book is worth converting.
+                titles = _pdf.outline_for_pages(job.source, list(job.sample_pages))
+            elif job.page_range:
+                titles = _pdf.outline_for_range(job.source, *job.page_range)
         except Exception:  # noqa: BLE001
             titles = None
 
@@ -343,8 +356,27 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
             chapters.extract_range(job.source, job.page_range[0], job.page_range[1], temporary)
             source = temporary
         except Exception as exc:  # noqa: BLE001
-            record["errors"].append(f"recorte de pages: {type(exc).__name__}: {exc}")
+            record["errors"].append(f"page extract: {type(exc).__name__}: {exc}")
             temporary = None
+    elif job.sample_pages:
+        try:
+            from . import pdf as _pdf
+
+            temporary = Path(tempfile.gettempdir()) / (
+                f"mdcx_sample_{os.getpid()}_{job.source.stem[:40]}.pdf")
+            # Gathered into one document rather than converted page by page: an
+            # engine that charges per document would otherwise pay that charge
+            # once per page of the sample.
+            _pdf.extract_page_list(job.source,
+                                   [p - 1 for p in job.sample_pages], temporary)
+            source = temporary
+        except Exception as exc:  # noqa: BLE001
+            record["errors"].append(f"sample extract: {type(exc).__name__}: {exc}")
+            temporary = None
+
+    if job.sample_pages:
+        record["sampled_from"] = job.pages_total or 0
+        record["sample_pages"] = list(job.sample_pages)
 
     record["chapter"] = {
         "title": job.chapter_title,

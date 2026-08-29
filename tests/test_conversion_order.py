@@ -39,9 +39,11 @@ def _job(**changes):
 
     A chapter carries the book it was cut from and the pages it covers, because
     the headings have to be fetched from there: cutting pages leaves the
-    bookmarks behind.
+    bookmarks behind. A sample carries them for the same reason, scattered
+    rather than in a run.
     """
-    fields = dict(kind="pdf", is_chapter=False, page_range=None, source=Path("libro.pdf"))
+    fields = dict(kind="pdf", is_chapter=False, page_range=None,
+                  sample_pages=None, source=Path("book.pdf"))
     fields.update(changes)
     return SimpleNamespace(**fields)
 

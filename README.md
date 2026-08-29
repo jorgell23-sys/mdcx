@@ -262,6 +262,43 @@ advancing again. And if a permit were still lost beyond recovery, the run goes
 ahead without a turn rather than waiting forever: contention is a risk, waiting
 for a turn that will not come is not.
 
+### Deciding whether a book is worth converting whole
+
+Converting a book to find out whether it is worth converting costs what the book
+costs. `--sample-pages N` converts a spread sample instead — not the first N
+pages, because a book opens with a cover, a blank verso and a title page, so a
+sample taken from the front describes the front matter rather than the book.
+
+The sample is gathered into one document rather than converted page by page, and
+it keeps the headings that cutting pages would otherwise lose: a sample without
+them is a wall of prose, and the section titles an author wrote are most of what
+says whether the book is worth the rest. Its front matter says `sampled: true`
+and carries `pages_total`, so twenty pages of a book of six hundred cannot be
+mistaken for a short book.
+
+### Packing something that was never a folder
+
+`pack --output records.jsonl` reads one record per line — `name` and `text`, and
+optionally `pseudopath`, `folder` and `source` — instead of walking a directory.
+For a collection that is generated rather than converted, writing it out as one
+file per document only to read it back is work with nothing to show for it: on
+80,844 records, 1.4 minutes and 324 MB created, read once and deleted. A line
+that cannot be read is skipped and named, because one bad record should cost
+that record.
+
+### Where works come from
+
+mdcx converts, packages and answers; it does not fetch, and depends on no
+network of its own. A catalogue is a plugin, declared through the
+`mdcx.sources` entry point group and meeting the contract in `mdcx.sources`.
+Answering questions over a package that already exists needs none of this — only
+building a new corpus does, and where nothing is installed it says exactly that.
+
+Keeping the adapters out is deliberate rather than minimal. What looks like a
+simple HTTP client is not: one catalogue answers 403 to its whole download
+column and needs its handle resolved separately, another returns the same scrape
+cursor for every page. That knowledge belongs with whoever has it.
+
 ### Checking a conversion before packaging
 
 `mdcx-search` searches the converted Markdown directly, before there is a

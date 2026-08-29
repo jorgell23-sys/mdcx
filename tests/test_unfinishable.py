@@ -408,3 +408,109 @@ def test_a_folder_that_cannot_be_listed_does_not_end_the_walk(tmp_path, monkeypa
 
     assert [j.rel_source.name for j in jobs] == ["doc.txt"]
     assert "closed" in capsys.readouterr().out
+
+
+# --- A sample stands in for the document ------------------------------------
+#
+# Converting a book to decide whether it is worth converting costs what the
+# book costs. A spread sample answers the same question for a fraction of it --
+# but only if it keeps what makes a document readable, which is why this lives
+# inside rather than in whoever calls it: cutting pages loses the bookmarks,
+# and a sample without headings is a wall of prose.
+
+
+def test_a_sample_is_spread_and_not_taken_from_the_front():
+    """A book opens with a cover, a blank verso and a title page."""
+    from mdcx.convert.paths import _pages_to_sample
+
+    chosen = _pages_to_sample(600, 20)
+
+    assert len(chosen) == 20
+    assert chosen[0] > 2, "the sample starts in the front matter"
+    assert max(chosen) > 400, "the sample never reaches the body of the book"
+    assert len(set(chosen)) == len(chosen)
+
+
+def test_a_short_document_is_not_sampled(tmp_path, monkeypatch):
+    """Sampling more pages than there are is the whole document, slower."""
+    from mdcx.convert import pdf as _pdf
+
+    monkeypatch.setattr(_pdf, "count_pages", lambda p: 8)
+    job = _job(tmp_path)
+    same = cli._as_sample(job, 20)
+
+    assert same.sample_pages is None, "a document of 8 pages was 'sampled' at 20"
+
+
+def test_a_long_document_is_marked_as_a_sample(tmp_path, monkeypatch):
+    """And carries what it is a sample of, or it reads as a truncated book."""
+    from mdcx.convert import pdf as _pdf
+
+    monkeypatch.setattr(_pdf, "count_pages", lambda p: 600)
+    sampled = cli._as_sample(_job(tmp_path), 20)
+
+    assert sampled.sample_pages is not None
+    assert len(sampled.sample_pages) == 20
+    assert sampled.pages_total == 600, (
+        "a sample that does not say what it is a sample of is indistinguishable "
+        "from a book of twenty pages")
+    assert min(sampled.sample_pages) >= 1, "pages are one-based here"
+
+
+def test_the_bookmarks_of_a_sample_are_fetched_and_moved(tmp_path, monkeypatch):
+    """The point of doing this inside rather than outside.
+
+    Cutting pages leaves the bookmarks behind, so a sample cut by a consumer
+    arrives with no headings at all -- and the section titles an author wrote
+    are most of what says whether a book is worth converting.
+    """
+    from mdcx.convert import pdf as _pdf
+
+    # Bookmarks at pages 5 and 40 of the book; the sample takes 5, 20 and 40.
+    monkeypatch.setattr(_pdf, "outline", lambda source: [
+        (1, "Chapter One", 5), (2, "A section", 40), (1, "Not sampled", 7)])
+
+    found = _pdf.outline_for_pages(tmp_path / "book.pdf", [5, 20, 40])
+
+    assert found == {1: [(1, "Chapter One")], 3: [(2, "A section")]}, (
+        "the headings did not move to where their pages ended up in the sample")
+
+
+def test_a_sample_is_not_also_split_into_chapters(tmp_path, monkeypatch):
+    """Two answers to different questions; chapters of a sample answer neither."""
+    from mdcx.convert import pdf as _pdf
+
+    monkeypatch.setattr(_pdf, "count_pages", lambda p: 600)
+    sampled = cli._as_sample(_job(tmp_path), 20)
+
+    assert sampled.page_range is None, "the sample was also treated as a chapter"
+    assert not sampled.is_chapter
+
+
+def test_a_compacted_sample_still_says_it_is_one():
+    """Compaction is on by default, and it strips most of the front matter.
+
+    On their own, twelve pages read as a document of twelve pages. The two
+    fields that say it is twelve pages *of eighty* are the difference between a
+    sample and a short book, so dropping them in compaction would mean the
+    distinction never reaches anyone reading the corpus.
+    """
+    from mdcx.convert import compact as compact_module
+
+    assert "pages_total:" in compact_module.HEADER_FIELDS
+    assert "sampled:" in compact_module.HEADER_FIELDS
+
+    document = (
+        "---\n"
+        'source: "book.pdf"\n'
+        "title: \"book\"\n"
+        "pages: 12\n"
+        "pages_total: 80\n"
+        "sampled: true\n"
+        "verification_status: ok\n"
+        "---\n\nSome text.\n")
+    compacted, applied = compact_module.compact(document)
+
+    assert applied
+    assert "pages_total: 80" in compacted, "a compacted sample looks like a book"
+    assert "sampled: true" in compacted

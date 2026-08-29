@@ -175,3 +175,75 @@ def test_the_help_warns_that_a_command_line_is_readable(capsys):
     printed = capsys.readouterr().out
     assert "process table" in printed, (
         "nothing tells the reader that --key is visible while it runs")
+
+
+# --- Packing without writing the collection to disk first --------------------
+#
+# For a collection that is generated rather than converted -- a catalogue of
+# records, a set of notes -- materialising one file per document only to read
+# it back is work with nothing to show for it: measured on 80,844 records, 1.4
+# minutes and 324 MB created, read once and deleted.
+
+
+def _jsonl(tmp_path, rows):
+    import json as _json
+
+    path = tmp_path / "records.jsonl"
+    with path.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(_json.dumps(row) + "\n")
+    return path
+
+
+def test_records_are_packed_without_a_tree_of_files(tmp_path):
+    from mdcx import search
+
+    path = _jsonl(tmp_path, [
+        {"name": "one", "text": "Water management in arid regions."},
+        {"name": "two", "text": "Irrigation systems and their administration."},
+    ])
+    target = tmp_path / "records.mdcx"
+    archive.pack(path, target, "a real passphrase")
+
+    connection, header = archive.open_package(target, "a real passphrase")
+    assert header["documents"] == 2
+
+    found = archive.query(connection, "irrigation", limit=2)
+    assert found and "Irrigation" in found[0]["passage"]
+
+
+def test_a_broken_line_costs_that_line(tmp_path, capsys):
+    """One bad record in eighty thousand should not cost the other 80,843."""
+    from mdcx import search
+
+    path = _jsonl(tmp_path, [{"name": "good", "text": "Something readable."}])
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("this is not json\n")
+        fh.write('{"name": "no text field"}\n')
+
+    docs = search.load_records(path)
+
+    assert [d["name"] for d in docs] == ["good"]
+    printed = capsys.readouterr().out
+    assert "line 2" in printed and "line 3" in printed, (
+        "the skipped lines were not named, so nobody can go and look at them")
+
+
+def test_the_smallest_useful_record_is_two_fields(tmp_path):
+    """name and text; the rest is derived so a producer need not know the shape."""
+    from mdcx import search
+
+    docs = search.load_records(_jsonl(tmp_path, [{"name": "n", "text": "t"}]))
+
+    assert docs[0]["pseudopath"].startswith("@/")
+    assert docs[0]["folder"] == "."
+    assert docs[0]["source"] == "OTHER"
+
+
+def test_a_folder_still_packs_the_way_it_did(tmp_path, corpus):
+    """The file form is added beside the folder form, not instead of it."""
+    target = tmp_path / "folder.mdcx"
+    archive.pack(corpus, target, "a real passphrase")
+
+    _, header = archive.open_package(target, "a real passphrase")
+    assert header["documents"] == 2

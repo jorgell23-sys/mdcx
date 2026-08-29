@@ -164,6 +164,11 @@ class Job:
     chapter_title: str = ""              # chapter title within the document
     chapter_index: int = 0               # chapter position, starting at 1
     parent_target: Path | None = None    # .md index of the whole document
+    # Pages of a sample, 1-based and scattered rather than a run. A sample is
+    # not a chapter: it stands in for the whole document at a fraction of the
+    # cost, for deciding whether a book is worth converting entire.
+    sample_pages: tuple | None = None
+    pages_total: int = 0                 # what the original had, for a sample
 
     @property
     def is_chapter(self) -> bool:

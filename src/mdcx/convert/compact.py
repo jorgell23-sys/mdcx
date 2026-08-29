@@ -33,6 +33,13 @@ HEADER_FIELDS = (
     "source_pseudopath:",
     "source_format:",
     "pages:",
+    # Kept for the same reason `pages` is, and useless without it: on their own,
+    # twelve pages read as a document of twelve pages. These two are what say it
+    # is twelve pages *of eighty*, which is the difference between a sample and
+    # a short book -- and compaction is on by default, so dropping them here
+    # would mean the distinction never survives to anyone reading the corpus.
+    "pages_total:",
+    "sampled:",
     "verification_status:",
     "chapter_title:",
 )

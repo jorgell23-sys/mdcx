@@ -240,6 +240,58 @@ def load_documents(output_root: Path) -> list[dict]:
         })
     return docs
 
+def load_records(path: Path) -> list[dict]:
+    """Read documents from a JSONL file, one record per line.
+
+    For a collection that is generated rather than converted -- a catalogue of
+    records, a set of notes -- writing it to disk as one file per document and
+    reading it back is work with nothing to show for it. Measured on 80,844
+    records: 1.4 minutes and 324 MB of files created only to be read once and
+    deleted.
+
+    Each line needs `name` and `text`. `pseudopath` and `folder` are taken if
+    present and derived from the name if not, so the smallest useful record is
+    two fields.
+
+    A malformed line is skipped rather than fatal, with its number reported:
+    one bad record in eighty thousand should cost that record.
+    """
+    docs: list[dict] = []
+    bad = 0
+    with Path(path).open("r", encoding="utf-8") as fh:
+        for number, line in enumerate(fh, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+                name = str(row["name"])
+                text = str(row["text"])
+            except Exception:  # noqa: BLE001
+                bad += 1
+                if bad <= 5:
+                    console.safe_print(
+                        f"WARNING: line {number} of {Path(path).name} is not a "
+                        "usable record, skipped")
+                continue
+            folder = str(row.get("folder") or ".")
+            pseudo = str(row.get("pseudopath")
+                         or ("@/" + (f"{folder}/" if folder != "." else "") + name + ".md"))
+            docs.append({
+                "path": Path(path),
+                "rel": pseudo[2:] if pseudo.startswith("@/") else pseudo,
+                "pseudopath": pseudo,
+                "source": str(row.get("source") or "OTHER").upper(),
+                "name": name,
+                "folder": folder,
+                "text": text,
+                "norm": _normalize(text),
+            })
+    if bad > 5:
+        console.safe_print(f"WARNING: {bad} unusable records skipped in total")
+    return docs
+
+
 def _paragraphs(text: str) -> list[str]:
     return [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
 

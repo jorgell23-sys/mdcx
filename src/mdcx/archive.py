@@ -139,7 +139,12 @@ def _build_database(folder: Path, semantic: bool = False,
     """Build the in-memory database with documents, index and provenance."""
     from . import search as B
 
-    docs = B.load_documents(folder)
+    # A folder of Markdown, or a JSONL file with one record per line. The
+    # second is for a collection that is generated rather than converted,
+    # where writing it out as files and reading it back is work with nothing
+    # to show for it.
+    docs = (B.load_records(folder) if folder.is_file()
+            else B.load_documents(folder))
     connection = sqlite3.connect(":memory:")
     connection.executescript("""
         PRAGMA journal_mode = OFF;
@@ -324,8 +329,8 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
     """Write the .mdcx file and return its figures."""
     import lzma
 
-    if not folder.is_dir():
-        raise ValueError(f"Not a folder: {folder}")
+    if not folder.is_dir() and not folder.is_file():
+        raise ValueError(f"Not a folder or a file: {folder}")
 
     # An empty key is not a key. scrypt derives from b"" as happily as from
     # anything else, so the whole circuit succeeded: the package was written,
@@ -1150,7 +1155,9 @@ def main() -> int:
                  "protect it")
 
     e = sub.add_parser("pack")
-    e.add_argument("--output", default="Output")
+    e.add_argument("--output", default="Output",
+                   help="folder of Markdown to pack, or a .jsonl file with "
+                        "one record per line, each with name and text")
     e.add_argument("--target", default="corpus.mdcx")
     key_argument(e)
     e.add_argument("--issuer", default="")
