@@ -725,6 +725,18 @@ def create_server():
                 if len(packages) > 1:
                     output["package"] = package["name"]
                 return output
+
+            # An attachment is kept with the corpus and left out of it, so it
+            # is not reachable by searching -- naming it is the only way in,
+            # and this is where a caller would name it.
+            for item in archive.attachments(connection):
+                if name in (item["name"], item["pseudopath"]):
+                    output = {"found": True, "document": item["name"],
+                              "path": item["pseudopath"], "attachment": True,
+                              "text": item["text"]}
+                    if len(packages) > 1:
+                        output["package"] = package["name"]
+                    return output
         where = "this corpus" if len(packages) == 1 else f"any of the {len(packages)} packages"
         return {"found": False,
                 "message": f"No document named {name!r} in {where}."}

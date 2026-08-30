@@ -276,9 +276,38 @@ def _build_database(folder: Path, semantic: bool = False,
         -- expose it usably, and without it the package cannot rank by the same
         -- criterion as the folder-based search.
         CREATE TABLE df (term TEXT PRIMARY KEY, passages INTEGER NOT NULL);
+        -- A document that travels with the corpus and is not part of it. A
+        -- corpus used as a memory sometimes has to keep an object -- a
+        -- certificate, a table of coordinates -- and there was nowhere to put
+        -- it: everything in the folder became passages. One such artefact of
+        -- 500 vertices measured 2,003 passages, 40.6 per cent of that corpus,
+        -- and made every later write cost 1.57 times as much, because packing
+        -- walks the whole corpus even when one document changed.
+        --
+        -- It did not spoil the ranking, which was the fear and was wrong:
+        -- coordinates resemble no question, so none of them reached a top five.
+        -- The cost is weight and time, paid on every write thereafter.
+        --
+        -- Held here it is still signed, still encrypted, still one file -- and
+        -- absent from the index, from the vectors, and from the passage count.
+        CREATE TABLE attachment (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            pseudopath TEXT NOT NULL,
+            folder TEXT,
+            text TEXT NOT NULL
+        );
     """)
 
     supplied = dates or {}
+    # Set aside before anything is numbered, so document ids stay contiguous and
+    # the counts describe the corpus rather than the folder.
+    attachments = [d for d in docs if _is_attachment(d)]
+    docs = [d for d in docs if not _is_attachment(d)]
+    for i, d in enumerate(attachments, 1):
+        connection.execute("INSERT INTO attachment VALUES (?,?,?,?,?)",
+                           (i, d["name"], d["pseudopath"], d["folder"], d["text"]))
+
     n_passages = 0
     for i, d in enumerate(docs, 1):
         d["dated"], d["dated_from"] = _date_of(d, supplied, use_mtime)
@@ -319,7 +348,7 @@ def _build_database(folder: Path, semantic: bool = False,
         tk = _B.tokenize_text(_B._normalize(text))
         lengths.append(len(tk))
         for t in set(tk):
-            if len(t) >= 3 or (len(t) == 1 and _B._is_cjk(t)):
+            if indexable_term(t):
                 df_count[t] += 1
     connection.executemany("INSERT INTO df VALUES (?,?)", df_count.items())
     avg_length = sum(lengths) / len(lengths) if lengths else 60.0
@@ -341,6 +370,21 @@ def _build_database(folder: Path, semantic: bool = False,
         "mean_passage_length": round(avg_length, 2),
         "indexed_terms": len(df_count),
     }
+    if attachments:
+        summary["attachments"] = len(attachments)
+    # Which document contributed most, and what share of the corpus that is. A
+    # document holding 40 per cent of the passages is something whoever packed
+    # it would want to see without going looking for it, and until now it took
+    # a SQL query against a package they had just written.
+    if n_passages:
+        largest = connection.execute(
+            "SELECT d.name, count(*) c FROM passage p "
+            "JOIN document d ON d.id = p.document_id "
+            "GROUP BY d.id ORDER BY c DESC LIMIT 1").fetchone()
+        if largest:
+            summary["largest_document"] = {
+                "name": largest[0], "passages": largest[1],
+                "share": round(largest[1] / n_passages, 4)}
     fechados = sorted(d["dated"] for d in docs if d.get("dated"))
     if fechados:
         summary["dated_range"] = [fechados[0], fechados[-1]]
@@ -539,6 +583,11 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         # exactly what the header is for, and "how old is this" is part of it.
         "dated_range": summary.get("dated_range"),
         "dated_documents": summary.get("dated_documents"),
+        # In the header because a package whose weight is mostly an attachment
+        # is a different proposition from one of the same size that is all
+        # corpus, and that is decided before opening it.
+        **({"attachments": summary["attachments"]}
+           if summary.get("attachments") else {}),
     }
     if signing_key:
         from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -573,6 +622,132 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         **({"focus_inherited": True} if inherited_focus else {}),
         **summary,
     }
+
+
+def _is_attachment(document: dict) -> bool:
+    """Whether the document asked not to be indexed.
+
+    Declared by the document itself rather than by a folder, because what
+    decides is what the thing is, and that travels with it: a certificate moved
+    between folders is still a certificate. `indexed: false` in the front
+    matter, and nothing else -- an absent field means an ordinary document,
+    which is what every package written before this has.
+    """
+    for line in (document.get("front_matter") or "").splitlines():
+        lowered = line.strip().lower()
+        if lowered.startswith("indexed:"):
+            return lowered.split(":", 1)[1].strip().strip('"') in (
+                "false", "no", "off", "0")
+    return False
+
+
+def attachments(connection: sqlite3.Connection) -> list[dict]:
+    """The documents kept with the corpus and left out of it.
+
+    Empty for a package written before attachments existed, which is the
+    answer rather than an error.
+    """
+    try:
+        rows = connection.execute(
+            "SELECT name, pseudopath, folder, text FROM attachment "
+            "ORDER BY id").fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [{"name": n, "pseudopath": p, "folder": f, "text": t}
+            for n, p, f, t in rows]
+
+
+def calibrate(path: Path, key: str, questions: list[str],
+              signing_key: str = "") -> dict:
+    """Measure a closed package against questions, and leave the measure in it.
+
+    The threshold was writable only by `pack`, and `pack` walks a folder of
+    documents. So a package whose source material is gone could never be
+    calibrated: it falls back to a constant nobody measured on it, and stays
+    there in every future version. Measured on four such packages, that constant
+    cuts through the middle of the range the corpus answers -- 38 of 48 domain
+    questions accepted against 47 of 48 with a threshold taken from questions.
+
+    Nothing about calibrating needs the material. It needs the vectors, which
+    are already inside, and questions, which come from outside; the function
+    that measures it touches nothing else. Only writing the result did.
+
+    The package is rewritten in place: same documents, same passages, same
+    vectors, re-compressed and re-encrypted around a changed `meta`. It costs
+    what a write costs and nothing more.
+
+    A signed package needs its signing key to stay signed. Rather than quietly
+    returning an unsigned package where a signed one went in -- the exact shape
+    of fault these reports keep finding -- it refuses and says so.
+    """
+    import lzma
+
+    if not questions:
+        raise ValueError("calibrating needs the questions to calibrate against")
+
+    header = read_header(Path(path))
+    if header.get("signature") and not signing_key:
+        raise ValueError(
+            "this package is signed, and rewriting it would break the "
+            "signature. Pass the signing key to sign the result, or verify "
+            "and re-issue it deliberately")
+
+    connection, _ = open_package(Path(path), key)
+    try:
+        if not has_vectors(connection):
+            raise ValueError(
+                "calibrating measures how near the corpus comes to a question, "
+                "which is a cosine: this package carries no meaning index. "
+                "Pack it with --multilingual")
+
+        reach = _answerable_at_focus(connection, questions)
+        if reach is None:
+            raise ValueError(
+                "none of the questions could be measured against this package")
+
+        for k, v in (("answerable_at", json.dumps(reach)),
+                     ("answerable_at_from", "focus-after"),
+                     ("focus", json.dumps(list(questions)))):
+            connection.execute("DELETE FROM meta WHERE key = ?", (k,))
+            connection.execute("INSERT INTO meta VALUES (?,?)", (k, v))
+        connection.commit()
+        data = bytes(connection.serialize())
+    finally:
+        connection.close()
+
+    compressed = lzma.compress(data, preset=PRESET)
+    salt = os.urandom(16)
+    nonce, body = _encrypt(compressed, _derive_key(key, salt))
+
+    header = dict(header)
+    header.pop("_intact", None)
+    header.update({"salt": salt.hex(), "nonce": nonce.hex(),
+                   "body_digest": hashlib.sha256(body).hexdigest(),
+                   "answerable_at": reach,
+                   "answerable_at_from": "focus-after",
+                   "signature": "", "public_key": ""})
+    if signing_key:
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+
+        private = ed25519.Ed25519PrivateKey.from_private_bytes(
+            bytes.fromhex(signing_key))
+        header["signature"] = _sign(header["body_digest"], signing_key)
+        header["public_key"] = private.public_key().public_bytes_raw().hex()
+
+    encoded_header = json.dumps(header, ensure_ascii=False).encode("utf-8")
+    target = Path(path)
+    # Written beside and moved over, so an interrupted write leaves the package
+    # that was there rather than half of a new one.
+    scratch = target.with_suffix(target.suffix + ".calibrating")
+    with open(scratch, "wb") as f:
+        f.write(MAGIC)
+        f.write(struct.pack("<I", len(encoded_header)))
+        f.write(encoded_header)
+        f.write(body)
+    os.replace(scratch, target)
+
+    return {"answerable_at": reach, "answerable_at_from": "focus-after",
+            "questions": len(questions), "signed": bool(signing_key)}
 
 
 def passage_digest(text: str) -> str:
@@ -848,7 +1023,14 @@ def calibrated_from_questions(connection: sqlite3.Connection) -> bool:
     # is the bare word `focus`. Reading it back through json.loads() raised on
     # every calibrated package -- and the quoted form is accepted too, since
     # nothing but this comparison depends on which was written.
-    return str(row[0]).strip().strip('"') == "focus"
+    #
+    # `focus-after` is the same measurement taken on a closed package rather
+    # than while packing it. The distinction is worth keeping in the record --
+    # one was measured over the corpus as it was built, the other over the
+    # corpus as it stands -- and it makes no difference to the margin, because
+    # both are thresholds taken from questions rather than estimates from
+    # passages.
+    return str(row[0]).strip().strip('"').startswith("focus")
 
 
 # Which passage stands in for the tail. Far enough down that a handful of real
@@ -1533,12 +1715,92 @@ _STATS_CACHE: dict = {}
 # Resolved column name per package, so the lookup happens once.
 _COLUMN_CACHE: dict = {}
 
-def _corpus_statistics(connection: sqlite3.Connection) -> tuple[dict, int, float]:
-    """Document frequency per term and mean passage length, as packed.
+# The shortest term the index records. Two characters carry too little to
+# discriminate in the scripts that separate words, and the table would fill with
+# them; a single character carries a word in the ones that do not, which is the
+# exception below it.
+#
+# It is worth naming rather than leaving inline because it is what makes a term
+# absent from `df` ambiguous: absent can mean the corpus never saw it, or it can
+# mean the indexer was never going to record it. Anything weighing terms by
+# rarity has to tell those apart -- an absent term takes the maximum idf, so
+# reading absence as novelty makes the shortest, emptiest words the most
+# informative ones.
+MINIMUM_TERM_LENGTH = 3
+
+
+def indexable_term(term: str) -> bool:
+    """Whether this term is one the index would record at all."""
+    from . import search as B
+
+    return len(term) >= MINIMUM_TERM_LENGTH or (len(term) == 1 and B._is_cjk(term))
+
+
+def vocabulary(connection: sqlite3.Connection) -> dict:
+    """What this package knows about words, and by what rule.
+
+    `df` alone is not enough to ask whether a text brings new vocabulary,
+    because absence from it has two meanings. This carries the rule that
+    produced it alongside the counts, so the two can be told apart.
+
+    The keys of `df` are normalised -- folded case, folded accents -- so a
+    caller tokenising with `search.tokenize_text` gets `GPU` where the table
+    holds `gpu`, and has to normalise before looking a term up. `unknown_terms`
+    does that; anyone reading `df` directly must do it themselves.
+    """
+    df, passages, mean_length = corpus_statistics(connection)
+    return {
+        "df": df,
+        "terms": len(df),
+        "passages": passages,
+        "mean_passage_length": mean_length,
+        "minimum_term_length": MINIMUM_TERM_LENGTH,
+        "normalized": True,
+    }
+
+
+def unknown_terms(connection: sqlite3.Connection, text: str) -> list[str]:
+    """The terms of a text this corpus has genuinely never seen.
+
+    What is excluded is the difference that matters: a term the indexer would
+    not have recorded whatever the corpus contained is not new, it is invisible,
+    and counting it as new was measured turning a novelty score into a detector
+    of short function words -- seven of eight questions a corpus answers well
+    declared between 0.37 and 0.55 of unknown vocabulary, and fall to exactly
+    zero once the rule is applied.
+
+    Order is kept and repeats are dropped, so the result reads as the unfamiliar
+    part of the text in the order it was written.
+    """
+    from . import search as B
+
+    df, _, _ = corpus_statistics(connection)
+    seen: set[str] = set()
+    out: list[str] = []
+    for term in B.tokenize_text(B._normalize(text)):
+        if not indexable_term(term) or term in df or term in seen:
+            continue
+        seen.add(term)
+        out.append(term)
+    return out
+
+
+def corpus_statistics(connection: sqlite3.Connection) -> tuple[dict, int, float]:
+    """Document frequency per term, passage count and mean passage length.
 
     These feed BM25 directly, so reading them from another package does not
     fail: it reweights every term against a corpus the passages were not in.
+
+    Public because weighting a term by how rare it is in a corpus is a
+    reasonable thing to want, and the alternative was reading the `df` table
+    over SQL -- which gives the counts without the rule that produced them. See
+    `vocabulary`, which carries both.
     """
+    return _corpus_statistics(connection)
+
+
+def _corpus_statistics(connection: sqlite3.Connection) -> tuple[dict, int, float]:
+    """Document frequency per term and mean passage length, as packed."""
     key = _cache_key(connection)
     if key is not None and key in _STATS_CACHE:
         return _STATS_CACHE[key]
@@ -1572,9 +1834,24 @@ def export(path: Path, key: str, target: Path) -> dict:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text((text or "") + "\n", encoding="utf-8")
             written += 1
+
+        # Restored verbatim rather than rebuilt from passages, because there are
+        # none: an attachment is stored whole. Leaving them out would make
+        # export a lossy round trip, and silently -- the folder would look
+        # complete.
+        kept = 0
+        for item in attachments(connection):
+            relative = (item["pseudopath"][2:]
+                        if item["pseudopath"].startswith("@/")
+                        else item["pseudopath"])
+            path = target / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(item["text"], encoding="utf-8")
+            kept += 1
     finally:
         connection.close()
     return {"documents": written, "target": str(target),
+            **({"attachments": kept} if kept else {}),
             "created_utc": header.get("created_utc")}
 
 def _direction(value: str) -> str:
@@ -1666,6 +1943,22 @@ def main() -> int:
     i = sub.add_parser("info")
     i.add_argument("path")
 
+    n = sub.add_parser(
+        "calibrate",
+        help="measure a closed package against questions and store the result")
+    n.add_argument("path")
+    key_argument(n)
+    n.add_argument("--question", action="append", required=True, metavar="QUESTION",
+                   dest="questions",
+                   help="a question this package is meant to answer. Repeat it. "
+                        "The threshold goes just under the weakest of them, "
+                        "which is the same rule pack --focus applies")
+    n.add_argument("--signing-key", default="",
+                   help="hex private key. Required if the package is signed: "
+                        "rewriting it breaks the signature, and returning an "
+                        "unsigned package where a signed one went in would be "
+                        "a silent downgrade")
+
     x = sub.add_parser("export")
     x.add_argument("path")
     x.add_argument("--target", required=True)
@@ -1694,7 +1987,14 @@ def main() -> int:
                  dates=read_dates(Path(args.dates)) if args.dates else None,
                  use_mtime=args.date_from_mtime, fast=args.fast)
         print(f"Packed: {args.target}")
-        print(f"  documents {r['documents']}   passages {r['passages']}")
+        print(f"  documents {r['documents']}   passages {r['passages']}"
+              + (f"   attachments {r['attachments']}" if r.get("attachments") else ""))
+        # Only when one document dominates. Printed always it would be noise;
+        # printed at a third it is the thing worth knowing about the package.
+        biggest = r.get("largest_document") or {}
+        if biggest.get("share", 0) >= 0.33:
+            print(f"  {biggest['name']} holds {100 * biggest['share']:.0f}% of the "
+                  "passages")
         print(f"  database {r['bytes_database']:,} -> compressed {r['bytes_compressed']:,} "
               f"-> file {r['bytes_file']:,} bytes".replace(",", "."))
         print(f"  index {r['seconds_index']}s  compress {r['seconds_compress']}s  "
@@ -1710,6 +2010,16 @@ def main() -> int:
                   f"(from {r['answerable_at_from']})"
                   + ("  <- inherited from the reused package"
                      if r.get("focus_inherited") else ""))
+        return 0
+
+    if args.action == "calibrate":
+        r = calibrate(Path(args.path), resolve_key(args), args.questions,
+                      args.signing_key)
+        print(f"Calibrated: {args.path}")
+        print(f"  answerable at {r['answerable_at']} (from {r['answerable_at_from']}), "
+              f"measured against {r['questions']} question(s)")
+        if not r["signed"]:
+            print("  the package is not signed")
         return 0
 
     if args.action == "keygen":
@@ -1731,7 +2041,9 @@ def main() -> int:
         print(f"Format    : {header['file_format']} v{header['version']}")
         print(f"Issuer    : {header.get('issuer') or '(not declared)'}")
         print(f"Created   : {header['created_utc']}")
-        print(f"Content   : {header['documents']} documents, {header['passages']} passages")
+        print(f"Content   : {header['documents']} documents, {header['passages']} passages"
+              + (f", {header['attachments']} attachment(s)"
+                 if header.get("attachments") else ""))
         print(f"Encryption: {header['encryption']} with {header['key_derivation']['algorithm']}")
         print(f"Integrity : {'intact' if header['_intact'] else 'ALTERED'}")
         print(f"Signature : {'present' if header.get('_signed') else 'none'}"

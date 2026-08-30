@@ -17,6 +17,8 @@ encrypted file, and query it from an agent through the Model Context Protocol.
 - [Packaging and querying](#packaging-and-querying)
 - [Sent and received](#sent-and-received)
 - [Working incrementally](#working-incrementally)
+- [What the corpus knows about words](#what-the-corpus-knows-about-words)
+- [Something to keep that is not text to search](#something-to-keep-that-is-not-text-to-search)
 - [Writing often](#writing-often)
 - [MCP server](#mcp-server)
 - [Language support](#language-support)
@@ -576,6 +578,23 @@ falls inside the answered range of one collection or below another's, which is
 how it behaved before this was measured. A package built before this exists has
 no such number and is judged by the previous thresholds, unchanged.
 
+A package whose source material is gone can still be calibrated. The threshold
+used to be writable only by `pack`, and `pack` walks a folder of documents — so
+a package that outlived its material fell back to a constant nobody measured on
+it, and would in every future version. Nothing about the measurement needs the
+material: it needs the vectors, which are inside, and questions, which come from
+outside.
+
+```
+mdcx calibrate corpus.mdcx --key "passphrase"     --question "how heat travels by conduction and radiation"     --question "what the equivalence of mass and energy means"
+```
+
+The package is rewritten in place — same documents, same passages, same vectors,
+around a changed measure — and `info` reports it as `focus-after` rather than
+`focus`, because measured while packing and measured afterwards describe the
+corpus at different moments. A signed package needs its signing key; without it
+the command refuses rather than handing back an unsigned package.
+
 The same judgement is available per package, which is what a consumer serving
 several of them needs in order to decide which one answers:
 
@@ -590,6 +609,51 @@ the passage share to a threshold taken from questions was measured letting seven
 of eight unrelated queries through. Asking whether *anything* open is about a
 question is a different question — a property of the set — and stays where it
 was, in the warning the MCP server raises.
+
+## What the corpus knows about words
+
+`vocabulary(connection)` returns the document frequency of every term together
+with the rule that produced it, and `unknown_terms(connection, text)` names the
+terms of a text this corpus has genuinely never seen.
+
+The rule matters more than it sounds. The index records terms of three
+characters or more — a single character where the script does not separate
+words — so absence from the table has two meanings: the corpus never saw the
+term, or the index was never going to record it. Weighting by rarity gives an
+absent term the maximum weight, so reading absence as novelty makes the
+shortest, emptiest words the most informative ones. Measured: questions a corpus
+answers well declared between 0.37 and 0.55 of unknown vocabulary, and fall to
+exactly zero once the rule is applied. `unknown_terms` applies it.
+
+Function words are not removed on top of that, deliberately. `die` in die
+casting and `les` in Les Misérables carry meaning in the language being
+searched, and which words are empty depends on the question being asked. What
+mdcx can state is what it never recorded; what counts as uninformative is the
+caller's.
+
+The keys of `df` are normalised — folded case, folded accents — so a caller
+tokenising with `search.tokenize_text` gets `GPU` where the table holds `gpu`.
+`unknown_terms` handles that; anyone reading `df` directly must.
+
+## Something to keep that is not text to search
+
+A corpus used as a memory sometimes has to hold an object — a certificate, a
+table of coordinates — and everything in the folder became passages. One such
+artefact of 500 vertices measured 2,003 passages, 40.6 per cent of that corpus,
+and made every later write cost 1.57 times as much, because packing walks the
+whole corpus even when one document changed.
+
+It did not spoil the ranking, which was the fear and was wrong: coordinates
+resemble no question, so none of those passages reached a top five. The cost is
+weight and time.
+
+`indexed: false` in a document's front matter keeps it in the package — signed,
+encrypted, one file — and out of the index, the vectors and the passage count.
+`export` restores it verbatim, and the MCP `document` tool returns it by name,
+which is the only way in, since it cannot be searched for.
+
+`pack` also reports which document contributed the most passages, and says so
+when one holds a third or more of them.
 
 ## Writing often
 
