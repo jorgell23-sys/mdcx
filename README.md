@@ -365,6 +365,31 @@ simple HTTP client is not: one catalogue answers 403 to its whole download
 column and needs its handle resolved separately, another returns the same scrape
 cursor for every page. That knowledge belongs with whoever has it.
 
+What does not belong there is the part that has nothing to do with any
+catalogue, and `mdcx.sources` now carries it:
+
+```
+python -m mdcx.sources --check <name>
+```
+
+checks a plugin against the contract — that `search` returns `Candidate`s with
+identifiers it can be asked about again, that `fetch` returns bytes of a
+recognisable type or raises rather than returning something else. A plugin had
+nothing to check itself against, and what that cost was measured: the first
+thing this reports is a source returning a cover thumbnail as though it were the
+book. A catalogue named the attachment `9789819647453.pdf.jpg`, and 5,384 bytes
+came back without an exception.
+
+`looks_like(data, "pdf")` is the check on its own — four bytes, no network — and
+`identify(data)` says what they were instead, because *this is not a PDF* is not
+actionable and *this is a JPEG* is. `patiently(call)` retries what raises
+`RateLimited`, honouring `Retry-After` when the server sent one: every catalogue
+rate limits, and none of that is knowledge about a particular one. It catches
+nothing else, because a 403 on a whole download column is not transient.
+
+`tests/test_sources_kit.py` holds a source in twenty lines, against no network.
+An executable example does not go quietly out of date.
+
 ### Checking a conversion before packaging
 
 `mdcx-search` searches the converted Markdown directly, before there is a
@@ -1006,6 +1031,7 @@ covers it says which, so a correction that is undone is noticed.
 | `test_table_shapes.py` | the reading of a table the page does not draw, where the model supplies the shape and the text layer the words |
 | `test_headings.py` | that a chapter keeps the section titles its book already carried, whichever engine converted it |
 | `test_reporting.py` | that the summary separates a document measured and found short from one that could not be measured at all |
+| `test_sources_kit.py` | the source contract and what a plugin should not have to write again: reading four bytes, waiting when a server asks, and checking a plugin against the contract — plus a source in twenty lines, which does not go out of date the way a paragraph does |
 | `test_incremental.py` | reuse of vectors between packages: that unchanged passages are not encoded again, that an edited one is, and that reuse produces the same ranking |
 
 **The package as it is installed**

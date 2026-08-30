@@ -152,3 +152,254 @@ def require(names: list[str] | None = None) -> dict[str, Source]:
             f"no catalogue named {', '.join(missing)}. Installed: "
             f"{', '.join(sorted(found)) or 'none'}")
     return {n: found[n] for n in names}
+
+
+# --- What a plugin should not have to write again -----------------------------
+#
+# None of this fetches, and none of it knows a catalogue. That is the line: the
+# work of talking to a particular catalogue belongs with whoever knows it, and
+# checking bytes already in memory, waiting when a server asks, and testing that
+# a plugin keeps its own contract are none of them about a catalogue.
+
+
+# What a file begins with, for the formats mdcx converts. Only signatures that
+# identify a format outright: a check answering "maybe" would be worse than no
+# check, because the caller would then have to decide what to do about maybe.
+#
+# ZIP appears once and stands for several things -- docx, xlsx, pptx and epub
+# are zip containers -- so asking whether bytes look like a docx says they are a
+# zip and not which zip. That is the honest limit of four bytes, and it is the
+# case this exists for anyway: a catalogue handing back something that is not
+# the document at all.
+_SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    "pdf": (b"%PDF",),
+    "zip": (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"),
+    "jpeg": (b"\xff\xd8\xff",),
+    "png": (b"\x89PNG\r\n\x1a\n",),
+    "gif": (b"GIF87a", b"GIF89a"),
+    "tiff": (b"II*\x00", b"MM\x00*"),
+    "html": (b"<!DOCTYPE", b"<!doctype", b"<html", b"<HTML"),
+    "gzip": (b"\x1f\x8b",),
+    "rtf": (b"{\\rtf",),
+}
+_ZIP_FORMATS = {"docx", "xlsx", "pptx", "epub", "odt", "ods", "odp"}
+
+
+def looks_like(data: bytes, kind: str) -> bool:
+    """Whether these bytes begin the way that kind of file begins.
+
+    The check that makes the expensive mistake impossible, and it needs neither
+    the network nor any knowledge of a catalogue: it reads bytes already in
+    memory.
+
+    The mistake is not hypothetical and did not fail loudly. A catalogue
+    returned 5,384 bytes for a book without raising, and they were the cover
+    thumbnail: the attachment was named `9789819647453.pdf.jpg`, which is how
+    DSpace names one. The rule being applied -- "the declared type is useless,
+    read the file name" -- is right and is not enough. What was missing was not
+    whether to read the name but where the name ends.
+
+    An unknown kind is False rather than an error, so a caller may ask about a
+    format mdcx does not convert and still get a usable answer.
+    """
+    if not data:
+        return False
+    wanted = kind.lower().lstrip(".")
+    if wanted in _ZIP_FORMATS:
+        wanted = "zip"
+    elif wanted == "jpg":
+        wanted = "jpeg"
+    return any(bytes(data).startswith(s) for s in _SIGNATURES.get(wanted, ()))
+
+
+def identify(data: bytes) -> str | None:
+    """What these bytes look like, or None when nothing matches.
+
+    For the message rather than the decision: knowing the answer was a JPEG is
+    what turns "this is not a PDF" into something the reader can act on.
+    """
+    if not data:
+        return None
+    for kind, signatures in _SIGNATURES.items():
+        if any(bytes(data).startswith(s) for s in signatures):
+            return kind
+    return None
+
+
+class RateLimited(RuntimeError):
+    """Raised by a source when a catalogue asks it to wait.
+
+    Its own type so that waiting can be told from failing, and it carries the
+    delay the server asked for when the server said one: `Retry-After` is a
+    standard header, and honouring it is not catalogue knowledge.
+    """
+
+    def __init__(self, message: str = "", retry_after: float | None = None):
+        super().__init__(message or "the catalogue asked us to wait")
+        self.retry_after = retry_after
+
+
+def patiently(call, attempts: int = 4, wait: float = 2.0,
+              ceiling: float = 60.0, sleep=None):
+    """Run something that may be rate limited, waiting when asked to.
+
+    Every catalogue rate limits -- measured on one, sixteen of twenty
+    consecutive fetches came back 429 -- so every plugin would otherwise write
+    this loop. Nothing in it is about any catalogue: it retries what raises
+    `RateLimited`, waits as long as the server asked when the server said, and
+    doubles its own wait when it did not.
+
+    It catches nothing else, deliberately. A 403 on a whole download column is
+    not a transient condition, and retrying it spends the caller's time to learn
+    what the first attempt already said. That is the difference between waiting
+    and hoping.
+
+    The last attempt raises rather than returning something wrong, so a caller
+    that ran out of patience knows that is what happened.
+    """
+    import time
+
+    rest = sleep or time.sleep
+    delay = wait
+    attempts = max(1, attempts)
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except RateLimited as limited:
+            if attempt >= attempts:
+                raise
+            asked = limited.retry_after
+            rest(min(ceiling, asked if asked and asked > 0 else delay))
+            delay = min(ceiling, delay * 2)
+
+
+def conforms(source, query: str = "graph theory", limit: int = 3,
+             timeout: int = 60, fetch: bool = True) -> list[str]:
+    """Check a source against the contract and return what it got wrong.
+
+    An empty list means it conforms. What is checked is only what the contract
+    promises, because that is all mdcx can know: a catalogue is entitled to hold
+    nothing for a query, and calling that a failure would be testing its
+    holdings rather than the plugin.
+
+    Lines beginning `note:` are observations rather than faults -- things that
+    may be correct and are worth a second look.
+
+    A plugin had nothing to check itself against, and what that cost was
+    measured: the first thing this reports is a source returning a cover
+    thumbnail as though it were the book.
+    """
+    problems: list[str] = []
+    name = getattr(source, "name", None)
+    if not isinstance(name, str) or not name:
+        problems.append("name: missing or empty, and it is how a source is addressed")
+
+    if not isinstance(source, Source):
+        problems.append("the object does not offer both search() and fetch()")
+        return problems
+
+    try:
+        found = source.search(query, limit)
+    except Exception as e:  # noqa: BLE001
+        problems.append(f"search() raised {type(e).__name__}: {e}")
+        return problems
+
+    if not isinstance(found, list):
+        problems.append(f"search() returned {type(found).__name__}, not a list")
+        return problems
+    if len(found) > limit:
+        problems.append(f"search() returned {len(found)} for a limit of {limit}")
+
+    for i, candidate in enumerate(found):
+        if not isinstance(candidate, Candidate):
+            problems.append(
+                f"search()[{i}] is {type(candidate).__name__}, not a Candidate")
+            continue
+        if not candidate.identifier:
+            problems.append(
+                f"search()[{i}] has an empty identifier, so it cannot be fetched")
+        if not candidate.title:
+            problems.append(f"search()[{i}] has an empty title")
+
+    # Fetching costs, so it is one candidate, and it can be turned off.
+    usable = [c for c in found if isinstance(c, Candidate) and c.identifier]
+    if fetch and usable:
+        try:
+            data = source.fetch(usable[0], timeout)
+        except Exception as e:  # noqa: BLE001
+            # Raising is permitted -- the contract says so -- and is reported as
+            # an observation, because a work that cannot be had is a fact about
+            # the catalogue rather than a fault in the plugin.
+            problems.append(
+                f"note: fetch() raised {type(e).__name__}: {e}. That is "
+                "allowed; check it is not raising for everything")
+        else:
+            if not isinstance(data, (bytes, bytearray)):
+                problems.append(
+                    f"fetch() returned {type(data).__name__}, not bytes")
+            elif not data:
+                problems.append("fetch() returned no bytes and did not raise")
+            else:
+                kind = identify(bytes(data))
+                if kind in ("jpeg", "png", "gif", "tiff"):
+                    problems.append(
+                        f"fetch() returned {len(data)} bytes of {kind}. A "
+                        "catalogue naming a cover thumbnail after the book -- "
+                        "1234.pdf.jpg -- yields exactly this, silently")
+                elif kind == "html":
+                    problems.append(
+                        f"fetch() returned {len(data)} bytes of HTML, which is "
+                        "usually a landing page, or an error the server sent "
+                        "with a 200")
+                elif kind is None:
+                    problems.append(
+                        f"note: fetch() returned {len(data)} bytes of no "
+                        "recognised type. It may be right; check it")
+
+    if not found:
+        problems.append(
+            "note: search() returned nothing, so fetch() was not exercised. "
+            "Try a query this catalogue holds")
+    return problems
+
+
+def _check(argv: list[str]) -> int:
+    """`python -m mdcx.sources --check <name>`, for whoever writes a plugin."""
+    import sys
+
+    query = "graph theory"
+    rest = list(argv)
+    if "--query" in rest:
+        at = rest.index("--query")
+        if at + 1 < len(rest):
+            query = rest[at + 1]
+            del rest[at:at + 2]
+    offline = "--no-fetch" in rest
+    names = [a for a in rest if not a.startswith("-")]
+
+    try:
+        sources = require(names or None)
+    except NoSourcesInstalled as e:
+        print(e, file=sys.stderr)
+        return 2
+
+    worst = 0
+    for name, source in sorted(sources.items()):
+        problems = conforms(source, query=query, fetch=not offline)
+        faults = [p for p in problems if not p.startswith("note:")]
+        notes = [p for p in problems if p.startswith("note:")]
+        print(f"{name}: "
+              + ("conforms" if not faults else f"{len(faults)} problem(s)"))
+        for problem in faults:
+            print(f"  - {problem}")
+        for note in notes:
+            print(f"  . {note[6:]}")
+        if faults:
+            worst = 1
+    return worst
+
+
+if __name__ == "__main__":  # pragma: no cover - the entry point itself
+    import sys
+
+    raise SystemExit(_check(sys.argv[1:]))
