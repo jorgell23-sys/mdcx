@@ -237,6 +237,38 @@ def _nothing_near(closeness: float, clearance: float,
     return archive._below_reach(closeness, clearance, reach, from_questions)
 
 
+def _unfamiliar_across_packages(query: str) -> list[str]:
+    """Terms no served package has seen, where that means anything.
+
+    A term one package knows is a term the corpus knows: several packages are
+    served as one, so the intersection is what counts.
+
+    Empty across languages, and that is the point rather than a gap. The meaning
+    index reaches a Spanish question against an English corpus and the word
+    index cannot, so there every term comes back unknown -- a measure of which
+    language the corpus is in, published beside an answer that is perfectly
+    good. Saying nothing is the honest reply.
+    """
+    try:
+        packages = _open_packages()
+    except Exception:  # noqa: BLE001
+        return []
+    common: set[str] | None = None
+    order: list[str] = []
+    for package in packages:
+        strange = archive.unfamiliar(package["connection"], query)
+        if strange["cross_language"]:
+            return []
+        terms = set(strange["terms"])
+        common = terms if common is None else (common & terms)
+        for term in strange["terms"]:
+            if term not in order:
+                order.append(term)
+    if not common:
+        return []
+    return [t for t in order if t in common]
+
+
 def _closest_to(query: str) -> tuple[float, float] | None:
     """How near the corpus comes to a question, and how far that stands clear.
 
@@ -533,7 +565,13 @@ def create_server():
             "does not know that newer is better and often it is not. When the "
             "preference could not be applied at all the reply says so, in "
             "`prefer_applied` and `prefer_reason`; a reply without those "
-            "fields is one where it was applied."
+            "fields is one where it was applied. `unknown_terms` lists words "
+            "of the question this corpus has never seen: a corpus can come "
+            "close to a question whose defining word it lacks -- the senses of "
+            "a homonym sit together -- so treat passages with suspicion when "
+            "the word the question turns on is listed. It is absent when the "
+            "question is asked in another language than the corpus, where "
+            "every word would be listed and none of it would mean anything."
         ),
     )
     async def search(query: str, limit: int = 5,
@@ -595,6 +633,17 @@ def create_server():
         if notes.get("prefer_applied") is False:
             answer["prefer_applied"] = False
             answer["prefer_reason"] = notes["prefer_reason"]
+
+        # The word the question turns on, when the corpus has never seen it.
+        # A cosine cannot tell the senses of a homonym apart -- a package of
+        # algebra accepted "graph coloring adjacent vertices different colors"
+        # and returned lessons on comparing graphs -- and the vocabulary can.
+        # Reported rather than acted on: whether an unfamiliar word should
+        # refuse a query depends on what the query is for, and a word can be
+        # peripheral.
+        strange = _unfamiliar_across_packages(query)
+        if strange:
+            answer["unknown_terms"] = strange
 
         measured = _closest_to(query)
         if measured is not None:

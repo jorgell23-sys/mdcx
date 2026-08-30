@@ -625,6 +625,15 @@ shortest, emptiest words the most informative ones. Measured: questions a corpus
 answers well declared between 0.37 and 0.55 of unknown vocabulary, and fall to
 exactly zero once the rule is applied. `unknown_terms` applies it.
 
+`unknown_terms` is literal, and the index it reads is not the one that crosses
+languages. The meaning index reaches a Spanish question against an English
+corpus; the word index cannot, so asked across languages it returns every term
+of the text — a measure of which language the corpus is in rather than of what
+it knows. `unfamiliar(connection, text)` returns the same terms with the share
+and a `cross_language` flag, and a share of 1.00 is the signature of that
+crossing rather than of a strange question. Prefer it wherever the language of
+the question is not known to match the corpus.
+
 Function words are not removed on top of that, deliberately. `die` in die
 casting and `les` in Les Misérables carry meaning in the language being
 searched, and which words are empty depends on the question being asked. What
@@ -634,6 +643,38 @@ caller's.
 The keys of `df` are normalised — folded case, folded accents — so a caller
 tokenising with `search.tokenize_text` gets `GPU` where the table holds `gpu`.
 `unknown_terms` handles that; anyone reading `df` directly must.
+
+### The two signals disagree
+
+`assess(connection, text)` returns both, because each is wrong where the other
+is right and neither said so.
+
+The cosine cannot tell the senses of a homonym apart — a multilingual embedding
+places them together. Measured on a package of algebra: *graph coloring adjacent
+vertices different colors* came in at 0.6553 against a threshold of 0.5661 and
+returned lessons on comparing graphs and on the ellipse. `graph` as the plot of
+a function, not as a graph. The word the question turns on, `coloring`, the
+corpus had never seen.
+
+No quantity derived from the same vectors repairs that, which was measured
+rather than assumed: clearance does not separate — the false positive's falls
+inside the range of the questions the corpus answers *and* inside the range of
+the unrelated ones, and its closeness sits above four of eight legitimate
+questions — and neither does the minimum over windows of the query. Both are
+functions of a space that has already lost the distinction. What separates it is
+the literal vocabulary, which does tell an absent `coloring` from a present
+`graph`.
+
+The verdict is reported, not overruled. Whether an unfamiliar word should refuse
+a query depends on what the query is for, and a word can be peripheral: *the
+slope of a line drawn in Patagonia* is answerable and `patagonia` is unknown.
+The MCP `search` reply carries `unknown_terms` on the same terms — present when
+the words are strange and the languages match, absent otherwise, so the field
+means something when it is there.
+
+Note also that vectors are stored in half precision. They are renormalised when
+read, because rounding to half precision costs the normalisation and every
+quantity computed from them was slightly not a cosine.
 
 ## Something to keep that is not text to search
 

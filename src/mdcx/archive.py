@@ -1110,7 +1110,27 @@ def closeness(connection: sqlite3.Connection,
     if not scores:
         return None
     tail = scores[min(TAIL_AT, len(scores) - 1)]
-    return float(scores[0]), float(scores[0] - tail)
+    return _a_cosine(scores[0]), float(scores[0] - tail)
+
+
+def _a_cosine(value: float) -> float:
+    """Hold a cosine inside the range a cosine has.
+
+    Vectors are stored in half precision, and rounding to it costs the
+    normalisation: a vector written with norm 1 comes back with norm 1 +/- 2e-4,
+    so a dot product against a query computed in single precision leaves the
+    interval. Four separately built packages all topped out at exactly 1.000428,
+    which is what says it is the format and not the text.
+
+    Nothing decided on this changes -- thresholds sit between 0.55 and 0.59 and
+    the differences that separate groups are hundredths, three orders of
+    magnitude above the excess. What breaks is the invariant, and an invariant
+    that almost holds is worse than one that does not: a consumer asserting
+    `0 <= c <= 1` fails one time in many, in production, and a project that saw
+    the symptom found a plausible cause for it and stopped looking -- the digit
+    above 1 went unexplained across two rounds of measurement.
+    """
+    return float(min(1.0, max(-1.0, value)))
 
 
 def cosines(connection: sqlite3.Connection, text: str) -> list[float]:
@@ -1221,6 +1241,21 @@ def _vectors(connection: sqlite3.Connection):
     identifiers = [f[0] for f in rows]
     matrix = np.frombuffer(b"".join(f[1] for f in rows), dtype=np.float16)
     matrix = matrix.reshape(len(rows), -1).astype(np.float32)
+
+    # The vectors were unit length when they were written and are not when they
+    # are read back: rounding to half precision costs the normalisation, leaving
+    # norms of 1 +/- 2e-4. Restored here, once per package rather than once per
+    # query, because the cache holds the result -- so it costs nothing per query
+    # and everything computed from the matrix is a cosine again.
+    #
+    # It changes no ranking: every row is scaled by about the same amount. What
+    # it fixes is that the numbers handed out stopped satisfying the definition
+    # of the thing they are called, which was reported after a cosine of
+    # 1.000428 sent a reader looking for an explanation in the wrong place.
+    if len(rows):
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        np.divide(matrix, norms, out=matrix, where=norms > 0)
+
     if key is None:
         return identifiers, matrix
     _VECTOR_CACHE[key] = (identifiers, matrix)
@@ -1771,6 +1806,14 @@ def unknown_terms(connection: sqlite3.Connection, text: str) -> list[str]:
 
     Order is kept and repeats are dropped, so the result reads as the unfamiliar
     part of the text in the order it was written.
+
+    This is literal, and the index it reads is not the one that crosses
+    languages. The meaning index reaches a Spanish question against an English
+    corpus; the word index cannot, so asked across languages this returns every
+    term of the text and the answer is about the language rather than about the
+    corpus. `unfamiliar` returns the same terms with the share and a flag that
+    says when that has happened; prefer it wherever the language of the text is
+    not known to match the corpus.
     """
     from . import search as B
 
@@ -1783,6 +1826,88 @@ def unknown_terms(connection: sqlite3.Connection, text: str) -> list[str]:
         seen.add(term)
         out.append(term)
     return out
+
+
+def unfamiliar(connection: sqlite3.Connection, text: str) -> dict:
+    """The unfamiliar part of a text, with what is needed to read it.
+
+    `unknown_terms` answers literally and correctly, and a bare list of terms
+    can be read as a measure of what the corpus does not know. Across languages
+    it is not: the meaning index reaches a Spanish question against an English
+    corpus, and the word index cannot, so every term comes back unknown. That is
+    a measure of which language the corpus is written in, and nothing warns.
+
+    So the share comes back with the terms, and a share of 1.0 -- everything
+    unknown -- is the signature of a language crossing rather than of a strange
+    question. `cross_language` says so outright when the corpus declares a
+    language and the text looks like another, which is the promoted way to use
+    mdcx and exactly where this signal saturates.
+    """
+    from . import search as B
+
+    terms = [t for t in B.tokenize_text(B._normalize(text)) if indexable_term(t)]
+    seen: set[str] = set()
+    considered = [t for t in terms if not (t in seen or seen.add(t))]
+    unknown = unknown_terms(connection, text)
+
+    language = _corpus_language(connection)
+    written_in, _ = B.detect_language(text)
+    return {
+        "terms": unknown,
+        "considered": len(considered),
+        # Zero terms to consider is not a text made of familiar words. Left at
+        # zero it would read as "nothing unknown", which is the wrong answer to
+        # a question the data cannot answer.
+        "share": round(len(unknown) / len(considered), 4) if considered else None,
+        "language": language,
+        "written_in": written_in,
+        "cross_language": bool(
+            language and written_in and written_in != language and unknown
+            and len(unknown) == len(considered)),
+    }
+
+
+def assess(connection: sqlite3.Connection, text: str) -> dict:
+    """Everything this package can say about whether it is about a text.
+
+    The two signals it holds disagree, and each alone is wrong in a way the
+    other is not. Measured on a package of algebra: `answers` accepted "graph
+    coloring adjacent vertices different colors" at 0.6553 against a threshold
+    of 0.5661, and returned lessons on comparing graphs and on the ellipse --
+    `graph` as the plot of a function, not as a graph. The word the question
+    turns on, `coloring`, the corpus has never seen.
+
+    That is not miscalibration and no quantity derived from the same vectors
+    repairs it. Clearance was measured and does not separate: the false
+    positive's clearance falls inside the range of the questions the corpus
+    answers *and* inside the range of the unrelated ones, and its closeness sits
+    above four of the eight legitimate questions. The minimum over windows of
+    the query was measured and does not separate either. Both are functions of a
+    space that has already lost the distinction: a multilingual embedding places
+    the senses of a homonym together.
+
+    What separates it lives in the other structure of the same package -- the
+    literal vocabulary, which does tell an absent `coloring` from a present
+    `graph`. This crosses the two and reports both; it does not overrule the
+    verdict, because whether an unfamiliar word should refuse a query depends on
+    what the query is for. A word may be peripheral: "the slope of a line drawn
+    in Patagonia" is answerable and `patagonia` is unknown.
+    """
+    measured = closeness(connection, text)
+    strange = unfamiliar(connection, text)
+    return {
+        "answers": answers(connection, text),
+        "closeness": measured[0] if measured else None,
+        "clearance": measured[1] if measured else None,
+        "answerable_at": answerable_at(connection),
+        "calibrated_from_questions": calibrated_from_questions(connection),
+        "unknown_terms": strange["terms"],
+        "unknown_share": strange["share"],
+        # Suppressed rather than reported across languages: there the list is
+        # every term of the query and says nothing about the corpus.
+        "unknown_terms_meaningful": not strange["cross_language"],
+        "cross_language": strange["cross_language"],
+    }
 
 
 def corpus_statistics(connection: sqlite3.Connection) -> tuple[dict, int, float]:
