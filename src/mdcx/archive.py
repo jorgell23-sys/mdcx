@@ -1837,27 +1837,43 @@ def unknown_terms(connection: sqlite3.Connection, text: str) -> list[str]:
     return out
 
 
-# Above what share of unknown terms the list stops being readable as a statement
-# about the corpus.
+# There is no such thing as the share above which the list stops being readable,
+# and the search for one went through two wrong shapes before that was measured.
 #
-# It was first written as exact equality -- every term unknown -- which is what
-# the phenomenon looks like and is not what it is. One shared word switched it
-# off: between related languages a cognate is always available, and `color`,
-# `radio`, `natural`, `total`, `error`, `region`, a number, an initialism or a
-# proper noun all did it. Measured over six queries on one package, the
-# crossings sat at 0.7143, 0.8333, 0.9286, 1.0000 and 1.0000, and the
-# same-language questions at 0.00 and 0.17.
+# The first was exact equality -- every term unknown -- which is what a language
+# crossing looks like and is not what it is. One shared word switched it off, and
+# between related languages a cognate is always available: `color`, `radio`,
+# `natural`, `total`, `error`, `region`, a number, an initialism or a proper noun
+# all did it.
 #
-# So the cut has to be above 0.17 and no higher than 0.7143 to mark all of one
-# group and none of the other, and 0.70 is the round number in that band. A
-# higher one looked defensible and is not: 0.80 would miss the 0.7143 case,
-# which is a real crossing with two cognates in it.
+# The second was a threshold on the same quantity, 0.70, chosen inside a gap that
+# looked wide: crossings at 0.7143 and above, same-language questions at 0.17 and
+# below. Queries that sample did not contain closed the gap from both sides. A
+# real crossing came in at 0.60 -- Spanish with two cognates -- and an
+# English query against an English corpus reached 0.80, its unknown terms being
+# four proper nouns. No single value is both below 0.60 and above 0.80.
 #
-# One language pair on one package, which is enough to place a cut inside a gap
-# that wide and not enough to claim the value transfers. What does transfer is
-# that an exact cut on a quantity that spreads is the wrong shape -- the same
-# finding NOTHING_NEAR and STANDS_CLEAR reached from the other side.
-CROSS_LANGUAGE_SHARE = 0.70
+# The reason is that the share measures how MUCH vocabulary is missing and never
+# why. It goes high for two unrelated causes -- the corpus is in another
+# language, or the corpus does not cover the subject -- and worse, it is not a
+# property of the query at all: it is a property of the query and the package
+# together, and it rises as the package shrinks. One query measured 0.17 against
+# a package of 266 documents and 0.83 against one of 29, in the same language.
+# A fixed cut on it therefore silences small packages systematically, which are
+# exactly the ones for which "I have never seen these words" is the strongest
+# thing they can say.
+#
+# So the language is decided by the language, and the share only says that
+# something is missing at all. The detector is trusted when it speaks and not
+# read as disagreement when it does not: failing to identify a language is not
+# evidence of a different one. Measured 5 of 5 against 3 of 5 for the threshold.
+#
+# The residual risk is stated rather than guarded against, because guarding
+# would mean inventing a constant nothing measured. Detection is wrong on short
+# texts -- "how do you factor a quadratic polynomial" comes back Portuguese --
+# and that case is saved here only because nothing in it is unknown. An English
+# query misdetected as another language that also had a couple of unfamiliar
+# words would be called a crossing wrongly.
 
 
 def unfamiliar(connection: sqlite3.Connection, text: str) -> dict:
@@ -1889,15 +1905,19 @@ def unfamiliar(connection: sqlite3.Connection, text: str) -> dict:
     # question the data cannot answer.
     share = len(unknown) / len(considered) if considered else None
 
-    # The share leads and the detection only vetoes, which is the opposite of
-    # what it looks like it should be. Detection is unreliable on the short
-    # texts questions are: "how do you factor a quadratic polynomial" comes back
-    # as Portuguese with a score of 0.29, because `do` and `a` are Portuguese
-    # function words too. So it is trusted only when it positively agrees with
-    # the corpus -- there, whatever the share, this is not a crossing.
-    same_language = bool(language and written_in and written_in == language)
-    crossed = bool(language and not same_language
-                   and share is not None and share >= CROSS_LANGUAGE_SHARE)
+    # The language decides the language, and the share only says that something
+    # is missing at all. Both halves matter: without the share, a text misread
+    # as another language would be called a crossing while sharing every word
+    # with the corpus; without the language, no cut on the share separates, as
+    # the account above it records.
+    #
+    # A detector that does not answer is not a detector that disagrees. Reading
+    # its silence as difference was what silenced a small package answering an
+    # English query against an English corpus -- there is no language in
+    # "Moser spindle Hadwiger Nelson problem" to detect, and there was no
+    # crossing either.
+    crossed = bool(language and written_in and written_in != language
+                   and unknown)
     return {
         "terms": unknown,
         "considered": len(considered),
@@ -1905,13 +1925,13 @@ def unfamiliar(connection: sqlite3.Connection, text: str) -> dict:
         "language": language,
         "written_in": written_in,
         "cross_language": crossed,
-        # What a consumer actually hangs a decision on, and it is deliberately
-        # not "not cross_language". A share this high makes the list unreadable
-        # whatever the cause -- another language, or a corpus too small to have
-        # seen ordinary words -- and saying "readable" over a share of 0.93 was
-        # the part that genuinely misled.
-        "meaningful": bool(unknown) and (
-            share is not None and share < CROSS_LANGUAGE_SHARE),
+        # What a consumer hangs a decision on. It is the crossing and not the
+        # share, because a share is high for two unrelated reasons and only one
+        # of them makes the list an artefact. A package that has never seen four
+        # of five terms is making the strongest statement it can about the
+        # question -- "I know nothing of this" -- and hanging this on the
+        # fraction called exactly that unreadable.
+        "meaningful": bool(unknown) and not crossed,
     }
 
 

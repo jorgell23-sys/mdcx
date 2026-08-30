@@ -652,10 +652,24 @@ exactly zero once the rule is applied. `unknown_terms` applies it.
 languages. The meaning index reaches a Spanish question against an English
 corpus; the word index cannot, so asked across languages it returns every term
 of the text — a measure of which language the corpus is in rather than of what
-it knows. `unfamiliar(connection, text)` returns the same terms with the share
-and a `cross_language` flag, and a share of 1.00 is the signature of that
-crossing rather than of a strange question. Prefer it wherever the language of
-the question is not known to match the corpus.
+it knows. `unfamiliar(connection, text)` returns the same terms with the share and a
+`cross_language` flag. Prefer it wherever the language of the question is not
+known to match the corpus.
+
+The flag is decided by the language and not by the share, which took two wrong
+shapes to arrive at. The share measures how *much* vocabulary is missing and
+never why: it goes high both when the corpus is in another language and when it
+simply does not cover the subject, and it is not even a property of the question
+— it rises as the package shrinks, so one query measured 0.17 against a package
+of 266 documents and 0.83 against one of 29, in the same language. A fixed cut
+on it silences small packages systematically, which are the ones for which "I
+have never seen these words" is the strongest thing they can say. And no cut
+works anyway: a real crossing was measured at 0.60 and a same-language query at
+0.80.
+
+So the detected language decides, the share only says that something is missing
+at all, and a detector that does not answer is not read as one that disagrees —
+failing to identify a language is not evidence of a different one.
 
 Function words are not removed on top of that, deliberately. `die` in die
 casting and `les` in Les Misérables carry meaning in the language being

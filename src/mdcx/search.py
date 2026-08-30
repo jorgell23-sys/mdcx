@@ -355,8 +355,24 @@ GLOSSARY: dict = {}
 # without a model or a dependency. Detection is used to warn about a mismatch,
 # never to alter retrieval.
 _LANGUAGE_MARKERS = {
+    # The second row is not padding. Every list here had twenty markers, and
+    # English was the one where that cost something: the twenty omitted `a`,
+    # `do` and `you`, while Portuguese counts `a` and `do`, so "how do you
+    # factor a quadratic polynomial" was identified as Portuguese -- the only
+    # words it could score were the two Portuguese ones. A corpus in English
+    # then never matched its own queries, and anything deciding by language
+    # decided wrongly.
+    #
+    # Only words with no plausible reading as content: `can`, `will`, `may`,
+    # `all` and `most` are left out on purpose, being a container, a testament,
+    # a month and two quantities that a query may well be about.
     "en": {"the", "of", "and", "to", "in", "is", "that", "for", "with", "as",
-           "are", "was", "on", "at", "by", "this", "be", "from", "or", "an"},
+           "are", "was", "on", "at", "by", "this", "be", "from", "or", "an",
+           "a", "how", "do", "does", "did", "you", "your", "we", "they",
+           "them", "their", "it", "its", "have", "has", "had", "been", "not",
+           "but", "if", "than", "then", "these", "those", "such", "each",
+           "into", "about", "when", "where", "which", "what", "who", "whose",
+           "also", "other", "there", "here", "were"},
     "es": {"el", "la", "de", "que", "y", "en", "los", "del", "las", "por",
            "con", "para", "una", "es", "se", "al", "lo", "como", "mas", "su"},
     "de": {"der", "die", "das", "und", "in", "den", "von", "zu", "mit", "sich",

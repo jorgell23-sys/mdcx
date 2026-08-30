@@ -40,6 +40,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mdcx import archive  # noqa: E402
+from mdcx import search as B  # noqa: E402
 from mdcx import semantic as S  # noqa: E402
 
 needs_vectors = pytest.mark.skipif(
@@ -356,14 +357,77 @@ def test_one_shared_word_does_not_switch_off_the_language_flag(
         "a share this high was reported as a readable signal")
 
 
-def test_the_cut_is_not_an_equality(algebra, tmp_path):
-    """The shape of the mistake, kept so it is not made again.
+def test_no_cut_on_the_share_can_separate(algebra, tmp_path):
+    """Two counterexamples, which is all it takes.
 
-    An exact cut on a quantity that spreads is the wrong shape -- the same
-    finding NOTHING_NEAR and STANDS_CLEAR reached from the other side.
+    An exact cut was replaced by a threshold on the same quantity, chosen inside
+    a gap that looked wide. Queries the sample did not contain closed it from
+    both sides: a real crossing at 0.60, Spanish with two cognates, and an
+    English query against an English corpus at 0.80, its unknown terms being
+    proper nouns. No value is both below 0.60 and above 0.80.
+
+    The share measures how much vocabulary is missing and never why -- and it is
+    not even a property of the query: it rises as the package shrinks.
     """
-    assert 0.17 < archive.CROSS_LANGUAGE_SHARE <= 0.7143, (
-        "the cut must mark every measured crossing and no same-language question")
+    target = tmp_path / "M.mdcx"
+    archive.pack(algebra, target, "k")
+    connection, _ = archive.open_package(target, "k")
+
+    crossing = archive.unfamiliar(
+        connection, "como se despeja una variable de una formula")
+    same = archive.unfamiliar(connection, "Moser spindle Hadwiger Nelson problem")
+
+    # The sharpest form of it: the same share, opposite truths. A rule reading
+    # only this number cannot answer both, whatever value it is given.
+    assert crossing["share"] == same["share"], "premise: the shares coincide"
+    assert crossing["cross_language"] is True
+    assert same["cross_language"] is False
+
+
+def test_a_detector_that_does_not_answer_is_not_one_that_disagrees(
+        algebra, tmp_path):
+    """What silenced the package with most to say.
+
+    A small package answering an English query against an English corpus had
+    never seen five of six terms -- the strongest statement it can make about a
+    question -- and reading the detector's silence as difference called that
+    unreadable. There is no language in "Moser spindle Hadwiger Nelson problem"
+    to detect, and there was no crossing either.
+    """
+    target = tmp_path / "M.mdcx"
+    archive.pack(algebra, target, "k")
+    connection, _ = archive.open_package(target, "k")
+
+    silent = archive.unfamiliar(connection, "Moser spindle Hadwiger Nelson problem")
+
+    assert silent["written_in"] is None, "premise: no language to detect"
+    assert silent["share"] > 0.7, "premise: almost nothing is familiar"
+    assert silent["meaningful"] is True, (
+        "the package with most to say was the one silenced")
+
+
+def test_english_is_identified_as_english(algebra):
+    """The gap under the misdetection, and why it was worth closing.
+
+    Every marker list held twenty words, and English was where that cost
+    something: the twenty omitted `a`, `do` and `you`, while Portuguese counts
+    `a` and `do`. "how do you factor a quadratic polynomial" could score only
+    its two Portuguese words, so an English corpus never matched its own
+    queries and anything deciding by language decided wrongly.
+    """
+    code, _ = B.detect_language("how do you factor a quadratic polynomial")
+
+    assert code == "en"
+
+
+def test_the_terms_a_query_searches_for_are_not_emptied(algebra):
+    """Those markers are also the stopwords, so growing the list takes words
+    out of English queries. It must not take all of them."""
+    terms = B.expand_terms(B.searchable_terms("how do you factor a polynomial"),
+                           language="en")
+
+    assert "factor" in terms
+    assert "polynomial" in terms
 
 
 @needs_vectors
