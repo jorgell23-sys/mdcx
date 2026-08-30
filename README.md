@@ -369,7 +369,7 @@ What does not belong there is the part that has nothing to do with any
 catalogue, and `mdcx.sources` now carries it:
 
 ```
-python -m mdcx.sources --check <name>
+python -m mdcx.sources --check <name>     # --help lists the rest
 ```
 
 checks a plugin against the contract — that `search` returns `Candidate`s with

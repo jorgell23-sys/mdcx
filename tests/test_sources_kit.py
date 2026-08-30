@@ -303,3 +303,69 @@ def test_mdcx_still_ships_no_catalogue_and_needs_no_network():
     for reaching in ("import requests", "import urllib", "import http",
                      "httpx", "socket"):
         assert reaching not in text, f"sources.py reaches for {reaching}"
+
+
+# --- Run as a module, which is how the report ran it --------------------------
+
+
+def test_the_check_agrees_with_itself_however_it_is_invoked(monkeypatch):
+    """The same function answered differently depending on how it was called.
+
+    `python -m mdcx.sources` executes sources.py under the name `__main__`, so
+    every class it defines is created a second time. `Candidate` then exists
+    twice -- same name, same code, different identity -- and a plugin builds the
+    one it imported, because a plugin has no other way to build one. `isinstance`
+    compared the two and answered no, so the checker reported "search()[0] is
+    Candidate, not a Candidate": literally true and useless.
+
+    Reproduced here with runpy, which enters the module exactly as `-m` does.
+    Patching the imported module and having the run see it is the whole point:
+    if the entry point stops delegating, it reads its own copy instead and this
+    fails.
+    """
+    import runpy
+
+    monkeypatch.setattr(sources, "require",
+                        lambda names=None: {"reference": ReferenceSource()})
+    monkeypatch.setattr(sys, "argv", ["mdcx.sources"])
+
+    with pytest.raises(SystemExit) as left:
+        runpy.run_module("mdcx.sources", run_name="__main__")
+
+    assert left.value.code == 0, (
+        "run as a module it disagreed with the same check called as a function")
+
+
+def test_a_candidate_is_a_candidate_whichever_module_object_holds_it():
+    """The invariant under the bug, stated so the shape stays visible.
+
+    A checker that invents problems is worse than none: the first thing its
+    reader does is doubt their own plugin.
+    """
+    made_by_a_plugin = sources.Candidate(identifier="1", title="A work")
+
+    assert sources.conforms(ReferenceSource()) == []
+    assert isinstance(made_by_a_plugin, sources.Candidate)
+
+
+def test_the_command_line_offers_help(capsys):
+    """It ran the checker instead, and ignored the argument in silence."""
+    with pytest.raises(SystemExit) as left:
+        sources._check(["--help"])
+
+    assert left.value.code == 0
+    printed = capsys.readouterr().out
+    assert "--check" in printed and "--no-fetch" in printed
+
+
+def test_check_names_a_source_either_way(monkeypatch):
+    """`--check doab` is what the proposal documented; a bare name also works."""
+    asked: list = []
+    monkeypatch.setattr(sources, "require",
+                        lambda names=None: (asked.append(names),
+                                            {"reference": ReferenceSource()})[1])
+
+    sources._check(["--check", "reference"])
+    sources._check(["reference"])
+
+    assert asked == [["reference"], ["reference"]]

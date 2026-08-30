@@ -365,17 +365,29 @@ def conforms(source, query: str = "graph theory", limit: int = 3,
 
 def _check(argv: list[str]) -> int:
     """`python -m mdcx.sources --check <name>`, for whoever writes a plugin."""
+    import argparse
     import sys
 
-    query = "graph theory"
-    rest = list(argv)
-    if "--query" in rest:
-        at = rest.index("--query")
-        if at + 1 < len(rest):
-            query = rest[at + 1]
-            del rest[at:at + 2]
-    offline = "--no-fetch" in rest
-    names = [a for a in rest if not a.startswith("-")]
+    parser = argparse.ArgumentParser(
+        prog="python -m mdcx.sources",
+        description="Check an installed source against the contract.")
+    parser.add_argument("--check", action="append", metavar="NAME", dest="named",
+                        help="the source to check. Repeat it, or omit it to "
+                             "check every installed source")
+    parser.add_argument("names", nargs="*", metavar="NAME",
+                        help="the same, given positionally")
+    parser.add_argument("--query", default="graph theory",
+                        help="what to search for. Use one this catalogue holds, "
+                             "or search() returns nothing and fetch() is never "
+                             "exercised")
+    parser.add_argument("--no-fetch", action="store_true",
+                        help="check search() alone. Fetching costs, and one "
+                             "candidate is fetched otherwise")
+    args = parser.parse_args(argv)
+
+    query = args.query
+    offline = args.no_fetch
+    names = list(args.names) + list(args.named or [])
 
     try:
         sources = require(names or None)
@@ -399,7 +411,26 @@ def _check(argv: list[str]) -> int:
     return worst
 
 
-if __name__ == "__main__":  # pragma: no cover - the entry point itself
+if __name__ == "__main__":  # pragma: no cover - exercised as a subprocess
+    # Delegated to the imported module rather than run from here, and that is
+    # the whole of it: `python -m mdcx.sources` executes this file under the
+    # name `__main__`, so every class it defines is created a second time.
+    # `Candidate` then exists twice -- same name, same code, different identity
+    # -- and a plugin builds the one it imported from `mdcx.sources`, because a
+    # plugin has no other way to build one.
+    #
+    # `isinstance` compared the two and answered no, so the checker reported
+    # "search()[0] is Candidate, not a Candidate": literally true, and useless.
+    # A checker that invents problems is worse than none, because the first
+    # thing its reader does is doubt their own plugin.
+    #
+    # Importing here binds the canonical module -- this file under its real
+    # name, already in sys.modules -- so the check runs against the classes
+    # every plugin actually holds. Comparing by structure instead would have
+    # hidden the symptom and left the duplication for the next comparison to
+    # find.
     import sys
 
-    raise SystemExit(_check(sys.argv[1:]))
+    from mdcx.sources import _check as _canonical
+
+    raise SystemExit(_canonical(sys.argv[1:]))
