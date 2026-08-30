@@ -48,16 +48,38 @@ needs_vectors = pytest.mark.skipif(
 
 @pytest.fixture
 def algebra(tmp_path):
-    """English, and about graphs in the sense of plots."""
+    """English, and about graphs in the sense of plots.
+
+    Wide enough that an English question shares most of its words with it.
+    A corpus of three sentences has not seen `you` or `different` either, and
+    then every question looks foreign -- which is a real property of a small
+    corpus and not what these tests are about.
+    """
     folder = tmp_path / "docs"
     folder.mkdir()
     for name, text in (
-            ("slope", "The slope of a line is the ratio of rise to run. "
-                      "Comparing graphs of linear functions shows it clearly."),
-            ("factor", "To factor a quadratic polynomial, find two numbers "
-                       "whose product is the constant term."),
+            ("slope", "The slope of a line is the ratio of rise to run, and "
+                      "you can read it from the graph of any linear function. "
+                      "Two different lines may share the same slope when they "
+                      "are parallel to each other."),
+            ("factor", "To factor a quadratic polynomial you find two numbers "
+                       "whose product is the constant term and whose sum is "
+                       "the middle coefficient. Different polynomials factor "
+                       "in different ways, and some do not factor at all over "
+                       "the integers."),
             ("ellipse", "The ellipse is a conic section, and its graph is "
-                        "centred at the origin of the plane.")):
+                        "centred at the origin of the plane. Every point on it "
+                        "keeps the same total distance from the two foci, "
+                        "which is what makes drawing one with a string work."),
+            # `color` is here on purpose: it is a cognate, and a cognate is
+            # what switched the language flag off.
+            ("colour", "A graph may be drawn in any color, and the colors "
+                       "chosen for adjacent regions of a chart should be "
+                       "different enough to tell apart. This is a matter of "
+                       "presentation and not of the mathematics."),
+            ("lines", "Comparing graphs of several functions on one pair of "
+                      "axes shows where they meet. The point where two lines "
+                      "cross is the solution of the system they describe.")):
         (folder / f"{name}.md").write_text(f"# {name}\n\n{text}\n", encoding="utf-8")
     return folder
 
@@ -236,8 +258,14 @@ def test_the_mcp_reply_carries_the_strange_words(algebra, tmp_path, monkeypatch)
         assert not output.is_error, output.content
         return json.loads(output.content[0].text)
 
+    # Against the package, not pooled. Intersecting across packages emptied the
+    # signal as the library grew: four packages each lacked something different
+    # and no term was missing from all four, while three of them had never seen
+    # the word the question turned on. And what a reader needs is not whether
+    # some package knows the word -- it is whether the one the passage they are
+    # about to cite came from knows it.
     flagged = reply({"query": "graph coloring adjacent vertices"})
-    assert "coloring" in flagged["unknown_terms"]
+    assert "coloring" in flagged["unknown_terms"]["M.mdcx"]
 
     # And silent where the words are all familiar, so the field means something
     # when it is there.
@@ -247,3 +275,126 @@ def test_the_mcp_reply_carries_the_strange_words(algebra, tmp_path, monkeypatch)
     # And silent across languages, where every word would be listed.
     crossed = reply({"query": "como se factoriza un polinomio de segundo grado"})
     assert "unknown_terms" not in crossed
+
+
+# --- What using 1.18.0 turned up ---------------------------------------------
+
+
+@needs_vectors
+def test_both_doors_to_the_same_number_agree(algebra, tmp_path):
+    """The renormalisation reached one caller and not the other.
+
+    `closeness` came back at exactly 1.000000 while `cosines` -- the one the MCP
+    builds its reply from -- still returned 1.000448 for the same text on the
+    same package in the same process. It looked like a server serving the old
+    version, and it was a repair that had not covered all its doors.
+    """
+    target = tmp_path / "M.mdcx"
+    archive.pack(algebra, target, "k", semantic=True)
+    connection, _ = archive.open_package(target, "k")
+
+    for (passage,) in connection.execute("SELECT text FROM passage"):
+        near, _ = archive.closeness(connection, passage)
+        assert max(archive.cosines(connection, passage)) <= 1.0
+        assert abs(max(archive.cosines(connection, passage)) - near) < 1e-6
+
+
+def test_the_query_vector_is_unit_length(algebra):
+    """Where the remaining excess actually came from.
+
+    The stored side had been repaired and the excess stayed, because the model
+    normalises in half precision on the accelerator: what `encode` returns has
+    norm 1 + 4.5e-4, exactly the excess that was observed, and casting to
+    float32 preserves it rather than removing it.
+    """
+    if not S.available():
+        pytest.skip("no encoder")
+    import numpy as np
+
+    vectors = S.encode(["# Preliminares", "a longer sentence about slopes"],
+                       role="query")
+
+    norms = np.linalg.norm(np.asarray(vectors, dtype=np.float32), axis=1)
+    assert np.allclose(norms, 1.0, atol=1e-6), f"norms {norms}"
+
+
+def test_the_ordering_survived_the_repair(algebra, tmp_path):
+    """`closeness` reads the first element as the best and one further down as
+    the tail, so a change here that dropped the sort would be silent."""
+    if not S.available():
+        pytest.skip("no encoder")
+    target = tmp_path / "M.mdcx"
+    archive.pack(algebra, target, "k", semantic=True)
+    connection, _ = archive.open_package(target, "k")
+
+    scores = archive.cosines(connection, "the slope of a line")
+
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_one_shared_word_does_not_switch_off_the_language_flag(
+        algebra, tmp_path):
+    """A cognate was enough, and between related languages there is always one.
+
+    `color`, `radio`, `natural`, `total`, `error`, `region`, a number, an
+    initialism or a proper noun all did it. Worse than losing the flag: with it
+    off, the reply said the lexical signal was readable over a share of 0.93
+    that was pure language.
+    """
+    target = tmp_path / "M.mdcx"
+    archive.pack(algebra, target, "k")
+    connection, _ = archive.open_package(target, "k")
+
+    base = "como se factoriza un polinomio de segundo grado"
+    plain = archive.unfamiliar(connection, base)
+    with_cognate = archive.unfamiliar(connection, base + " de color")
+
+    assert plain["cross_language"] is True
+    assert with_cognate["share"] < 1.0, "premise: the cognate lowered the share"
+    assert with_cognate["cross_language"] is True
+    assert with_cognate["meaningful"] is False, (
+        "a share this high was reported as a readable signal")
+
+
+def test_the_cut_is_not_an_equality(algebra, tmp_path):
+    """The shape of the mistake, kept so it is not made again.
+
+    An exact cut on a quantity that spreads is the wrong shape -- the same
+    finding NOTHING_NEAR and STANDS_CLEAR reached from the other side.
+    """
+    assert 0.17 < archive.CROSS_LANGUAGE_SHARE <= 0.7143, (
+        "the cut must mark every measured crossing and no same-language question")
+
+
+@needs_vectors
+def test_the_reach_of_each_package_is_published(algebra, tmp_path, monkeypatch):
+    """Two numbers of different provenance were read as describing one package.
+
+    `similarity` is over every package pooled; `answerable_at` is the lowest of
+    their reaches, so the threshold in force comes from the narrowest rather
+    than from the one a passage came from.
+    """
+    import asyncio
+    import importlib
+    import json
+
+    questions = ["the slope of a line and its graph",
+                 "how to factor a quadratic polynomial"]
+    first = tmp_path / "A.mdcx"
+    second = tmp_path / "B.mdcx"
+    archive.pack(algebra, first, "k", semantic=True, focus=questions)
+    archive.pack(algebra, second, "k", semantic=True, focus=questions[:1])
+
+    monkeypatch.setenv("MDCX_FILE", f"{first}{__import__('os').pathsep}{second}")
+    monkeypatch.setenv("MDCX_KEY", "k")
+    from mdcx import mcp_server
+    importlib.reload(mcp_server)
+
+    output = asyncio.run(mcp_server.create_server().call_tool(
+        "search", {"query": "the slope of a line"}))
+    assert not output.is_error, output.content
+    answer = json.loads(output.content[0].text)
+
+    each = answer.get("answerable_at_by_package")
+    assert each and len(each) == 2, "the aggregate travelled without its parts"
+    assert answer["answerable_at"] == round(min(each.values()), 4)

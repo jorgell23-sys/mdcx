@@ -1163,10 +1163,19 @@ def cosines_of(connection: sqlite3.Connection, vector) -> list[float]:
     again for each of them.
     """
     try:
+        import numpy as np
+
         identifiers, matrix = _vectors(connection)
         if not identifiers:
             return []
-        return sorted((matrix @ vector).tolist(), reverse=True)
+        # Both operands, not one. The stored side was repaired first and the
+        # excess stayed, because it came from the query: a vector arriving here
+        # is whatever the caller had, and a cosine needs unit length on both.
+        norm = float(np.linalg.norm(vector))
+        if norm and abs(norm - 1.0) > 1e-6:
+            vector = np.asarray(vector, dtype=np.float32) / norm
+        return sorted((_a_cosine(v) for v in (matrix @ vector).tolist()),
+                      reverse=True)
     except Exception:  # noqa: BLE001
         return []
 
@@ -1828,6 +1837,29 @@ def unknown_terms(connection: sqlite3.Connection, text: str) -> list[str]:
     return out
 
 
+# Above what share of unknown terms the list stops being readable as a statement
+# about the corpus.
+#
+# It was first written as exact equality -- every term unknown -- which is what
+# the phenomenon looks like and is not what it is. One shared word switched it
+# off: between related languages a cognate is always available, and `color`,
+# `radio`, `natural`, `total`, `error`, `region`, a number, an initialism or a
+# proper noun all did it. Measured over six queries on one package, the
+# crossings sat at 0.7143, 0.8333, 0.9286, 1.0000 and 1.0000, and the
+# same-language questions at 0.00 and 0.17.
+#
+# So the cut has to be above 0.17 and no higher than 0.7143 to mark all of one
+# group and none of the other, and 0.70 is the round number in that band. A
+# higher one looked defensible and is not: 0.80 would miss the 0.7143 case,
+# which is a real crossing with two cognates in it.
+#
+# One language pair on one package, which is enough to place a cut inside a gap
+# that wide and not enough to claim the value transfers. What does transfer is
+# that an exact cut on a quantity that spreads is the wrong shape -- the same
+# finding NOTHING_NEAR and STANDS_CLEAR reached from the other side.
+CROSS_LANGUAGE_SHARE = 0.70
+
+
 def unfamiliar(connection: sqlite3.Connection, text: str) -> dict:
     """The unfamiliar part of a text, with what is needed to read it.
 
@@ -1852,18 +1884,34 @@ def unfamiliar(connection: sqlite3.Connection, text: str) -> dict:
 
     language = _corpus_language(connection)
     written_in, _ = B.detect_language(text)
+    # Zero terms to consider is not a text made of familiar words. Left at zero
+    # the share would read as "nothing unknown", which is the wrong answer to a
+    # question the data cannot answer.
+    share = len(unknown) / len(considered) if considered else None
+
+    # The share leads and the detection only vetoes, which is the opposite of
+    # what it looks like it should be. Detection is unreliable on the short
+    # texts questions are: "how do you factor a quadratic polynomial" comes back
+    # as Portuguese with a score of 0.29, because `do` and `a` are Portuguese
+    # function words too. So it is trusted only when it positively agrees with
+    # the corpus -- there, whatever the share, this is not a crossing.
+    same_language = bool(language and written_in and written_in == language)
+    crossed = bool(language and not same_language
+                   and share is not None and share >= CROSS_LANGUAGE_SHARE)
     return {
         "terms": unknown,
         "considered": len(considered),
-        # Zero terms to consider is not a text made of familiar words. Left at
-        # zero it would read as "nothing unknown", which is the wrong answer to
-        # a question the data cannot answer.
-        "share": round(len(unknown) / len(considered), 4) if considered else None,
+        "share": round(share, 4) if share is not None else None,
         "language": language,
         "written_in": written_in,
-        "cross_language": bool(
-            language and written_in and written_in != language and unknown
-            and len(unknown) == len(considered)),
+        "cross_language": crossed,
+        # What a consumer actually hangs a decision on, and it is deliberately
+        # not "not cross_language". A share this high makes the list unreadable
+        # whatever the cause -- another language, or a corpus too small to have
+        # seen ordinary words -- and saying "readable" over a share of 0.93 was
+        # the part that genuinely misled.
+        "meaningful": bool(unknown) and (
+            share is not None and share < CROSS_LANGUAGE_SHARE),
     }
 
 
@@ -1903,9 +1951,10 @@ def assess(connection: sqlite3.Connection, text: str) -> dict:
         "calibrated_from_questions": calibrated_from_questions(connection),
         "unknown_terms": strange["terms"],
         "unknown_share": strange["share"],
-        # Suppressed rather than reported across languages: there the list is
-        # every term of the query and says nothing about the corpus.
-        "unknown_terms_meaningful": not strange["cross_language"],
+        # Suppressed where the list stops saying anything about the corpus:
+        # across languages it is every term of the query, and a share this high
+        # is unreadable whatever put it there.
+        "unknown_terms_meaningful": strange["meaningful"],
         "cross_language": strange["cross_language"],
     }
 

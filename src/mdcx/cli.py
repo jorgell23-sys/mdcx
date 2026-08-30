@@ -475,6 +475,59 @@ def _select_start_method() -> str:
     return "spawn"
 
 
+def accelerated_recognition() -> str | None:
+    """Say when optical recognition has quietly lost the card.
+
+    `onnxruntime` and `onnxruntime-gpu` publish the same module and cannot
+    coexist; whichever pip wrote last wins, and it is usually the CPU one. When
+    that happens nothing fails. There is no exception, nothing in any log, and
+    `pip list` shows both distributions without complaint -- the only thing that
+    changes is that a scanned page costs tens of times more. It was found by
+    reviewing compatibility rather than by chasing a symptom, and it came back
+    on three consecutive upgrades.
+
+    So the condition is stated where it can be seen: the machine has a card and
+    the runtime that would use it does not offer it. This does not repair
+    anything, and says what would -- the same shape `language_mismatch` has,
+    which explains an empty result instead of fixing the query.
+
+    None when there is nothing to say, including when neither piece is
+    installed: a machine with no card and no runtime is not misconfigured.
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+    try:
+        if not torch.cuda.is_available():
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+    try:
+        import onnxruntime
+    except ImportError:
+        return None
+    try:
+        providers = list(onnxruntime.get_available_providers())
+    except Exception:  # noqa: BLE001
+        return None
+    if any("CUDA" in p or "Tensorrt" in p for p in providers):
+        return None
+
+    return (
+        "This machine has a CUDA card and onnxruntime does not offer it: "
+        f"{', '.join(providers) or 'no providers'}. Optical recognition will "
+        "run on the processor, which costs tens of times more and fails in no "
+        "other way. The usual cause is the CPU build of onnxruntime installed "
+        "over onnxruntime-gpu -- they publish the same module and cannot "
+        "coexist. To repair: "
+        "'pip uninstall -y onnxruntime' then "
+        "'pip install --force-reinstall --no-deps onnxruntime-gpu', "
+        "and install mdcx[all-gpu] rather than mdcx[all] so the next upgrade "
+        "does not put it back.")
+
+
 def main() -> int:
     console.configure()
     ap = argparse.ArgumentParser(
@@ -525,6 +578,12 @@ def main() -> int:
     args = ap.parse_args()
 
     _configure_tls()
+
+    # Before anything long starts, because the whole cost of this defect is time
+    # and it is only visible by measuring it.
+    lost = accelerated_recognition()
+    if lost:
+        print(f"WARNING: {lost}", file=sys.stderr)
 
     input_root = Path(args.input).resolve()
     output_root = Path(args.output).resolve()

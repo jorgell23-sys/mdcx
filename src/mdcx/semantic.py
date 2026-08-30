@@ -204,7 +204,20 @@ def encode(texts: list[str], role: str = "passage", name: str | None = None,
 
     # Reduced precision is a way of spending the accelerator, not a change to
     # the format: a package stores single precision whatever produced it.
-    return np.asarray(output, dtype=np.float32)
+    vectors = np.asarray(output, dtype=np.float32)
+
+    # And unit length is part of what this function promises, which half
+    # precision quietly took away: the model normalises in float16 on the
+    # accelerator, so what comes back has norm 1 + 4.5e-4 and casting to float32
+    # preserves the error rather than removing it. A dot product of two such
+    # vectors then leaves the interval a cosine lives in.
+    #
+    # This was reported as vectors read from a package, and the stored side had
+    # already been repaired; the query side is where the remaining excess came
+    # from, and it is measured here at exactly the 4.5e-4 that was observed.
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    np.divide(vectors, norms, out=vectors, where=norms > 0)
+    return vectors
 
 
 def dimensions(name: str | None = None) -> int:

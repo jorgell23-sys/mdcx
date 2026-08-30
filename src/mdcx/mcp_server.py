@@ -209,6 +209,31 @@ def _calibrated_from_questions() -> bool:
                for p in packages)
 
 
+def _reach_by_package() -> dict[str, float]:
+    """What each open package measured as its own reach.
+
+    Published beside the aggregate because the aggregate is a minimum, and a
+    minimum over four packages is a property of the narrowest of them rather
+    than of the one that answered. Measured on four: the reported threshold was
+    0.554 for every query, from the narrowest package, while the best passage
+    came sometimes from one at 0.5888.
+
+    The criterion itself is not changed, and that is their measurement rather
+    than my reluctance: against the alternative -- the reach of the package the
+    best passage came from -- the minimum wins six to one over 42 queries.
+    "What is a black hole and how does it curve spacetime" reaches 0.5887
+    against its own package's 0.5888 and would be marked as nothing-near by a
+    ten-thousandth. Reporting each reach lets a consumer apply the stricter rule
+    where its cost is worth paying, without imposing it on everyone.
+    """
+    each: dict[str, float] = {}
+    for package in _open_packages():
+        value = archive.answerable_at(package["connection"])
+        if value:
+            each[package["name"]] = round(value, 4)
+    return each
+
+
 def _reach_of_open_packages() -> float | None:
     """What the open packages measured as their own reach, or None if none did.
 
@@ -237,36 +262,38 @@ def _nothing_near(closeness: float, clearance: float,
     return archive._below_reach(closeness, clearance, reach, from_questions)
 
 
-def _unfamiliar_across_packages(query: str) -> list[str]:
-    """Terms no served package has seen, where that means anything.
+def _unfamiliar_by_package(query: str) -> dict[str, list[str]]:
+    """Words no package has seen, reported against the package that has not.
 
-    A term one package knows is a term the corpus knows: several packages are
-    served as one, so the intersection is what counts.
+    Once by package rather than once for all of them, and the difference is not
+    presentation. The first version intersected: a term one package knows is a
+    term the corpus knows, which is a defensible definition and collapses as the
+    library grows. Four packages served together each lacked something different
+    -- one `vertices`, one five terms, one two, one `coloring` -- and no term was
+    missing from all four, so the intersection was empty while three of the four
+    had never seen the word the question turned on. The signal was strongest
+    with one package and gone with four, and what grew was the shelf rather than
+    the corpus.
 
-    Empty across languages, and that is the point rather than a gap. The meaning
-    index reaches a Spanish question against an English corpus and the word
-    index cannot, so there every term comes back unknown -- a measure of which
-    language the corpus is in, published beside an answer that is perfectly
-    good. Saying nothing is the honest reply.
+    The question a reader has is also not the one an aggregate answers. They are
+    not asking whether some package in the set knows `coloring`; they are asking
+    whether the package the passage they are about to cite came from knows it.
+    Passages already carry their package, and now so does this.
+
+    A package whose list says nothing about the corpus -- every term unfamiliar
+    because the question is in another language -- is left out on its own,
+    without silencing the ones that were readable.
     """
     try:
         packages = _open_packages()
     except Exception:  # noqa: BLE001
-        return []
-    common: set[str] | None = None
-    order: list[str] = []
+        return {}
+    found: dict[str, list[str]] = {}
     for package in packages:
         strange = archive.unfamiliar(package["connection"], query)
-        if strange["cross_language"]:
-            return []
-        terms = set(strange["terms"])
-        common = terms if common is None else (common & terms)
-        for term in strange["terms"]:
-            if term not in order:
-                order.append(term)
-    if not common:
-        return []
-    return [t for t in order if t in common]
+        if strange["meaningful"]:
+            found[package["name"]] = strange["terms"]
+    return found
 
 
 def _closest_to(query: str) -> tuple[float, float] | None:
@@ -545,6 +572,12 @@ def create_server():
             "The reply carries `similarity`, how near the corpus comes to the "
             "question, and a `warning` when nothing in it is about the question "
             "-- the passages are still returned, being the nearest there are. "
+            "Where several packages are served the two numbers beside it have "
+            "different provenance and should not be subtracted: `similarity` is "
+            "over all of them pooled, while `answerable_at` is the LOWEST of "
+            "their calibrated reaches, so the threshold in force comes from the "
+            "narrowest package rather than from the one a passage came from. "
+            "`answerable_at_by_package` gives each of them. "
             "When the package was built with meaning indexed, a query reaches "
             "documents written in other languages as well; use info to see "
             "whether it was. Without that, matching is by word and the query "
@@ -565,13 +598,15 @@ def create_server():
             "does not know that newer is better and often it is not. When the "
             "preference could not be applied at all the reply says so, in "
             "`prefer_applied` and `prefer_reason`; a reply without those "
-            "fields is one where it was applied. `unknown_terms` lists words "
-            "of the question this corpus has never seen: a corpus can come "
-            "close to a question whose defining word it lacks -- the senses of "
-            "a homonym sit together -- so treat passages with suspicion when "
-            "the word the question turns on is listed. It is absent when the "
-            "question is asked in another language than the corpus, where "
-            "every word would be listed and none of it would mean anything."
+            "fields is one where it was applied. `unknown_terms` maps each "
+            "package to the words of the question it has never seen: a corpus "
+            "can come close to a question whose defining word it lacks -- the "
+            "senses of a homonym sit together -- so treat a passage with "
+            "suspicion when the word the question turns on is listed against "
+            "the package that passage came from. A package is absent from the "
+            "map when it knows every word, and when the question is in another "
+            "language than that package, where every word would be listed and "
+            "none of it would mean anything."
         ),
     )
     async def search(query: str, limit: int = 5,
@@ -641,7 +676,7 @@ def create_server():
         # Reported rather than acted on: whether an unfamiliar word should
         # refuse a query depends on what the query is for, and a word can be
         # peripheral.
-        strange = _unfamiliar_across_packages(query)
+        strange = _unfamiliar_by_package(query)
         if strange:
             answer["unknown_terms"] = strange
 
@@ -653,6 +688,15 @@ def create_server():
             reach = _reach_of_open_packages()
             if reach is not None:
                 answer["answerable_at"] = round(reach, 4)
+                # Two numbers of different provenance were being published side
+                # by side and read as describing one package. `similarity` is
+                # over every open package pooled; `answerable_at` is the lowest
+                # of their calibrated reaches. Named per package so nobody
+                # subtracts them believing the difference says something about
+                # the package a passage came from.
+                each = _reach_by_package()
+                if len(each) > 1:
+                    answer["answerable_at_by_package"] = each
             if _nothing_near(closeness, clearance, reach,
                              _calibrated_from_questions()):
                 answer["warning"] = (

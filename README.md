@@ -132,6 +132,7 @@ orders of magnitude.
 | `pip install "mdcx[tables]"` | tables a page does not draw | 1.2 GB |
 | `pip install "mdcx[multilingual]"` | cross-language retrieval | 2.5 GB |
 | `pip install "mdcx[all]"` | all of the above, including OCR | 4 GB |
+| `pip install "mdcx[all-gpu]"` | the same, without pinning the CPU onnxruntime | 4 GB |
 
 Conversion accounts for the heavy dependencies. A recipient who only queries an
 `.mdcx` file installs neither Docling nor PyTorch.
@@ -148,6 +149,28 @@ and columns run. It reads the shape only: the words still come from the text
 layer of the document, so a cell cannot hold anything the page does not say.
 Without it those pages are read by Docling instead, which is slower but already
 present in the `convert` extra.
+
+### If the machine has a CUDA card
+
+Install `mdcx[all-gpu]` rather than `mdcx[all]`, and install `onnxruntime-gpu`
+yourself.
+
+`onnxruntime` and `onnxruntime-gpu` are two distributions publishing the same
+module, so they cannot coexist: whichever pip wrote last wins, and it is usually
+the CPU one. An extra that pins the CPU build therefore removes CUDA from an
+environment that had prepared it, on every upgrade — measured on three
+consecutive releases, in two environments each time, with no error, nothing in
+any log, and optical recognition simply costing tens of times more. `all-gpu` is
+`all` without that pin.
+
+pip cannot express "either of these distributions", so this cannot be settled by
+declaration alone. `mdcx-convert` therefore checks at startup: when the machine
+has a card and the runtime does not offer it, it says so and gives the repair.
+The check on its own is one line:
+
+```
+python -c "import onnxruntime as o; assert 'CUDAExecutionProvider' in o.get_available_providers(), 'OCR WITHOUT THE CARD'"
+```
 
 ## Quick start
 
@@ -668,9 +691,23 @@ the literal vocabulary, which does tell an absent `coloring` from a present
 The verdict is reported, not overruled. Whether an unfamiliar word should refuse
 a query depends on what the query is for, and a word can be peripheral: *the
 slope of a line drawn in Patagonia* is answerable and `patagonia` is unknown.
-The MCP `search` reply carries `unknown_terms` on the same terms — present when
-the words are strange and the languages match, absent otherwise, so the field
-means something when it is there.
+The MCP `search` reply carries `unknown_terms` **per package** — a map from the
+package to the words of the question it has never seen, so a reader can cross
+the strange word with the package the passage they are about to cite came from.
+Not pooled: intersecting across packages emptied the signal as the library grew,
+because four packages each lacked something different and no term was missing
+from all four, while three of them had never seen the word the question turned
+on. A package is absent from the map when it knows every word, and when the
+question is in another language than that package.
+
+Where several packages are served, `similarity` is over all of them pooled and
+`answerable_at` is the **lowest** of their calibrated reaches, so the threshold
+in force comes from the narrowest package rather than from the one a passage
+came from. `answerable_at_by_package` gives each of them. The criterion is left
+as it is on measurement rather than preference: against the alternative — the
+reach of the package the best passage came from — the minimum wins six to one
+over 42 queries, because a question one narrow package answers would otherwise
+be condemned by a wider one's threshold.
 
 Note also that vectors are stored in half precision. They are renormalised when
 read, because rounding to half precision costs the normalisation and every
