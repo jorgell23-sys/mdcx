@@ -1816,6 +1816,13 @@ def unknown_terms(connection: sqlite3.Connection, text: str) -> list[str]:
     Order is kept and repeats are dropped, so the result reads as the unfamiliar
     part of the text in the order it was written.
 
+    It also cannot see a short token, and that has bitten a reader. The index
+    records nothing under three characters, so a number like `10` or `6` is not
+    absent from the vocabulary -- it was never in it, and never can be. A
+    consumer measuring novelty by unfamiliar words therefore cannot tell two
+    instances of one problem apart when what distinguishes them is a small
+    number, and no weighting fixes it: the token is not there to weigh.
+
     This is literal, and the index it reads is not the one that crosses
     languages. The meaning index reaches a Spanish question against an English
     corpus; the word index cannot, so asked across languages this returns every
