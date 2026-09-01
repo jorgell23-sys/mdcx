@@ -156,6 +156,46 @@ def load(name: str | None = None):
         return model
 
 
+def loaded() -> bool:
+    """Whether an encoder is held in this process right now."""
+    with _LOCK:
+        return bool(_LOADED)
+
+
+def unload() -> bool:
+    """Drop the encoder, so an idle process stops holding it.
+
+    Loading takes seconds and holds gigabytes -- three server processes that had
+    loaded it were measured holding 8.9 GB between them while answering nobody.
+    A process that is going to sit idle for a long time has no business keeping
+    that, and the next query pays seconds to get it back.
+
+    Safe while a query is running: dropping the reference here does not free a
+    model another thread is holding, because that thread holds its own
+    reference. What is dropped is the cache, not the object.
+
+    Returns whether there was anything to drop.
+    """
+    with _LOCK:
+        if not _LOADED:
+            return False
+        _LOADED.clear()
+
+    # The card is the part that matters, and Python freeing the object is not
+    # enough to give it back: torch keeps its allocator's blocks until asked.
+    try:
+        import gc
+
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - freeing is best effort
+        pass
+    return True
+
+
 def prefixes(name: str | None = None) -> tuple[str, str]:
     """The query and passage prefixes of a model, empty when it uses none."""
     return MODEL_PREFIXES.get(name or model_name(), ("", ""))

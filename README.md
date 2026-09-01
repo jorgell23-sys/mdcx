@@ -21,6 +21,7 @@ encrypted file, and query it from an agent through the Model Context Protocol.
 - [Something to keep that is not text to search](#something-to-keep-that-is-not-text-to-search)
 - [Writing often](#writing-often)
 - [MCP server](#mcp-server)
+- [When the client goes away](#when-the-client-goes-away)
 - [Language support](#language-support)
 - [Cross-language retrieval](#cross-language-retrieval)
 - [Portable paths](#portable-paths)
@@ -386,6 +387,16 @@ actionable and *this is a JPEG* is. `patiently(call)` retries what raises
 `RateLimited`, honouring `Retry-After` when the server sent one: every catalogue
 rate limits, and none of that is knowledge about a particular one. It catches
 nothing else, because a 403 on a whole download column is not transient.
+
+A `Candidate` can also say **which server** its file would come from, in
+`download`, with `host` reading it back. The split between a cheap `search` and
+an expensive `fetch` exists so a caller can decide what is worth fetching, and
+which server it would be asking is one of the things worth deciding on: measured
+over 40 candidates from one catalogue, 25 of them — 62 per cent — resolve to a
+single host that answers 403 to everything, while another returns a 5 MB PDF in
+two seconds. Working down the ranking spends the whole budget on the first. Only
+the catalogue knows this, so only the catalogue can say it; the check notes when
+one host holds more than half.
 
 `tests/test_sources_kit.py` holds a source in twenty lines, against no network.
 An executable example does not go quietly out of date.
@@ -786,6 +797,20 @@ is distributed and read many times. Measured on a 30 MiB database of 190
 documents: 1.03 s for 2,170 KiB against 6.22 s for 1,569 KiB. Six times the
 speed for 38 per cent more bytes. Nothing else about the package changes.
 
+### When the client goes away
+
+The server ends its own process rather than returning and letting the
+interpreter decide when. Returning from `main` is not exiting: Python waits for
+every non-daemon thread before shutting down, and the libraries under an encoder
+start some. Ten server processes were measured alive at once, the oldest for two
+and a half hours, holding 7.25 GB between them and consuming no processor at
+all.
+
+And it lets go of the encoder after `MDCX_IDLE_UNLOAD_MINUTES` of silence — 30
+by default, `0` to disable — because the damage does not depend on the cause:
+three gigabytes held by a process answering nobody is worth avoiding either way.
+The next question reloads it in seconds.
+
 ## Language support
 
 Retrieval by word is script-aware. A query matches the words present in the
@@ -1031,6 +1056,7 @@ covers it says which, so a correction that is undone is noticed.
 | `test_table_shapes.py` | the reading of a table the page does not draw, where the model supplies the shape and the text layer the words |
 | `test_headings.py` | that a chapter keeps the section titles its book already carried, whichever engine converted it |
 | `test_reporting.py` | that the summary separates a document measured and found short from one that could not be measured at all |
+| `test_server_leaves.py` | that a server whose client has gone ends its own process rather than waiting on a thread nobody will join, and that it lets go of the encoder after a long silence |
 | `test_sources_kit.py` | the source contract and what a plugin should not have to write again: reading four bytes, waiting when a server asks, and checking a plugin against the contract — plus a source in twenty lines, which does not go out of date the way a paragraph does |
 | `test_incremental.py` | reuse of vectors between packages: that unchanged passages are not encoded again, that an edited one is, and that reuse produces the same ranking |
 

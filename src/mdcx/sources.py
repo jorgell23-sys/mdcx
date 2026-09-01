@@ -60,7 +60,36 @@ class Candidate:
     summary: str = ""
     language: str = ""
     url: str = ""
+    # Where the file itself would come from, when the catalogue knows it without
+    # a further request. Empty when it does not, which is a different thing from
+    # there being none, and is why this is not derived from `url` -- that one is
+    # usually the record's page.
+    #
+    # It is here because the split between a cheap `search` and an expensive
+    # `fetch` exists so a caller can decide what is worth fetching, and one of
+    # the things worth deciding on is which server it would be asking. Measured
+    # over 40 candidates from one catalogue: 25 of them -- 62 per cent -- resolve
+    # to a single host that answers 403 to everything, while another host
+    # returns a 5 MB PDF in two seconds. A caller working down the ranking spends
+    # its whole budget on the first and never reaches the second, and waiting
+    # does not help, because the problem is who is being asked rather than how
+    # often.
+    #
+    # Only the catalogue knows this, so only the catalogue can say it.
+    download: str = ""
     extra: dict = field(default_factory=dict)
+
+    @property
+    def host(self) -> str:
+        """The server the file would come from, or empty when unknown."""
+        if not self.download:
+            return ""
+        from urllib.parse import urlsplit
+
+        try:
+            return urlsplit(self.download).hostname or ""
+        except Exception:  # noqa: BLE001 - an unparseable route names no host
+            return ""
 
     def as_record(self) -> dict:
         """The candidate as a record for packing, so a catalogue is searchable.
@@ -320,6 +349,29 @@ def conforms(source, query: str = "graph theory", limit: int = 3,
                 f"search()[{i}] has an empty identifier, so it cannot be fetched")
         if not candidate.title:
             problems.append(f"search()[{i}] has an empty title")
+
+    # Where the files would come from, which decides what is worth asking for
+    # before anything is asked. A catalogue that concentrates in one host is not
+    # a fault -- it is how that catalogue is built -- and it is the single most
+    # useful thing to know before spending a download budget on it.
+    hosts = [c.host for c in found if isinstance(c, Candidate) and c.host]
+    if hosts:
+        top = max(set(hosts), key=hosts.count)
+        share = hosts.count(top) / len(found)
+        # Three at least, and more than half of them. With two candidates one
+        # host is always half of them and that says nothing; concentration
+        # needs enough candidates to be concentration.
+        if len(found) >= 3 and share > 0.5:
+            problems.append(
+                f"note: {hosts.count(top)} of {len(found)} candidates would be "
+                f"fetched from {top}. One host that refuses will consume a "
+                "whole download budget before a working one is reached")
+    elif found:
+        problems.append(
+            "note: no candidate says which host its file would come from. "
+            "Setting Candidate.download where the catalogue knows it lets a "
+            "caller spread its requests instead of finding out one fetch at a "
+            "time")
 
     # Fetching costs, so it is one candidate, and it can be turned off.
     usable = [c for c in found if isinstance(c, Candidate) and c.identifier]

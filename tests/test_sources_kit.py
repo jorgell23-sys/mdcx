@@ -68,7 +68,14 @@ class ReferenceSource:
     def search(self, query: str, limit: int) -> list[sources.Candidate]:
         found = [
             sources.Candidate(identifier=key, title=f"A work about {query}",
-                              source=self.name, summary="Held for the example.")
+                              source=self.name, summary="Held for the example.",
+                              # Said here because the catalogue knows it here,
+                              # and a caller deciding what to fetch wants to
+                              # know which server it would be asking. Two
+                              # hosts rather than one, because spreading the
+                              # requests is the point.
+                              download=f"https://{key.split(':')[1]}.example/"
+                                       f"{key.replace(':', '-')}.pdf")
             for key in sorted(self.holdings)
         ]
         return found[:limit]
@@ -369,3 +376,62 @@ def test_check_names_a_source_either_way(monkeypatch):
     sources._check(["reference"])
 
     assert asked == [["reference"], ["reference"]]
+
+
+# --- Which server the file would come from ------------------------------------
+
+
+def test_a_candidate_can_say_where_the_file_would_come_from():
+    """The split between a cheap search and an expensive fetch exists so a
+    caller can decide what is worth fetching, and which server it would be
+    asking is one of the things worth deciding on.
+
+    Measured over 40 candidates from one catalogue: 25 of them, 62 per cent,
+    resolve to a single host that answers 403 to everything, while another
+    returns a 5 MB PDF in two seconds. A caller working down the ranking spends
+    its budget on the first and never reaches the second.
+    """
+    knows = sources.Candidate(
+        identifier="1", title="A work",
+        download="https://library.oapen.org/bitstream/20.500/1/a.pdf")
+
+    assert knows.host == "library.oapen.org"
+
+
+def test_not_knowing_the_host_is_said_as_not_knowing():
+    """Empty is different from there being none, which is why it is not derived
+    from `url`: that one is usually the record's page, not the file."""
+    assert sources.Candidate(identifier="1", title="A").host == ""
+    assert sources.Candidate(identifier="1", title="A",
+                             url="https://doab.org/handle/1").host == ""
+    assert sources.Candidate(identifier="1", title="A",
+                             download="not a url at all").host == ""
+
+
+def test_the_check_says_when_one_host_holds_the_catalogue():
+    """Not a fault -- it is how that catalogue is built -- and the single most
+    useful thing to know before spending a download budget on it."""
+    class OneHost(ReferenceSource):
+        def search(self, query, limit):
+            return [sources.Candidate(
+                identifier=str(i), title=f"work {i}",
+                download=f"https://library.oapen.org/bitstream/{i}.pdf")
+                for i in range(3)][:limit]
+
+    problems = sources.conforms(OneHost(), fetch=False)
+
+    assert any("library.oapen.org" in p and p.startswith("note:")
+               for p in problems), problems
+
+
+def test_saying_nothing_about_hosts_is_itself_worth_a_note():
+    """A note and not a fault: a catalogue may genuinely not know until it
+    asks, and then the honest answer is an empty field."""
+    class Silent(ReferenceSource):
+        def search(self, query, limit):
+            return [sources.Candidate(identifier="1", title="A work")]
+
+    problems = sources.conforms(Silent(), fetch=False)
+
+    assert any("which host" in p for p in problems), problems
+    assert all(p.startswith("note:") for p in problems), problems

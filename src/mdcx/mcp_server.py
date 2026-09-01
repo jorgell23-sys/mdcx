@@ -622,6 +622,7 @@ def create_server():
             back. Each passage carries "dated" and "dated_from" where the
             package knows them, so the preference can also be exercised here.
         """
+        _asked_now()
         top = max(1, min(int(limit), 20))
         scope = (direction or "").lower().strip() or None
         if scope not in ("received", "sent"):
@@ -759,6 +760,7 @@ def create_server():
     )
     async def info() -> dict:
         """Return the corpus record without querying it."""
+        _asked_now()
         packages = _open_packages()
         if len(packages) == 1:
             description = _describe(packages[0])
@@ -801,6 +803,7 @@ def create_server():
     )
     async def document(name: str) -> dict:
         """Return the full text of one document in the corpus."""
+        _asked_now()
         packages = _open_packages()
         for package in packages:
             connection = package["connection"]
@@ -852,8 +855,89 @@ def main() -> int:
 
     header = _STATE.get("header", {})
     print(f"mdcx: {header.get('documents')} documents ready.", file=sys.stderr)
-    server.run()
-    return 0
+
+    _watch_for_idleness()
+    try:
+        server.run()
+    except (BrokenPipeError, EOFError, KeyboardInterrupt):
+        # The client went away. That is how this process is meant to end.
+        pass
+    finally:
+        _leave()
+    return 0  # pragma: no cover - _leave does not return
+
+
+def _leave(code: int = 0):
+    """End the process, rather than let the interpreter decide when to.
+
+    Returning from `main()` is not the same as exiting. Python waits for every
+    non-daemon thread before it shuts down, and the libraries under an encoder
+    start some; a server whose client has gone therefore sits there, holding
+    what it held, consuming no processor at all. Ten such processes were
+    measured alive at once, the oldest for two and a half hours, retaining
+    7.25 GB between them -- and the shape of it is the tell: not a loop, not a
+    request being served, just waiting.
+
+    The cause was not proven by whoever reported it and is not proven here.
+    What is certain is that this makes the ending definite whichever of the
+    candidates it was, and that a server with no client has nothing left to
+    finish.
+    """
+    try:
+        sys.stderr.flush()
+        sys.stdout.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    os._exit(code)
+
+
+# After how long with nothing asked the encoder is dropped. It is dropped and
+# not the process, because a process that exits on its own would race the client
+# that is about to use it; a process that has let go of three gigabytes is
+# harmless, and pays seconds to get them back when something arrives.
+#
+# Zero turns it off. Thirty minutes is well past any pause in a conversation and
+# well short of the two and a half hours an orphan was measured holding the
+# card.
+IDLE_MINUTES = float(os.environ.get("MDCX_IDLE_UNLOAD_MINUTES", "30") or 0)
+
+_LAST_ASKED = [0.0]
+
+
+def _asked_now():
+    import time
+
+    _LAST_ASKED[0] = time.monotonic()
+
+
+def _watch_for_idleness():
+    """Drop the encoder after a long enough silence.
+
+    The watcher is a daemon thread on purpose, and the reason is the defect
+    above: a non-daemon thread is exactly what keeps a finished process alive.
+    A repair that installed one would be causing what it set out to fix.
+    """
+    if IDLE_MINUTES <= 0:
+        return
+    import threading
+    import time
+
+    from . import semantic
+
+    def watch():
+        while True:
+            time.sleep(30)
+            if not semantic.loaded():
+                continue
+            quiet = time.monotonic() - _LAST_ASKED[0]
+            if quiet >= IDLE_MINUTES * 60 and semantic.unload():
+                print(f"mdcx: encoder released after {quiet / 60:.0f} idle "
+                      "minutes; it reloads on the next question.",
+                      file=sys.stderr)
+
+    _asked_now()
+    threading.Thread(target=watch, daemon=True,
+                     name="mdcx-idle-watch").start()
 
 
 if __name__ == "__main__":
