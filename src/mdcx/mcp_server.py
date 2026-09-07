@@ -473,6 +473,19 @@ def _merge_notes(collected: list[dict], into: dict | None) -> None:
     """
     if into is None or not collected:
         return
+
+    # Carried before the early return below, and that is the point: a reply
+    # that omits this presents a passage found under a different word as a
+    # literal match, which is the failure the field exists to prevent. Merged
+    # across packages, since each answers about its own vocabulary.
+    read_as: dict = {}
+    for note in collected:
+        for term, found in (note.get("read_as") or {}).items():
+            read_as.setdefault(term, [])
+            read_as[term] += [c for c in found if c not in read_as[term]]
+    if read_as:
+        into["read_as"] = read_as
+
     if any(n.get("prefer_applied") for n in collected):
         into["prefer_applied"] = True
         return
@@ -598,7 +611,13 @@ def create_server():
             "does not know that newer is better and often it is not. When the "
             "preference could not be applied at all the reply says so, in "
             "`prefer_applied` and `prefer_reason`; a reply without those "
-            "fields is one where it was applied. `unknown_terms` maps each "
+            "fields is one where it was applied. `read_as` appears when a "
+            "word of the question was not in the corpus and passages were "
+            "found under a spelling the shape of its letters suggests -- an "
+            "optical recognition error, usually. Those passages are not "
+            "literal matches for the word asked about, and quoting them as "
+            "such would claim the document says what it does not. "
+            "`unknown_terms` maps each "
             "package to the words of the question it has never seen: a corpus "
             "can come close to a question whose defining word it lacks -- the "
             "senses of a homonym sit together -- so treat a passage with "
@@ -677,6 +696,14 @@ def create_server():
         # Reported rather than acted on: whether an unfamiliar word should
         # refuse a query depends on what the query is for, and a word can be
         # peripheral.
+        # A word optical recognition misread is a word the index does not
+        # hold, and the passage that answers is unreachable by matching. Where
+        # the shape of the letters found it under another spelling, the reply
+        # says which -- presenting it as a literal match would be claiming the
+        # document says what it does not.
+        if notes.get("read_as"):
+            answer["read_as"] = notes["read_as"]
+
         strange = _unfamiliar_by_package(query)
         if strange:
             answer["unknown_terms"] = strange

@@ -22,6 +22,7 @@ encrypted file, and query it from an agent through the Model Context Protocol.
 - [Writing often](#writing-often)
 - [MCP server](#mcp-server)
 - [When the client goes away](#when-the-client-goes-away)
+- [Reaching a word the transcription got wrong](#reaching-a-word-the-transcription-got-wrong)
 - [Language support](#language-support)
 - [Cross-language retrieval](#cross-language-retrieval)
 - [Portable paths](#portable-paths)
@@ -811,6 +812,60 @@ by default, `0` to disable — because the damage does not depend on the cause:
 three gigabytes held by a process answering nobody is worth avoiding either way.
 The next question reloads it in seconds.
 
+### Reaching a word the transcription got wrong
+
+A word that came out of optical recognition with one letter misread is a word
+the index does not contain, and literal matching can never return it. There is
+no error to show for it: the reply is simply empty, and the passage sits in the
+corpus unreachable.
+
+Optical recognition does not misread letters at random — it misreads the ones
+drawn alike, `0` for `O`, `1` for `l`, `5` for `S` — so grouping letters by shape
+puts the misread word and its original in one bucket. The bucket is far too
+coarse to answer with, holding hundreds of words, so it never answers: it
+proposes a handful of candidates and edit distance decides among them.
+
+```
+mdcx pack --output docs --target corpus.mdcx --key "passphrase" --shapes
+mdcx shapes corpus.mdcx --key "passphrase"      # to one written without it
+```
+
+Measured on a corpus of 188 documents, against the methods that already exist
+for the same problem: 76.5 % of misread words recovered, against 0 % for literal
+matching and 45.3 % for trigram overlap, at a seventh of the trigram cost. It
+costs 2.96 % of package there, and more on a corpus whose vocabulary is nearly
+all distinct — which is why it is asked for rather than assumed. A corpus that
+never went through optical recognition pays and gets nothing.
+
+Three boundaries worth knowing, and the third is the one that decides how to
+read a reply.
+
+It is **not a spell checker**: the same measurement over randomly substituted
+letters, the error a typist makes, falls to 49.6 % while trigrams do not move —
+the advantage comes from the shape, and so does its limit.
+
+It runs **only where the answer would otherwise be empty**: terms are matched
+with OR, so one word the corpus does have is enough to return passages, and then
+nothing is widened.
+
+And **half of what it proposes is not a transcription error**. Precision was
+measured at 49.9 %, against 59.1 % for trigrams — for Latin script the table is
+coarse, since all ten digits and 22 of 26 lowercase letters fall in one class, so
+in practice the sieve proposes any single substitution among them. `libre` finds
+`libro`, `precis` finds `precio`. That is survivable exactly because the reply
+says what it did: a caller reads `read_as` and decides, where a caller shown a
+bare passage would have no way to know.
+
+Where a passage was found under another spelling the reply says so, in
+`read_as`. Presenting it as a literal match would claim the document says what
+it does not, and a citation carrying the words of the document is what makes the
+package worth having.
+
+The technique is not new, and the attribution belongs here: it is the character
+shape codes Spitz described at Xerox in the nineties, used there over document
+images to avoid a full recognition pass. What differs is where it is applied —
+over text already converted, for the errors the conversion left behind.
+
 ## Language support
 
 Retrieval by word is script-aware. A query matches the words present in the
@@ -1057,6 +1112,7 @@ covers it says which, so a correction that is undone is noticed.
 | `test_headings.py` | that a chapter keeps the section titles its book already carried, whichever engine converted it |
 | `test_reporting.py` | that the summary separates a document measured and found short from one that could not be measured at all |
 | `test_server_leaves.py` | that a server whose client has gone ends its own process rather than waiting on a thread nobody will join, and that it lets go of the encoder after a long silence |
+| `test_shapekey.py` | recovering a word optical recognition misread: that letters drawn alike share a key, that the sieve proposes and never decides, that it runs only where the answer would be empty, and that the reply says what was read as what |
 | `test_sources_kit.py` | the source contract and what a plugin should not have to write again: reading four bytes, waiting when a server asks, and checking a plugin against the contract — plus a source in twenty lines, which does not go out of date the way a paragraph does |
 | `test_incremental.py` | reuse of vectors between packages: that unchanged passages are not encoded again, that an edited one is, and that reuse produces the same ranking |
 

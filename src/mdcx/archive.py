@@ -52,6 +52,7 @@ import time
 from pathlib import Path
 
 from . import console
+from . import shapekey
 
 MAGIC = b"MDCX"
 VERSION = 1
@@ -214,7 +215,8 @@ def _build_database(folder: Path, semantic: bool = False,
                     reuse: dict | None = None,
                     focus: list[str] | None = None,
                     dates: dict | None = None,
-                    use_mtime: bool = False) -> tuple[bytes, dict]:
+                    use_mtime: bool = False,
+                    shapes: bool = False) -> tuple[bytes, dict]:
     """Build the in-memory database with documents, index and provenance."""
     from . import search as B
 
@@ -334,10 +336,13 @@ def _build_database(folder: Path, semantic: bool = False,
             # absorbs the duplication.
             connection.execute(
                 "INSERT INTO passage VALUES (?,?,?,?,?)",
-                (n_passages, i, j, block,
-                 B._normalize(B.segment_for_index(block))))
+                # Left empty here and filled by `_index_passages`, which is
+                # the only thing that reads it -- writing it now would mean
+                # normalising the whole corpus twice and rewriting the table an
+                # extra time for a value nothing reads in between.
+                (n_passages, i, j, block, None))
 
-    connection.execute("INSERT INTO passage_fts(passage_fts) VALUES('rebuild')")
+    _index_passages(connection)
 
     from . import search as _B
     from collections import Counter as _Counter
@@ -351,6 +356,19 @@ def _build_database(folder: Path, semantic: bool = False,
             if indexable_term(t):
                 df_count[t] += 1
     connection.executemany("INSERT INTO df VALUES (?,?)", df_count.items())
+
+    # Built from `df` and not from the passages, so the sieve and the search
+    # engine share one vocabulary. It costs a tenth of a second against the tens
+    # the rest of packing takes, and it is what lets a question reach a word
+    # optical recognition misread.
+    #
+    # Asked for rather than assumed. It makes the package bigger -- a measured
+    # 2.96 per cent on a corpus of books, and 17.8 on one whose vocabulary is
+    # nearly all distinct -- and what it buys is recovery from transcription
+    # errors, which a corpus that never went through optical recognition does
+    # not have. Charging every corpus for what serves some of them is the thing
+    # this project keeps declining to do.
+    summary_shape = shapekey.build(connection) if shapes else {}
     avg_length = sum(lengths) / len(lengths) if lengths else 60.0
 
     # The language of the corpus is recorded so that a client, a model, or the
@@ -369,6 +387,7 @@ def _build_database(folder: Path, semantic: bool = False,
         "source_folder": folder.name,
         "mean_passage_length": round(avg_length, 2),
         "indexed_terms": len(df_count),
+        **summary_shape,
     }
     if attachments:
         summary["attachments"] = len(attachments)
@@ -485,7 +504,7 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
          reuse_from: Path | None = None,
          focus: list[str] | None = None,
          dates: dict | None = None, use_mtime: bool = False,
-         fast: bool = False) -> dict:
+         fast: bool = False, shapes: bool = False) -> dict:
     """Write the .mdcx file and return its figures."""
     import lzma
 
@@ -532,7 +551,7 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
     t0 = time.perf_counter()
     base_score, summary = _build_database(folder, semantic=semantic, reuse=reuse,
                                           focus=focus, dates=dates,
-                                          use_mtime=use_mtime)
+                                          use_mtime=use_mtime, shapes=shapes)
     t_base = time.perf_counter() - t0
 
     # An empty package is written without complaint and fails only when queried,
@@ -748,6 +767,102 @@ def calibrate(path: Path, key: str, questions: list[str],
 
     return {"answerable_at": reach, "answerable_at_from": "focus-after",
             "questions": len(questions), "signed": bool(signing_key)}
+
+
+def add_shapes(path: Path, key: str, signing_key: str = "") -> dict:
+    """Add the shape index to a package that was written without one.
+
+    Same shape as calibrating: a package is rewritten around a changed database
+    rather than rebuilt, so the documents, the passages and the vectors are the
+    ones that were there. Nothing is converted again.
+
+    A signed package needs its signing key, and refuses without it instead of
+    coming back unsigned.
+    """
+    import lzma
+
+    from . import shapekey as _shape
+
+    header = read_header(Path(path))
+    if header.get("signature") and not signing_key:
+        raise ValueError(
+            "this package is signed, and rewriting it would break the "
+            "signature. Pass the signing key to sign the result, or verify "
+            "and re-issue it deliberately")
+
+    connection, _ = open_package(Path(path), key)
+    try:
+        added = _shape.build(connection)
+        data = bytes(connection.serialize())
+    finally:
+        connection.close()
+
+    compressed = lzma.compress(data, preset=PRESET)
+    salt = os.urandom(16)
+    nonce, body = _encrypt(compressed, _derive_key(key, salt))
+
+    header = dict(header)
+    header.pop("_intact", None)
+    header.update({"salt": salt.hex(), "nonce": nonce.hex(),
+                   "body_digest": hashlib.sha256(body).hexdigest(),
+                   "signature": "", "public_key": ""})
+    if signing_key:
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+
+        private = ed25519.Ed25519PrivateKey.from_private_bytes(
+            bytes.fromhex(signing_key))
+        header["signature"] = _sign(header["body_digest"], signing_key)
+        header["public_key"] = private.public_key().public_bytes_raw().hex()
+
+    encoded_header = json.dumps(header, ensure_ascii=False).encode("utf-8")
+    target = Path(path)
+    scratch = target.with_suffix(target.suffix + ".shaping")
+    with open(scratch, "wb") as f:
+        f.write(MAGIC)
+        f.write(struct.pack("<I", len(encoded_header)))
+        f.write(encoded_header)
+        f.write(body)
+    os.replace(scratch, target)
+    return {**added, "signed": bool(signing_key)}
+
+
+def _index_passages(connection: sqlite3.Connection) -> None:
+    """Build the word index, then stop storing the copy it was built from.
+
+    `passage.search_text` is the searchable form of each passage -- folded case
+    and accents, and split into characters for the scripts that do not separate
+    words. FTS5 is declared over it with external content, so it reads the
+    column while indexing and never again: a query runs on the index, and the
+    text a reply quotes comes from `passage.text`.
+
+    So after the index exists the column is duplication, and a measured 7.2 per
+    cent of the file. Emptied, every one of eighteen queries -- short and long
+    -- returns exactly what it returned before.
+
+    What emptying it would break is a later `rebuild`, which would read nothing
+    and leave a corpus that answers no question at all, without an error. That
+    is why the two happen in one place: whoever needs to index again calls this,
+    which fills the column, rebuilds, and empties it once more. It is derived
+    from `text` and costs a pass over the passages.
+    """
+    from . import search as B
+
+    rows = [(B._normalize(B.segment_for_index(text)), rowid)
+            for rowid, text in connection.execute("SELECT id, text FROM passage")]
+    connection.executemany(
+        "UPDATE passage SET search_text = ? WHERE id = ?", rows)
+    connection.execute("INSERT INTO passage_fts(passage_fts) VALUES('rebuild')")
+    # Emptied rather than dropped: the column is what FTS5 was declared over,
+    # and a schema that no longer matches the declaration is a different kind of
+    # trouble. What is given back is the bytes.
+    connection.execute("UPDATE passage SET search_text = NULL")
+    # And the pages the text used to occupy are handed back. Without this the
+    # column is emptied and the file does not shrink at all -- SQLite keeps the
+    # freed pages on its free list with the old bytes still in them, so the
+    # serialised database still carries the text and the compressor still has to
+    # encode it. Measured: emptying alone made the package 1.4 per cent LARGER.
+    connection.commit()
+    connection.execute("VACUUM")
 
 
 def passage_digest(text: str) -> str:
@@ -1513,23 +1628,57 @@ DOC_TOP_PASSAGES = 8
 CANDIDATES = 1200
 
 def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
-              only: str | None = None) -> list[dict]:
+              only: str | None = None, notes: dict | None = None) -> list[dict]:
     """Resolve a query by word, ranking by document rather than by isolated passage."""
     from . import search as B
 
     phrase = query_text.strip().split(".")[0][:160].strip()
     effective = phrase if len(phrase.split()) >= 5 else query_text
 
-    terms = B.searchable_terms(B._normalize(effective))
-    terms = B.expand_terms(terms, _corpus_language(connection))
+    asked = B.searchable_terms(B._normalize(effective))
+    terms = B.expand_terms(list(asked), _corpus_language(connection))
     if not terms:
         return []
     distinct_terms = set(terms)
 
     expr = " OR ".join(f'"{B.segment_for_index(t)}"' for t in distinct_terms)
     candidates = _run_match(connection, expr, CANDIDATES, only)
+    widened: dict = {}
     if not candidates:
-        return []
+        # Only here, where the answer is already empty and there is nothing left
+        # to lose. A word optical recognition misread is a word the index does
+        # not hold, so no amount of matching reaches it; the shape of its
+        # letters proposes what it might have been, and edit distance decides.
+        #
+        # The scoring terms are widened along with the expression, and that is
+        # not incidental: the passage found this way contains the misread word
+        # and not the word that was asked for, so a frequency count over the
+        # original terms alone comes back empty and every result is dropped one
+        # loop later. Widening the query without widening what is counted looks
+        # like the sieve finding nothing.
+        from . import shapekey as _shape
+
+        # Over what was asked, not over what `expand_terms` added. The
+        # glossary appends cross-language equivalents, which a monolingual
+        # corpus does not hold either -- widening those would report, as a word
+        # of the question the corpus lacks, a word nobody typed.
+        widened = _shape.expand(connection, asked)
+        if not widened:
+            return []
+        distinct_terms = distinct_terms | {
+            c for found in widened.values() for c in found}
+        expr = " OR ".join(f'"{B.segment_for_index(t)}"' for t in distinct_terms)
+        candidates = _run_match(connection, expr, CANDIDATES, only)
+        if not candidates:
+            return []
+        if notes is not None:
+            # Recorded here and not when the widening was computed. Proposing a
+            # candidate is not finding a passage: the second match can still
+            # come back empty -- `direction` scopes it while the vocabulary it
+            # was drawn from does not -- and a note surviving that would tell a
+            # reader that passages the semantic engine found were read under
+            # another spelling, which they were not.
+            notes["read_as"] = {t: list(c) for t, c in widened.items()}
 
     df, n_passages, avg_length = _corpus_statistics(connection)
 
@@ -1641,7 +1790,7 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
     # outside, a preference that could not be applied looks exactly like one
     # that applied and moved nothing.
     lexical = [] if mode == "semantic" else lexical_query(
-        connection, query_text, limit * 3, only)
+        connection, query_text, limit * 3, only, notes=notes)
     if mode == "lexical":
         note(False, "the query ran on words alone, and the preference orders "
                     "the fusion of both engines")
@@ -2109,6 +2258,12 @@ def main() -> int:
                         "recovered from the publisher says so: without it a "
                         "reader cannot tell the work's date from one somebody "
                         "typed")
+    e.add_argument("--shapes", action="store_true",
+                   help="build the index that recovers terms optical "
+                        "recognition misread. It makes the package bigger -- "
+                        "measured at 2.96%% on a corpus of books -- and buys "
+                        "nothing on a corpus that never went through optical "
+                        "recognition. `mdcx shapes` adds it to a package later")
     e.add_argument("--fast", action="store_true",
                    help="compress the package for speed rather than size. "
                         "Six times faster for about 38%% more bytes, measured. "
@@ -2160,6 +2315,14 @@ def main() -> int:
                         "unsigned package where a signed one went in would be "
                         "a silent downgrade")
 
+    h = sub.add_parser(
+        "shapes",
+        help="add the shape index to a package written without one")
+    h.add_argument("path")
+    key_argument(h)
+    h.add_argument("--signing-key", default="",
+                   help="hex private key. Required if the package is signed")
+
     x = sub.add_parser("export")
     x.add_argument("path")
     x.add_argument("--target", required=True)
@@ -2186,7 +2349,8 @@ def main() -> int:
                  reuse_from=Path(args.reuse) if args.reuse else None,
                  focus=args.focus,
                  dates=read_dates(Path(args.dates)) if args.dates else None,
-                 use_mtime=args.date_from_mtime, fast=args.fast)
+                 use_mtime=args.date_from_mtime, fast=args.fast,
+                 shapes=args.shapes)
         print(f"Packed: {args.target}")
         print(f"  documents {r['documents']}   passages {r['passages']}"
               + (f"   attachments {r['attachments']}" if r.get("attachments") else ""))
@@ -2206,6 +2370,8 @@ def main() -> int:
             if r.get("passages_reused"):
                 print(f"  passages encoded {r['passages_encoded']:,}   "
                       f"reused {r['passages_reused']:,}".replace(",", "."))
+        if r.get("shape_terms"):
+            print(f"  shape index over {r['shape_terms']:,} term(s)".replace(",", "."))
         if r.get("answerable_at"):
             print(f"  answerable at {r['answerable_at']} "
                   f"(from {r['answerable_at_from']})"
@@ -2219,6 +2385,15 @@ def main() -> int:
         print(f"Calibrated: {args.path}")
         print(f"  answerable at {r['answerable_at']} (from {r['answerable_at_from']}), "
               f"measured against {r['questions']} question(s)")
+        if not r["signed"]:
+            print("  the package is not signed")
+        return 0
+
+    if args.action == "shapes":
+        r = add_shapes(Path(args.path), resolve_key(args), args.signing_key)
+        print(f"Shape index written: {args.path}")
+        print(f"  {r['shape_terms']} term(s) of "
+              f"{shapekey.MINIMUM_LENGTH} characters or more")
         if not r["signed"]:
             print("  the package is not signed")
         return 0
