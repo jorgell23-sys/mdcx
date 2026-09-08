@@ -12,6 +12,8 @@ log.
 
 ## [Unreleased]
 
+## [1.24.0] — 2026-09-08
+
 ### Fixed
 
 - `gpu_available()` no longer reports a card where no device is visible.
@@ -31,6 +33,13 @@ log.
   expected to, so a wrong lane estimate is stated rather than inferred.
 - Documents whose extracted text is dense in private-use-area glyphs — the
   delimiters TeX fonts use — are expected to reach the card.
+- `CHANGELOG.md`, in Keep a Changelog format.
+
+### Changed
+
+- README: section headings are labels rather than sentences, the summary states
+  what the project does before how, and the contents are generated from the
+  headings so they cannot drift.
 
 ## [1.23.0] — 2026-09-07
 
@@ -188,7 +197,8 @@ log.
 First public release: conversion with measured fidelity, the encrypted `.mdcx`
 container, lexical and dense retrieval, and the MCP server.
 
-[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.23.0...HEAD
+[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.24.0...HEAD
+[1.24.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.24.0
 [1.23.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.23.0
 [1.22.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.22.0
 [1.21.1]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.21.1
