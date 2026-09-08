@@ -303,6 +303,45 @@ def _pages_to_sample(total: int, how_many: int = SAMPLE_PAGES) -> list[int]:
     return sorted({min(total - 1, int(step * (i + 1))) for i in range(how_many)})
 
 
+# Glyphs of the private use area, per sampled page, above which a document is
+# expected to reach the card.
+#
+# A caption is the wrong signal for mathematics. The structured engine escalates
+# there on layout set in two dimensions -- fragments of a matrix the cheap path
+# cannot group -- and none of that announces a table, so the inspection said no
+# card while the run used it for a quarter of the documents.
+#
+# What does correlate is measured, and by whoever reported it rather than here:
+# over 31 chapters, the 8 the structured engine changes average 481 private-use
+# glyphs in the native extraction and the 23 it leaves alone average 55. They
+# are the delimiters TeX fonts encode there, so they mark exactly the material
+# that is set as mathematics.
+#
+# The cut is stated for what it is. Two means are not two ranges, and a value
+# placed between means can sit inside either -- this project has put a cut on a
+# quantity twice on evidence that looked better than this and been wrong both
+# times. What makes it safe to try anyway is that the run now reports what
+# reached the card against what was expected, so a cut that is wrong here says
+# so on the run where it matters instead of being believed.
+PRIVATE_PER_PAGE = 20.0
+
+# The three private use areas of Unicode: the basic one, and the two
+# supplementary planes. Written as numbers rather than as literals so the
+# range is readable and cannot be mangled by an editor that normalises
+# unassigned characters.
+PRIVATE_RANGES = ((0xE000, 0xF8FF), (0xF0000, 0xFFFFD), (0x100000, 0x10FFFD))
+
+
+def _private_use(text: str) -> int:
+    """Characters of the Unicode private use area in this page.
+
+    Where a TeX font puts its delimiters, and therefore a mark of mathematics
+    set in two dimensions rather than of anything a caption would announce.
+    """
+    return sum(1 for c in text if any(low <= ord(c) <= high
+                                      for low, high in PRIVATE_RANGES))
+
+
 def inspect_job(job: "Job") -> tuple[str, bool]:
     """The lane for this document, and whether it is likely to reach the card.
 
@@ -351,12 +390,14 @@ def inspect_job(job: "Job") -> tuple[str, bool]:
             chars = 0
             images = 0
             announces = False
+            private = 0
             for i in chosen:
                 text = _pdf.page_text(doc[i])
                 chars += len(text.strip())
                 images += _pdf.count_images(doc[i])
                 if not announces and CAPTION.search(text):
                     announces = True
+                private += _private_use(text)
         finally:
             doc.close()
     except Exception:
@@ -371,7 +412,7 @@ def inspect_job(job: "Job") -> tuple[str, bool]:
     if pages <= 2 and images >= 1:
         # drawing or diagram: measured, the heavy engine performs worse
         return LANE_CPU, False
-    return LANE_CPU, announces
+    return LANE_CPU, announces or (private / max(1, sample)) >= PRIVATE_PER_PAGE
 
 
 def classify_lane(job: "Job") -> str:

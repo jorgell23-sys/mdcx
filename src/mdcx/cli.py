@@ -295,6 +295,12 @@ def _dispatch(pending: list, use_docling: bool) -> tuple[dict, int]:
     return lanes, card_bound
 
 
+# The engines that hand pages to the model, and therefore use the card. Named
+# rather than inferred, because what decides is which engine ran and not which
+# lane the document waited in: the hybrid engine is reached from either.
+CARD_ENGINES = ("hibrido", "docling", "docling-ocr")
+
+
 # What a process holds on the card by having loaded the models, without
 # calculating anything. It is paid on loading, so a process pays it whether or
 # not the gate ever lets it compute -- which is the whole of the defect this
@@ -757,6 +763,14 @@ def main() -> int:
         # over everything there is to convert.
         gpu_fraction = card_bound / max(1, len(pending))
         gpu_workers, cpu_workers = _lane_sizes(args.max_cores, gpu_fraction, has_gpu)
+        # A lane with nothing in it gets no processes. They would pay the
+        # imports and, if they touch anything, the models -- measured at some
+        # sixteen seconds each -- to then receive no document at all, while the
+        # cores they hold are the ones the other lane is short of.
+        if not lanes[LANE_GPU] and args.gpu_workers is None:
+            cpu_workers = max(cpu_workers, min(args.max_cores,
+                                               cpu_workers + gpu_workers))
+            gpu_workers = 0
         # The formula is the default, not a ruling: a machine that knows better
         # says so, and is then held only to the total.
         if args.gpu_workers is not None:
@@ -777,6 +791,23 @@ def main() -> int:
                       f"faster.")
         if args.cpu_workers is not None:
             cpu_workers = max(1, min(args.cpu_workers, args.max_cores - gpu_workers))
+
+        # How many processes may compute on the card at once, and it is not the
+        # size of the card's lane. That was the mistake: the gate applies to
+        # every worker in either lane -- the hybrid engine reaches the model
+        # from the processor lane -- while it was being sized by a lane that,
+        # once correctly emptied, collapsed to one. So every document that used
+        # the card queued behind a single permit, and running mdcx's own
+        # orchestration measured half the speed of invoking it once per document
+        # from outside, on the same machine and the same books.
+        #
+        # What bounds it is the card: how many sets of weights fit in the memory
+        # there is. That is the number the warning above already computes, and
+        # it has nothing to do with which lane a document waited in.
+        free = _free_vram_mib() if has_gpu else None
+        seats = (free // _vram_per_worker_mib()) if free else None
+        card_gate = max(1, min(seats or gpu_workers or 1,
+                               gpu_workers + cpu_workers))
 
         # The batch is settled here, where both halves are known: how many
         # workers may hold the card, and what is left over once they are all
@@ -847,14 +878,18 @@ def main() -> int:
         else:
             import multiprocessing
 
-            # How many processes may hold the card at once. The GPU lane used to
-            # be this number by being the only lane with the engines; now it is
-            # said once and applies to every worker, whichever lane it is in.
-            gate = multiprocessing.Semaphore(gpu_workers)
+            # How many processes may hold the card at once, sized by the card
+            # and not by a lane. See where `card_gate` is computed for what
+            # sizing it by the lane cost.
+            gate = multiprocessing.Semaphore(card_gate)
 
             recycle = args.recycle_after or None
+            # A pool of nothing is not a thing: asking for zero processes
+            # raises rather than meaning none. One is the floor, and where the
+            # lane is empty it simply receives no work -- which costs its
+            # imports once, against special-casing the submission below.
             with ProcessPoolExecutor(
-                    max_workers=gpu_workers, initializer=_worker_budget,
+                    max_workers=max(1, gpu_workers), initializer=_worker_budget,
                     max_tasks_per_child=recycle,
                     initargs=(threads_per_worker, gate, batch)) as gpu_pool, \
                  ProcessPoolExecutor(
@@ -930,6 +965,19 @@ def main() -> int:
     if res.get('unverifiable'):
         print(f"Unverifiable    : {res['unverifiable']} "
               "(no text in the original to measure against)")
+    # What actually reached the card, against what was expected to. The sizing
+    # is computed before anything runs, from an inspection that can be wrong,
+    # and when it is wrong the run says so instead of leaving the reader to
+    # notice that a lane sat idle. Reported on the run where it happened, which
+    # is the only place the two numbers can be compared.
+    reached = sum(1 for r in records if r.get("engine") in CARD_ENGINES)
+    if reached != card_bound:
+        print(f"NOTE            : {reached} document(s) used the card, "
+              f"{card_bound} expected. The lanes were sized from the "
+              "expectation, so the split was drawn on the wrong number"
+              + ("; --gpu-workers and --cpu-workers override it"
+                 if reached > card_bound else ""))
+
     cg = res["global_token_coverage"]
     print(f"Global coverage : {cg * 100:.3f}%" if cg is not None else "Global coverage : n/a")
     print(f"Tokens not recovered: {res['tokens_not_recovered']} of {res['reference_tokens']}")

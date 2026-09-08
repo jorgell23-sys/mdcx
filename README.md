@@ -2,10 +2,25 @@
 
 <!-- mcp-name: io.github.jorgell23-sys/markdown-document-search -->
 
-[![PyPI](https://img.shields.io/pypi/v/mdcx)](https://pypi.org/project/mdcx/) [![tests](https://github.com/jorgell23-sys/mdcx/actions/workflows/tests.yml/badge.svg)](https://github.com/jorgell23-sys/mdcx/actions/workflows/tests.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/jorgell23-sys/mdcx/blob/main/LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22015991.svg)](https://doi.org/10.5281/zenodo.22015991)
+[![PyPI](https://img.shields.io/pypi/v/mdcx)](https://pypi.org/project/mdcx/) [![tests](https://github.com/jorgell23-sys/mdcx/actions/workflows/tests.yml/badge.svg)](https://github.com/jorgell23-sys/mdcx/actions/workflows/tests.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/jorgell23-sys/mdcx/blob/main/LICENSE) [![Python](https://img.shields.io/pypi/pyversions/mdcx)](https://pypi.org/project/mdcx/) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22015991.svg)](https://doi.org/10.5281/zenodo.22015991)
 
 Convert a document collection to verified Markdown, package it into a single
 encrypted file, and query it from an agent through the Model Context Protocol.
+
+- **Measured fidelity.** Every conversion is checked against the text the
+  original exposes, by a library independent of the engine that produced it, and
+  the coverage is recorded per file.
+- **One encrypted artefact.** Passages, index and provenance live in a single
+  AES-256-GCM file whose header is readable without the key.
+- **Citable answers.** Every passage carries its source document and position,
+  so an answer is quoted rather than recalled.
+- **Retrieval across languages.** Word matching and dense retrieval are merged
+  by reciprocal rank, so a query reaches a document that shares its subject
+  without sharing its vocabulary.
+- **Says what it does not know.** Where nothing in the corpus is about the
+  question, the reply states that instead of returning its nearest passage.
+
+Requires Python 3.11 or later. Querying a package needs no other component.
 
 ## Contents
 
@@ -15,14 +30,12 @@ encrypted file, and query it from an agent through the Model Context Protocol.
 - [Quick start](#quick-start)
 - [Conversion](#conversion)
 - [Packaging and querying](#packaging-and-querying)
-- [Sent and received](#sent-and-received)
-- [Working incrementally](#working-incrementally)
-- [What the corpus knows about words](#what-the-corpus-knows-about-words)
-- [Something to keep that is not text to search](#something-to-keep-that-is-not-text-to-search)
-- [Writing often](#writing-often)
+- [Correspondence](#correspondence)
+- [Incremental packaging](#incremental-packaging)
 - [MCP server](#mcp-server)
-- [When the client goes away](#when-the-client-goes-away)
-- [Reaching a word the transcription got wrong](#reaching-a-word-the-transcription-got-wrong)
+- [Vocabulary](#vocabulary)
+- [Attachments](#attachments)
+- [Write cost](#write-cost)
 - [Language support](#language-support)
 - [Cross-language retrieval](#cross-language-retrieval)
 - [Portable paths](#portable-paths)
@@ -422,6 +435,45 @@ phrase and nothing else; `--bm25` ranks by relevance without literal matching.
 This engine reads the Markdown folder. Retrieval over a built package, with
 meaning and across languages, is `mdcx search` and the MCP server.
 
+### Resident conversion
+
+Converting from your own queue, without paying for the models each time.
+
+The models load per process, not per call. Measured over pages taken from real
+books inside one interpreter: the first call costs 12.97 s and the second 0.48,
+and the warm calls fit 0.252 s a page with no per-call fixed cost worth the
+name. Importing torch and docling adds 3.7 more. **A process costs about sixteen
+seconds before it converts anything.**
+
+| pages | seconds |
+|---:|---:|
+| 1 (cold process) | 12.97 |
+| 2 (already warm) | 0.48 |
+| 8 | 2.68 |
+| 32 | 8.05 |
+
+For one process per document — the natural way to spread work and isolate
+failures — that is 36 % of the time on a corpus measured at 14.90 s a book, and
+3,900 machine-hours over a harvest of 886,086 works.
+
+Handing a whole folder to `mdcx-convert` amortises it and takes away the order,
+the per-document reaction and the failure isolation a queue is for. This keeps
+both:
+
+```python
+from mdcx.convert import resident
+
+with resident.warm(report=print) as convert:   # pays the startup once
+    for pdf in my_queue:
+        record = convert(pdf, output_root)     # decide, retry, stop, reorder
+```
+
+`record` is the same one `mdcx-convert` writes for that document.
+`resident.convert_documents(paths, output_root)` is the same thing as a
+generator, and `resident.cost_of_starting()` returns the seconds so a log can
+say them. Running several of these is several processes, each amortising its own
+startup over whatever it is given.
+
 ## Packaging and querying
 
 ```
@@ -435,7 +487,9 @@ mdcx export corpus.mdcx --target ./restored --key "passphrase"
 file can be checked before it is opened. `export` reconstructs the original
 folder, so a collection can be moved out of the format at any time.
 
-## Sent and received
+## Correspondence
+
+Telling what was sent from what was received.
 
 Correspondence has a direction, and a question about it is usually about one
 side: what was asked of us, or what we answered. Where the top-level folder of
@@ -460,7 +514,9 @@ The MCP `search` tool takes the same restriction as its `direction` argument.
 A collection organised in any other way is unaffected: every document is
 unclassified, and a query that names no direction is not narrowed.
 
-## Working incrementally
+## Incremental packaging
+
+Growing a corpus without rebuilding it.
 
 A collection that is delivered once and a collection that grows every day place
 different demands on the tool. The second must not pay for what it has already
@@ -670,7 +726,9 @@ of eight unrelated queries through. Asking whether *anything* open is about a
 question is a different question — a property of the set — and stays where it
 was, in the warning the MCP server raises.
 
-## What the corpus knows about words
+## Vocabulary
+
+What the corpus knows about words, and by what rule.
 
 `vocabulary(connection)` returns the document frequency of every term together
 with the rule that produced it, and `unknown_terms(connection, text)` names the
@@ -764,7 +822,9 @@ Note also that vectors are stored in half precision. They are renormalised when
 read, because rounding to half precision costs the normalisation and every
 quantity computed from them was slightly not a cosine.
 
-## Something to keep that is not text to search
+## Attachments
+
+Something to keep that is not text to search.
 
 A corpus used as a memory sometimes has to hold an object — a certificate, a
 table of coordinates — and everything in the folder became passages. One such
@@ -784,7 +844,9 @@ which is the only way in, since it cannot be searched for.
 `pack` also reports which document contributed the most passages, and says so
 when one holds a third or more of them.
 
-## Writing often
+## Write cost
+
+What a write costs when a corpus is written to rather than distributed.
 
 Compressing and encrypting are properties of the whole file, so they cost the
 same whether one document was added or the corpus was rebuilt. That is a fixed
@@ -798,7 +860,9 @@ is distributed and read many times. Measured on a 30 MiB database of 190
 documents: 1.03 s for 2,170 KiB against 6.22 s for 1,569 KiB. Six times the
 speed for 38 per cent more bytes. Nothing else about the package changes.
 
-### When the client goes away
+### Server lifetime
+
+What happens when the client goes away.
 
 The server ends its own process rather than returning and letting the
 interpreter decide when. Returning from `main` is not exiting: Python waits for
@@ -812,7 +876,9 @@ by default, `0` to disable — because the damage does not depend on the cause:
 three gigabytes held by a process answering nobody is worth avoiding either way.
 The next question reloads it in seconds.
 
-### Reaching a word the transcription got wrong
+### Transcription recovery
+
+Reaching a word the transcription got wrong.
 
 A word that came out of optical recognition with one letter misread is a word
 the index does not contain, and literal matching can never return it. There is
@@ -1005,6 +1071,8 @@ retrieval rather than returning results that cannot be compared.
 
 ## Portable paths
 
+How a document is named inside a package.
+
 No output contains absolute paths. Each document is identified by a pseudopath
 beginning with `@/`, resolved against the folder or package containing it, so a
 corpus remains valid on local disk, network share or cloud storage.
@@ -1074,7 +1142,7 @@ text is still present and still counted in coverage; what is lost is its shape.
 A package is decrypted in full when it is opened, so its size is bounded by the
 memory available. A corpus larger than that is held as several packages and
 queried together, as described under
-[Working incrementally](#working-incrementally).
+[Working incrementally](#incremental-packaging).
 
 ## Tests
 
@@ -1113,6 +1181,7 @@ covers it says which, so a correction that is undone is noticed.
 | `test_reporting.py` | that the summary separates a document measured and found short from one that could not be measured at all |
 | `test_server_leaves.py` | that a server whose client has gone ends its own process rather than waiting on a thread nobody will join, and that it lets go of the encoder after a long silence |
 | `test_shapekey.py` | recovering a word optical recognition misread: that letters drawn alike share a key, that the sieve proposes and never decides, that it runs only where the answer would be empty, and that the reply says what was read as what |
+| `test_card_sizing.py` | who may use the card and how a run finds out it guessed wrong: that no visible device is no card, that the gate bounding card use is sized by the card rather than by a lane, and that documents can be converted one at a time in one process |
 | `test_sources_kit.py` | the source contract and what a plugin should not have to write again: reading four bytes, waiting when a server asks, and checking a plugin against the contract — plus a source in twenty lines, which does not go out of date the way a paragraph does |
 | `test_incremental.py` | reuse of vectors between packages: that unchanged passages are not encoded again, that an edited one is, and that reuse produces the same ranking |
 
@@ -1160,6 +1229,9 @@ Version history and release notes:
 Versioning follows [Semantic Versioning](https://semver.org/). The `.mdcx` format
 is read backwards-compatibly: a package written by an earlier version remains
 readable by a later one.
+
+Every release is listed in [CHANGELOG.md](CHANGELOG.md), which states what
+changed and, where a change rests on a measurement, the measurement.
 
 ## Authorship
 

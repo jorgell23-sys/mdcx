@@ -119,4 +119,4 @@ Changelog = "https://github.com/jorgell23-sys/mdcx/releases"
 packages = ["src/mdcx"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/mdcx", "tests", "README.md", "LICENSE", "NOTICE", "CITATION.cff"]
+include = ["src/mdcx", "tests", "tools", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE", "CITATION.cff"]

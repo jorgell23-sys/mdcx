@@ -146,11 +146,29 @@ def gpu_turn() -> "_Turn":
     return _Turn()
 
 def gpu_available() -> bool:
+    """Whether there is a card to send work to.
+
+    Asked of the device count and not only of `is_available()`, because the two
+    disagree exactly where it matters. `CUDA_VISIBLE_DEVICES=""` -- the empty
+    string, which is the most widespread way of turning CUDA off and what a good
+    deal of third-party documentation tells people to use -- leaves
+    `is_available()` returning True with `device_count()` at zero. mdcx then
+    reported the card by name, took the CUDA branch, and asked
+    `get_device_name(0)` for a device that was not there.
+
+    What that cost, measured by whoever reported it: hours of conversion running
+    the card at 100 per cent by someone who believed they had freed it, ending
+    in `VIDEO_SCHEDULER_INTERNAL_ERROR` and a reboot.
+
+    The count is the stricter condition, so nothing that works today stops
+    working. What stops is the case that was lying.
+    """
     if "gpu" not in _DEVICE_CACHE:
         try:
             import torch
 
-            _DEVICE_CACHE["gpu"] = bool(torch.cuda.is_available())
+            _DEVICE_CACHE["gpu"] = bool(torch.cuda.is_available()
+                                        and torch.cuda.device_count() > 0)
             _DEVICE_CACHE["name"] = (
                 torch.cuda.get_device_name(0) if _DEVICE_CACHE["gpu"] else "CPU"
             )
