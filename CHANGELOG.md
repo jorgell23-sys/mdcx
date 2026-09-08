@@ -12,6 +12,12 @@ log.
 
 ## [Unreleased]
 
+## [1.24.1] — 2026-09-08
+
+### Changed
+
+- README rewritten as reference documentation, as described below.
+
 ## [1.24.0] — 2026-09-08
 
 ### Fixed
@@ -37,9 +43,11 @@ log.
 
 ### Changed
 
-- README: section headings are labels rather than sentences, the summary states
-  what the project does before how, and the contents are generated from the
-  headings so they cannot drift.
+- README rewritten as reference documentation. Performance figures and
+  comparative claims are removed from the prose; section headings are labels
+  rather than sentences; the register is declarative throughout. The measurements
+  that justify a design decision remain in the code comments and in the tests,
+  which is where they are checkable.
 
 ## [1.23.0] — 2026-09-07
 
@@ -197,7 +205,8 @@ log.
 First public release: conversion with measured fidelity, the encrypted `.mdcx`
 container, lexical and dense retrieval, and the MCP server.
 
-[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.24.0...HEAD
+[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.24.1...HEAD
+[1.24.1]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.24.1
 [1.24.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.24.0
 [1.23.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.23.0
 [1.22.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.22.0

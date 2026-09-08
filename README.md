@@ -2,45 +2,36 @@
 
 <!-- mcp-name: io.github.jorgell23-sys/markdown-document-search -->
 
-[![PyPI](https://img.shields.io/pypi/v/mdcx)](https://pypi.org/project/mdcx/) [![tests](https://github.com/jorgell23-sys/mdcx/actions/workflows/tests.yml/badge.svg)](https://github.com/jorgell23-sys/mdcx/actions/workflows/tests.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/jorgell23-sys/mdcx/blob/main/LICENSE) [![Python](https://img.shields.io/pypi/pyversions/mdcx)](https://pypi.org/project/mdcx/) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22015991.svg)](https://doi.org/10.5281/zenodo.22015991)
+[![PyPI](https://img.shields.io/pypi/v/mdcx)](https://pypi.org/project/mdcx/) [![Python](https://img.shields.io/pypi/pyversions/mdcx)](https://pypi.org/project/mdcx/) [![tests](https://github.com/jorgell23-sys/mdcx/actions/workflows/tests.yml/badge.svg)](https://github.com/jorgell23-sys/mdcx/actions/workflows/tests.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22015991.svg)](https://doi.org/10.5281/zenodo.22015991)
 
-Convert a document collection to verified Markdown, package it into a single
-encrypted file, and query it from an agent through the Model Context Protocol.
-
-- **Measured fidelity.** Every conversion is checked against the text the
-  original exposes, by a library independent of the engine that produced it, and
-  the coverage is recorded per file.
-- **One encrypted artefact.** Passages, index and provenance live in a single
-  AES-256-GCM file whose header is readable without the key.
-- **Citable answers.** Every passage carries its source document and position,
-  so an answer is quoted rather than recalled.
-- **Retrieval across languages.** Word matching and dense retrieval are merged
-  by reciprocal rank, so a query reaches a document that shares its subject
-  without sharing its vocabulary.
-- **Says what it does not know.** Where nothing in the corpus is about the
-  question, the reply states that instead of returning its nearest passage.
-
-Requires Python 3.11 or later. Querying a package needs no other component.
+Convert a document collection to Markdown, package it into a single encrypted
+archive with its search index and provenance, and serve it to agents over the
+Model Context Protocol.
 
 ## Contents
 
-- [Overview](#overview)
+- [Scope](#scope)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Conversion](#conversion)
-- [Packaging and querying](#packaging-and-querying)
+- [Packaging](#packaging)
+- [Querying](#querying)
+- [Retrieval model](#retrieval-model)
+- [Calibration](#calibration)
+- [Vocabulary](#vocabulary)
+- [Transcription recovery](#transcription-recovery)
+- [Attachments](#attachments)
+- [Dates](#dates)
 - [Correspondence](#correspondence)
 - [Incremental packaging](#incremental-packaging)
+- [Resident conversion](#resident-conversion)
 - [MCP server](#mcp-server)
-- [Vocabulary](#vocabulary)
-- [Attachments](#attachments)
-- [Write cost](#write-cost)
-- [Language support](#language-support)
-- [Cross-language retrieval](#cross-language-retrieval)
+- [Sources](#sources)
 - [Portable paths](#portable-paths)
 - [Signing](#signing)
 - [Encryption](#encryption)
+- [Package format](#package-format)
 - [Limitations](#limitations)
 - [Tests](#tests)
 - [Contributing](#contributing)
@@ -50,141 +41,83 @@ Requires Python 3.11 or later. Querying a package needs no other component.
 - [Citation](#citation)
 - [Licence](#licence)
 
-## Overview
+## Scope
 
-mdcx converts a collection of documents to Markdown, verifies each conversion
-against its original, packages the corpus with its index and provenance into a
-single encrypted file, and serves that file to agents over the Model Context
-Protocol.
-
-It addresses one constraint. An agent asked a question about a document
+mdcx addresses one constraint. An agent asked a question about a document
 collection must either receive the documents in its context window, which is
-bounded in size and billed per token, or query a component that holds an index
-and returns only the passages that bear on the question. mdcx implements the
-second. Three properties distinguish it from an extraction script:
+bounded and billed per token, or query a component that holds an index and
+returns only the passages that bear on the question. mdcx implements the second.
 
-- **Fidelity is measured, not assumed.** Every conversion is checked against the
-  text the original exposes, read by a library independent of the engine that
-  produced the conversion, and the coverage achieved is recorded per file.
-- **The corpus is a single encrypted artefact.** Passages, index and provenance
-  are held in one AES-256-GCM file whose header can be read without the key.
-- **Every passage carries its source.** An answer can be cited against a
-  document and a location rather than recalled.
+Three properties define the result:
 
-### Pipeline
+- **Fidelity is checked.** Each conversion is compared against the text the
+  original exposes, read by a library independent of the engine that produced
+  the conversion, and the coverage achieved is recorded per file. Files that
+  expose no text are marked unverifiable rather than reported as complete.
+- **The corpus is one artefact.** Passages, index and provenance are held in a
+  single AES-256-GCM file whose header can be read without the key, and which
+  may be signed.
+- **Answers are citable.** Every passage carries its source document and its
+  position, so an answer can be quoted against a location.
 
-**Conversion.** Each document is attempted by the least expensive engine capable
-of reading it and escalated only where that engine falls short: direct text
-extraction, then a pass that recovers the tables a page draws, then full layout
-analysis. Documents exposing no text are read by optical character recognition.
-Content the selected engine omitted is appended verbatim rather than reported as
-lost.
-
-Over the collection used during development — 99 documents, 1,144,553 reference
-tokens — 594 tokens were not recovered, a coverage of 99.948%. Of the 95
-documents that expose text, 70 were recovered in full and none fell below 99.5%.
-The remaining four are scanned drawings holding no text in the file; they are
-marked unverifiable, as no text original exists to measure them against.
-
-**Packaging.** The corpus, its search index and the provenance of every passage
-are written to a single `.mdcx` file. The development collection produced 3.9 MB
-from 8.8 MB of Markdown. A growing collection is not rebuilt from the start:
-vectors already computed are reused, and a corpus exceeding what can be
-decrypted into memory is held as several packages queried as one.
-
-**Retrieval.** A query returns the passages that answer it, each with its source
-document and its position in the ranking. Word matching and dense retrieval are
-merged by reciprocal rank, so a query reaches a document whether it shares that
-document's vocabulary or only its subject, including where the two are written
-in different languages. Over a corpus of 136 documents in 34 languages, the
-merged engines rank the expected document first for 135 of the 136 queries.
-Where no document in the corpus is about the question, the reply states this
-rather than presenting its nearest passage as an answer.
-
-### Measured cost
-
-One query over the development collection — 99 documents, 180 MB — counted with
-the `cl100k_base` tokenizer:
-
-| Method | Model tokens | Local tokens |
-|---|---|---|
-| Reading the originals | 2,265,488 | 2,265,327 |
-| Querying the package | 435 | 2,688,861 |
-
-The 435 model tokens comprise 20 for the question, 274 for the retrieved passage
-and 141 for the answer.
-
-Reading the originals costs the whole collection because a PDF is a binary
-format: absent prior conversion there is no way to determine which of the 99
-documents holds the answer, so all of them are extracted and read.
-
-This is a single measurement, not an average, and the saving depends on how much
-text an answer requires. The work is not eliminated but relocated, from the
-context window, which is billed and finite, to local processing, which is
-neither. The local column rises for that reason.
+The pipeline has three stages. Conversion attempts each document with the least
+expensive engine able to read it and escalates only where that engine falls
+short: direct text extraction, then a pass that recovers drawn tables, then
+layout analysis, and optical character recognition for documents that expose no
+text. Packaging writes the corpus, its index and the provenance of each passage
+to one file. Retrieval merges word matching and dense retrieval by reciprocal
+rank, and states when nothing in the corpus bears on the question rather than
+returning its nearest passage.
 
 ## Requirements
 
 Python 3.11 or later. No other component is required to query a package.
 
 The floor is 3.11 because a package is held as one SQLite database and
-serialised in memory to be encrypted, and `sqlite3` gained the call that
-does so in that version. Earlier interpreters were declared supported and
-were not: neither building a package nor opening one worked there.
-Conversion and cross-language retrieval each add dependencies, listed under
-[Installation](#installation).
+serialised in memory to be encrypted, and `sqlite3` gained the required call in
+that version. Conversion and cross-language retrieval each add dependencies,
+listed under [Installation](#installation).
 
 ## Installation
 
-Querying and conversion are separated because their requirements differ by two
-orders of magnitude.
+Querying and conversion are separated because their requirements differ by
+roughly two orders of magnitude. A recipient who only reads packages installs
+neither Docling nor PyTorch.
 
 | Command | Provides | Approximate size |
 |---|---|---|
 | `pip install mdcx` | querying and reading `.mdcx` packages | 10 MB |
 | `pip install "mdcx[mcp]"` | the above and the MCP server | 50 MB |
-| `pip install "mdcx[convert]"` | document conversion (Docling, PyTorch) | 1.4 GB |
+| `pip install "mdcx[convert]"` | document conversion | 1.4 GB |
 | `pip install "mdcx[tables]"` | tables a page does not draw | 1.2 GB |
 | `pip install "mdcx[multilingual]"` | cross-language retrieval | 2.5 GB |
 | `pip install "mdcx[all]"` | all of the above, including OCR | 4 GB |
-| `pip install "mdcx[all-gpu]"` | the same, without pinning the CPU onnxruntime | 4 GB |
+| `pip install "mdcx[all-gpu]"` | the above without the CPU `onnxruntime` | 4 GB |
 
-Conversion accounts for the heavy dependencies. A recipient who only queries an
-`.mdcx` file installs neither Docling nor PyTorch.
+The `multilingual` extra supplies the embedding model, downloaded once on first
+use, and is required only for queries that cross languages.
 
-The `multilingual` extra is required for queries that cross languages. Most of
-its size is the embedding model, downloaded once on first use. A single-language
-corpus does not require it.
+The `tables` extra covers tables that are not drawn with rules — a screenshot of
+a spreadsheet, or a layout held together by alignment. It reads the geometry
+only; cell contents still come from the text layer of the document. Without it
+those pages are handled by the layout engine.
 
-The `tables` extra covers what a page does not draw. Tables in printed material
-are usually found from the rules drawn around them, which costs nothing and
-needs no extra; borderless ones — a screenshot of a spreadsheet, a layout held
-together by alignment — are read by a small model that reports where the rows
-and columns run. It reads the shape only: the words still come from the text
-layer of the document, so a cell cannot hold anything the page does not say.
-Without it those pages are read by Docling instead, which is slower but already
-present in the `convert` extra.
-
-### If the machine has a CUDA card
+### Systems with a CUDA device
 
 Install `mdcx[all-gpu]` rather than `mdcx[all]`, and install `onnxruntime-gpu`
-yourself.
+separately.
 
-`onnxruntime` and `onnxruntime-gpu` are two distributions publishing the same
-module, so they cannot coexist: whichever pip wrote last wins, and it is usually
-the CPU one. An extra that pins the CPU build therefore removes CUDA from an
-environment that had prepared it, on every upgrade — measured on three
-consecutive releases, in two environments each time, with no error, nothing in
-any log, and optical recognition simply costing tens of times more. `all-gpu` is
-`all` without that pin.
+`onnxruntime` and `onnxruntime-gpu` publish the same module and cannot coexist:
+whichever was installed last takes effect. An extra that pins the CPU build will
+therefore displace an accelerated one on every upgrade. `all-gpu` is `all`
+without that pin.
 
-pip cannot express "either of these distributions", so this cannot be settled by
-declaration alone. `mdcx-convert` therefore checks at startup: when the machine
-has a card and the runtime does not offer it, it says so and gives the repair.
-The check on its own is one line:
+pip cannot express a dependency satisfied by either distribution, so this cannot
+be settled by declaration alone. `mdcx-convert` checks at startup and reports
+when the machine has a device the runtime does not offer. The check on its own:
 
 ```
-python -c "import onnxruntime as o; assert 'CUDAExecutionProvider' in o.get_available_providers(), 'OCR WITHOUT THE CARD'"
+python -c "import onnxruntime as o; assert 'CUDAExecutionProvider' in o.get_available_providers()"
 ```
 
 ## Quick start
@@ -203,1062 +136,507 @@ mdcx search corpus.mdcx "where is the storage temperature stated" --key "passphr
 mdcx-convert --input ./Documents --output ./Documents_md
 ```
 
-The output mirrors the input directory structure, adds a global index, and
-records for each file the coverage achieved against its original.
+The output folder mirrors the input directory structure, one `.md` per source
+document, together with an index of the run.
 
-### Supported formats
+| Option | Effect |
+|---|---|
+| `--max-cores N` | processes to run at once |
+| `--gpu-workers N`, `--cpu-workers N` | override the computed split |
+| `--serial` | one document at a time |
+| `--only PATTERN`, `--limit N` | restrict the run |
+| `--force` | ignore the cache and reconvert |
+| `--no-docling` | native engines only |
+| `--no-gpu` | do not use the device |
+| `--no-lossless` | do not write the backup JSON |
+| `--no-compact` | keep converter scaffolding in the Markdown |
+| `--no-split`, `--split-threshold N` | control splitting of long documents |
+| `--sample-pages N` | convert a spread sample of N pages per document |
+| `--timeout SECONDS` | abandon a document that exceeds this |
+| `--recycle-after N` | replace a worker after N documents |
 
-PDF, EPUB, Word, Excel, PowerPoint, HTML, Markdown, CSV and plain text.
+An interrupted run resumes: work already recorded is not repeated unless
+`--force` is given.
 
-The format of a file is determined from its first bytes rather than from its
-extension. Repositories are known to serve EPUB files from URLs ending in `.pdf`
-and declaring `application/pdf`, where only the content identifies the format
-correctly. Routing such a file by extension sends it to a reader that cannot open
-it, and the resulting failure is indistinguishable from a damaged document.
+Long documents are split into chapters, each converted independently, with an
+index document recording the correspondence to the original. `--sample-pages`
+converts a spread sample instead of the whole document; the front matter records
+both the pages taken and the document's total, so a sample is not mistaken for a
+short document.
 
-Plain text carries no signature, so its extension determines the format. A file
-whose content identifies no known format is skipped rather than assumed.
+`--timeout` exists because some documents do not complete under layout analysis.
+Without a limit one such document holds a worker for the length of the run.
+`--recycle-after` replaces a worker periodically, since abandoning a document
+does not stop the thread it started.
 
-### How much of the machine it uses
+### Verification
 
-Converting a library is the heaviest thing this package does, and it runs on a
-machine somebody is working at. Nothing here is a constant: every figure is
-derived from the machine it finds, because the same number cannot be right on
-four processors and on thirty-two.
+Each conversion is compared against the text the original exposes, using a
+library independent of the conversion engine. The index records the coverage
+achieved per file. Documents that expose no text — scanned drawings, for example
+— are marked unverifiable, since no text original exists to measure against.
 
-```
-mdcx-convert --input ./Documents --output ./Documents_md --max-cores 4
-```
-
-**Processors.** A fifth are left free and the rest are used: nine on twelve,
-three on four. The cap is a budget for the whole run rather than a grant to
-each process, so it is divided among the workers and each is told its share.
-Without that division the structured engine asks for four threads of its own
-and eight workers ask for thirty-two on a machine of twelve, spending inside the
-pool the share that was carefully left outside it.
-
-**The card.** How many processes may use it at once is decided by three
-ceilings, the smallest winning: the free video memory divided by what a worker
-holds with a full batch; how much of the material actually needs a model, which
-is the documents that expose no text and have nothing to extract; and leaving
-something for the processor. All three are needed. Without the first, asking for
-more workers by hand does the opposite of what it looks like — twelve on a 6 GB
-card ask for 15.7 GB and measured three times slower than three. Without the
-last, a large card takes every worker and leaves one for the bulk of the work,
-which is processor work.
-
-That limit is then held by a gate every worker shares, taken around the model
-call rather than around the document, so a process reading text is not occupying
-a place on the card while it does.
-
-**The batch.** What a page costs falls with the number of pages it travels
-with — 150 ms sending one, 75 with eight, 46 with twenty-four — so the batch is
-as large as the card allows once every worker is seated on it, and no larger.
-It is decided where both halves are known, because how much of the card a worker
-may hold depends on how many may hold it; a worker deciding for itself reads the
-free memory as though nobody else would.
-
-**Lanes.** Documents are dispatched to two of them. Both may reach every engine
-and both are counted against the same limit on the card: the lane decides what
-is worth dispatching where, not what a document is allowed to reach. The lane
-used to decide both, which meant that moving a document out of the crowded lane
-also took away its structured engine.
-
-Every one of these can be overridden — `--max-cores`, `--gpu-workers`,
-`--cpu-workers`, and `MDCX_TATR_BATCH` — and the derived figure is the default
-rather than a ruling. A machine that measures differently says so.
-
-### A document the engine does not finish
-
-There is material the structured engine does not terminate on, and it cannot be
-recognised beforehand: measured against documents that convert normally, the
-ones that hang have fewer pages, the same size, the same images per page and
-slightly more text. About 4% of one real collection behaved this way — two to
-eight ordinary A4 pages that ran for hours while their neighbours took seconds.
-
-Without a bound, one such document holds its worker for the length of the run,
-and as many of them as there are workers stop the conversion altogether: the
-batch waits for everyone. So `--timeout` gives up on a document after twenty
-minutes by default, records it with the status `TIMED OUT` — its own status,
-not an error, because nothing was found wrong with it — and goes on to the next.
-`--timeout 0` waits indefinitely.
-
-The limit is deliberately generous. Abandoning a good document loses all of its
-work, while waiting too long for a bad one costs one worker for the excess, so
-it is sized for the first mistake being the expensive one.
-
-Giving up does not undo what was started. Layout analysis says as much — *the
-thread is likely stuck in a blocking call and will be abandoned* — and an
-abandoned thread keeps running: measured, three of them held a core each at 100%
-for twenty minutes while producing nothing. A Python thread cannot be cancelled,
-so the only way to get the core back is to replace the process holding it, which
-is what `--recycle-after` does every fifty documents. `--recycle-after 0` never
-replaces one.
-
-A permit for the card is squared up per document rather than only by the block
-that took it, for the same reason: a block that is abandoned never returns its
-permit, and with two permits, two such documents left every worker waiting on a
-turn that never came — the card idle, the count at zero, and the run never
-advancing again. And if a permit were still lost beyond recovery, the run goes
-ahead without a turn rather than waiting forever: contention is a risk, waiting
-for a turn that will not come is not.
-
-### Deciding whether a book is worth converting whole
-
-Converting a book to find out whether it is worth converting costs what the book
-costs. `--sample-pages N` converts a spread sample instead — not the first N
-pages, because a book opens with a cover, a blank verso and a title page, so a
-sample taken from the front describes the front matter rather than the book.
-
-The sample is gathered into one document rather than converted page by page, and
-it keeps the headings that cutting pages would otherwise lose: a sample without
-them is a wall of prose, and the section titles an author wrote are most of what
-says whether the book is worth the rest. Its front matter says `sampled: true`
-and carries `pages_total`, so twenty pages of a book of six hundred cannot be
-mistaken for a short book.
-
-### Packing something that was never a folder
-
-`pack --output records.jsonl` reads one record per line — `name` and `text`, and
-optionally `pseudopath`, `folder` and `source` — instead of walking a directory.
-For a collection that is generated rather than converted, writing it out as one
-file per document only to read it back is work with nothing to show for it: on
-80,844 records, 1.4 minutes and 324 MB created, read once and deleted. A line
-that cannot be read is skipped and named, because one bad record should cost
-that record.
-
-### When a work is from
-
-A package records a date per document and, beside it, where that date came
-from. Both or neither: a date without its provenance confuses *when the work was
-published* with *when the file was touched*, and whoever reads it cannot tell.
-
-    pack --dates dates.csv          # path,date[,provenance]
-    pack --date-from-mtime          # the file's time, recorded as `mtime`
-
-The provenance is `source` when it came from the publisher, `sidecar` when
-somebody supplied it, `front-matter` when the document carried it, `mtime` when
-it is the file's time and not the work's. Where nothing reliable is found the
-date is absent, which is an honest answer and a different one from a guess. The
-copyright year printed in the text is deliberately not used: a textbook reprints
-its front matter, so that year is the printing's rather than the edition's.
-
-`info` reports how many documents carry a date and the span they cover — *0 of 8
-dated* being the signal that the dates were lost on the way in. Every passage in
-a reply carries `dated` and `dated_from`, so the age can be shown beside the
-citation.
-
-`search --prefer recent` orders comparable answers newest first. It enters as a
-third ranking fused by rank with the other two, never as a decay multiplying a
-score: weighting values that share no scale is precisely what fusing by rank
-avoids. It **orders rather than filters** — an older work that answers better
-still comes back, which matters because a work from 1970 can be the right
-answer, and in mathematics often is. Where both engines agree which passage is
-best, the date does not move it; where they disagree, it decides.
-
-A preference can also be impossible to honour: it orders the fusion of two
-engines, so there has to be a fusion, and it orders by date, so something in the
-answer has to carry one. Neither case is an error and neither changes the
-answer, but from outside they look exactly like a preference that applied and
-found nothing to move — so the reply says which happened. The command line
-prints a line only when it could not be applied, and the MCP reply carries
-`prefer_applied` and `prefer_reason` only then; an answer without them is one
-where the preference ran. The reason names what to do about it, because the
-remedies differ: a package with no meaning index is repacked with
-`--multilingual`, one with no dates with `--dates`.
-
-### Where works come from
-
-mdcx converts, packages and answers; it does not fetch, and depends on no
-network of its own. A catalogue is a plugin, declared through the
-`mdcx.sources` entry point group and meeting the contract in `mdcx.sources`.
-Answering questions over a package that already exists needs none of this — only
-building a new corpus does, and where nothing is installed it says exactly that.
-
-Keeping the adapters out is deliberate rather than minimal. What looks like a
-simple HTTP client is not: one catalogue answers 403 to its whole download
-column and needs its handle resolved separately, another returns the same scrape
-cursor for every page. That knowledge belongs with whoever has it.
-
-What does not belong there is the part that has nothing to do with any
-catalogue, and `mdcx.sources` now carries it:
+## Packaging
 
 ```
-python -m mdcx.sources --check <name>     # --help lists the rest
+mdcx pack --output ./Documents_md --target corpus.mdcx --key "passphrase"
 ```
 
-checks a plugin against the contract — that `search` returns `Candidate`s with
-identifiers it can be asked about again, that `fetch` returns bytes of a
-recognisable type or raises rather than returning something else. A plugin had
-nothing to check itself against, and what that cost was measured: the first
-thing this reports is a source returning a cover thumbnail as though it were the
-book. A catalogue named the attachment `9789819647453.pdf.jpg`, and 5,384 bytes
-came back without an exception.
+| Option | Effect |
+|---|---|
+| `--key`, `--key-file` | the passphrase; see [Encryption](#encryption) |
+| `--multilingual` | also index meaning |
+| `--focus QUESTION` | a question the package exists to answer; repeatable |
+| `--dates FILE` | supply publication dates; see [Dates](#dates) |
+| `--date-from-mtime` | fall back to file modification time |
+| `--shapes` | build the transcription-recovery index |
+| `--reuse PACKAGE` | reuse vectors from an existing package |
+| `--issuer`, `--signing-key` | see [Signing](#signing) |
+| `--fast` | compress for speed rather than size |
 
-`looks_like(data, "pdf")` is the check on its own — four bytes, no network — and
-`identify(data)` says what they were instead, because *this is not a PDF* is not
-actionable and *this is a JPEG* is. `patiently(call)` retries what raises
-`RateLimited`, honouring `Retry-After` when the server sent one: every catalogue
-rate limits, and none of that is knowledge about a particular one. It catches
-nothing else, because a 403 on a whole download column is not transient.
+`--output` accepts a folder of Markdown, a single file, or a `.jsonl` file with
+one record per line, which is how a catalogue of records is packed without first
+writing it to disk.
 
-A `Candidate` can also say **which server** its file would come from, in
-`download`, with `host` reading it back. The split between a cheap `search` and
-an expensive `fetch` exists so a caller can decide what is worth fetching, and
-which server it would be asking is one of the things worth deciding on: measured
-over 40 candidates from one catalogue, 25 of them — 62 per cent — resolve to a
-single host that answers 403 to everything, while another returns a 5 MB PDF in
-two seconds. Working down the ranking spends the whole budget on the first. Only
-the catalogue knows this, so only the catalogue can say it; the check notes when
-one host holds more than half.
+`--fast` selects a lower compression preset. It is intended for a package that is
+rewritten frequently rather than distributed; nothing else about the package
+changes.
 
-`tests/test_sources_kit.py` holds a source in twenty lines, against no network.
-An executable example does not go quietly out of date.
-
-### Checking a conversion before packaging
-
-`mdcx-search` searches the converted Markdown directly, before there is a
-package, and quotes each passage with the document and pseudopath it came from.
-It is how a conversion is inspected while the folder is still open to
-correction.
+## Querying
 
 ```
-mdcx-search "movable type" --output ./Documents_md
-mdcx-search --phrases ./questions.txt --output ./Documents_md --json found.json
+mdcx search corpus.mdcx "the question" --key "passphrase"
+mdcx info corpus.mdcx
+mdcx export corpus.mdcx --target ./restored --key "passphrase"
 ```
 
-Passages are ranked with BM25 aggregated per document rather than in isolation,
-so a long document that covers a subject across several fragments is not beaten
-by a short unrelated one that repeats a term. `--literal` requires the exact
-phrase and nothing else; `--bm25` ranks by relevance without literal matching.
+| Option | Effect |
+|---|---|
+| `--limit N` | passages to return |
+| `--only received\|sent` | restrict to one side of a correspondence |
+| `--mode auto\|lexical\|semantic` | select the engines |
+| `--prefer recent` | order comparable answers newest first |
 
-This engine reads the Markdown folder. Retrieval over a built package, with
-meaning and across languages, is `mdcx search` and the MCP server.
+`info` reads the package header and requires no key: format, issuer, creation
+date, document and passage counts, integrity, signature, language, dates and
+calibration.
 
-### Resident conversion
+`--prefer recent` enters as a third ranking fused by rank rather than as a decay
+applied to a score. It orders rather than filters: an older document that answers
+better is still returned. Where both engines agree on the best passage the date
+does not move it; where they disagree, it decides. When the preference cannot be
+applied — no meaning index, or no dated passage in the answer — the reply states
+so rather than returning silently unchanged.
 
-Converting from your own queue, without paying for the models each time.
+## Retrieval model
 
-The models load per process, not per call. Measured over pages taken from real
-books inside one interpreter: the first call costs 12.97 s and the second 0.48,
-and the warm calls fit 0.252 s a page with no per-call fixed cost worth the
-name. Importing torch and docling adds 3.7 more. **A process costs about sixteen
-seconds before it converts anything.**
+Word matching and dense retrieval answer different questions and are kept side
+by side. The lexical index knows that a document contains a term; the dense index
+knows that a document means something similar. A query in one language cannot
+reach a document in another by word matching, because the words are not shared;
+representing meaning is what crosses that boundary.
 
-| pages | seconds |
-|---:|---:|
-| 1 (cold process) | 12.97 |
-| 2 (already warm) | 0.48 |
-| 8 | 2.68 |
-| 32 | 8.05 |
+The two are merged by reciprocal rank rather than by score. A BM25 score is
+unbounded and depends on the corpus it was measured in, and a cosine runs from
+zero to one and does not; the two cannot be added, and normalising them
+introduces a weighting nothing justifies. Rank is what both engines agree on.
 
-For one process per document — the natural way to spread work and isolate
-failures — that is 36 % of the time on a corpus measured at 14.90 s a book, and
-3,900 machine-hours over a harvest of 886,086 works.
+Documents are ranked as documents rather than as isolated passages, so a document
+that answers in several places is not outranked by one that mentions the terms
+once.
 
-Handing a whole folder to `mdcx-convert` amortises it and takes away the order,
-the per-document reaction and the failure isolation a queue is for. This keeps
-both:
+## Calibration
+
+A reply states when nothing in the corpus bears on the question, rather than
+presenting its nearest passage as an answer. The threshold for that judgement is
+a property of the corpus and is measured when the package is built.
+
+An absolute threshold cannot serve: how near a corpus comes to a question it
+answers depends on what the corpus contains, so a value set on one collection
+marks nothing on another. Each package therefore records its own reach, and the
+judgement is made against that.
+
+`pack --focus "<question>"` takes the reach from the questions a package exists
+to answer rather than estimating it from the passages. It is the better source
+where passages do not resemble questions — a catalogue of abstracts, for example,
+where every record shares a rhetorical shape. Repeat the option to give several.
+`info` reports which of the two was used.
+
+```
+mdcx calibrate corpus.mdcx --key "passphrase" --question "..." --question "..."
+```
+
+`calibrate` measures a package that already exists, without its source material:
+the measurement needs the vectors, which are in the package, and questions, which
+come from outside. The package is rewritten around the changed measurement — same
+documents, same passages, same vectors — and the provenance is recorded as
+`focus-after` rather than `focus`, since measuring while packing and measuring
+afterwards describe the corpus at different moments. A signed package requires its
+signing key.
+
+A package built before this measurement existed carries none, and is judged by
+the previous thresholds unchanged.
+
+## Vocabulary
+
+```python
+archive.vocabulary(connection)           # term frequencies, and the rule
+archive.unknown_terms(connection, text)  # terms this corpus has never seen
+archive.unfamiliar(connection, text)     # the same, with the share and a flag
+```
+
+The index records terms of three characters or more, and one character where the
+writing system does not separate words. Absence from the table therefore has two
+meanings — the corpus never saw the term, or the index would never have recorded
+it — and a caller weighting terms by rarity must distinguish them, since an absent
+term takes the maximum weight. `unknown_terms` applies the rule.
+
+Function words are not removed on top of that. Which words carry no information
+depends on the question, and `die` in *die casting* or `les` in *Les Misérables*
+carry meaning in the language being searched. What mdcx can state is what it never
+recorded.
+
+The keys are normalised — folded case, folded accents — so a caller tokenising
+with `search.tokenize_text` must normalise before looking a term up.
+`unknown_terms` does so.
+
+The word index does not cross languages, while the meaning index does. Asked
+across languages, `unknown_terms` returns every term of the text, which describes
+the corpus's language rather than its contents. `unfamiliar` reports the share and
+a `cross_language` flag; prefer it where the language of the question is not known
+to match the corpus.
+
+### Two signals, and their disagreement
+
+`archive.assess(connection, text)` returns both.
+
+A cosine cannot distinguish the senses of a homonym, because a multilingual
+embedding places them together: a corpus of algebra can come close to a question
+about graph colouring and return passages about the plot of a function. The
+literal vocabulary does distinguish them, since the word the question turns on is
+absent from it.
+
+`assess` reports both signals and overrules neither. Whether an unfamiliar word
+should refuse a query depends on what the query is for, and a word may be
+peripheral to it.
+
+## Transcription recovery
+
+A word that optical character recognition transcribed wrongly is a word the index
+does not contain, and literal matching cannot return it. The passage remains in
+the corpus and the question cannot reach it; the reply is empty, with no error to
+indicate why.
+
+Optical recognition confuses characters that are drawn alike. Grouping characters
+by shape therefore places a misread word and its original in the same bucket. The
+bucket is too coarse to answer with, so it is used as a filter: it proposes
+candidates, and edit distance decides among them.
+
+```
+mdcx pack --output docs --target corpus.mdcx --key "..." --shapes
+mdcx shapes corpus.mdcx --key "..."      # for a package written without it
+```
+
+The index is optional because it enlarges the package and serves only corpora
+that passed through optical recognition.
+
+Three limits apply. The filter addresses errors of transcription and not of
+typing — its advantage comes from the shape of the characters, and so does its
+boundary. A substantial share of what it proposes is not a transcription error,
+since for Latin script the shape classes are coarse. And it operates only where no
+term of the query matched, since one term the corpus does contain is sufficient to
+return passages.
+
+Where a passage was located under a different spelling the reply records it, in
+`read_as`. Presenting such a passage as a literal match would attribute to the
+document a word it does not contain.
+
+The technique is that of character shape codes, described by Spitz at Xerox in the
+1990s and applied there over document images to avoid a full recognition pass.
+Here it is applied over text already converted, for the errors the conversion left
+behind.
+
+## Attachments
+
+A document with `indexed: false` in its front matter is kept in the package —
+signed, encrypted, in the same file — and excluded from the index, the vectors and
+the passage count. It is intended for material that accompanies a corpus without
+being text to search: a certificate, a table of coordinates.
+
+`export` restores it verbatim, and the MCP `document` tool returns it by name,
+which is the only way to reach it since it cannot be found by searching.
+
+`pack` reports which document contributed the most passages, and says so when one
+contributes a third or more.
+
+## Dates
+
+A package records when each work is from, together with how that was determined.
+
+| Provenance | Meaning |
+|---|---|
+| `source` | supplied from the publisher or catalogue |
+| `sidecar` | supplied by the caller |
+| `front-matter` | carried by the document |
+| `mtime` | the file's modification time, not the work's |
+
+`mtime` is never used unless `--date-from-mtime` requests it, since it is
+available for every file and describes the file rather than the work. Where
+nothing reliable is found the date is absent.
+
+The copyright year printed in a document is deliberately not used: a reprint
+carries the year of the printing rather than of the edition.
+
+```
+mdcx pack --output docs --target corpus.mdcx --key "..." --dates dates.csv
+```
+
+Each line of the sidecar is `path,date[,provenance]`. `info` reports how many
+documents carry a date and the span they cover, and every passage in a reply
+carries `dated` and `dated_from`.
+
+## Correspondence
+
+Where a collection is correspondence, `pack` records which side each document came
+from, and `search --only received|sent` restricts the query to one of them. The
+classification is taken from the directory structure of the input.
+
+## Incremental packaging
+
+```
+mdcx pack --output ./docs --target corpus-2.mdcx --key "..." \
+    --multilingual --reuse corpus-1.mdcx
+```
+
+A passage whose text has not changed has the same vector. `--reuse` reads the
+vectors of an existing package and encodes only what is new. The vectors are read
+from a package already encrypted with the same key; no intermediate store is
+created, since a vector permits the text it represents to be approximated.
+
+Reuse also carries the calibration forward. A package given its questions with
+`--focus` passes them to the package built from it, so a corpus that grows retains
+the threshold it was calibrated with. Passing `--focus` again overrides what was
+inherited, and the summary records when a calibration was inherited.
+
+Compression and encryption are properties of the whole file, so they cost the same
+whether one document was added or the corpus rebuilt. `pack` reports
+`seconds_compress` and `seconds_encrypt` so a caller writing frequently can decide
+how often to write.
+
+## Resident conversion
+
+The conversion engines load once per process. A caller running one process per
+document — the usual way to distribute work and isolate failures — pays that load
+for every document.
 
 ```python
 from mdcx.convert import resident
 
-with resident.warm(report=print) as convert:   # pays the startup once
-    for pdf in my_queue:
-        record = convert(pdf, output_root)     # decide, retry, stop, reorder
+with resident.warm(report=print) as convert:
+    for path in queue:
+        record = convert(path, output_root)
 ```
 
 `record` is the same one `mdcx-convert` writes for that document.
-`resident.convert_documents(paths, output_root)` is the same thing as a
-generator, and `resident.cost_of_starting()` returns the seconds so a log can
-say them. Running several of these is several processes, each amortising its own
-startup over whatever it is given.
+`resident.convert_documents(paths, output_root)` is the same as a generator, and
+`resident.cost_of_starting()` returns the seconds spent, so a log can report them.
+Several such processes each amortise their own startup.
 
-## Packaging and querying
-
-```
-mdcx pack --output ./Documents_md --target corpus.mdcx --key "passphrase"
-mdcx info corpus.mdcx
-mdcx search corpus.mdcx "where is the storage temperature stated" --key "passphrase"
-mdcx export corpus.mdcx --target ./restored --key "passphrase"
-```
-
-`info` reads the header without the key, so the issuer and the integrity of a
-file can be checked before it is opened. `export` reconstructs the original
-folder, so a collection can be moved out of the format at any time.
-
-## Correspondence
-
-Telling what was sent from what was received.
-
-Correspondence has a direction, and a question about it is usually about one
-side: what was asked of us, or what we answered. Where the top-level folder of
-a collection states that direction, it is recorded per document and a query can
-be restricted to it.
-
-| Top-level folder contains | Direction |
-|---|---|
-| `sent`, `emitido`, `outgoing` | sent |
-| `received`, `recibido`, `incoming` | received |
-| anything else | unclassified |
-
-The names are recognised in English and Spanish, since a collection may be
-organised in either, and only the top-level folder is examined, so a subfolder
-named after a correspondent does not reclassify what it holds.
-
-```
-mdcx search corpus.mdcx "what was agreed about the schedule"     --key "passphrase" --only received
-```
-
-The MCP `search` tool takes the same restriction as its `direction` argument.
-A collection organised in any other way is unaffected: every document is
-unclassified, and a query that names no direction is not narrowed.
-
-## Incremental packaging
-
-Growing a corpus without rebuilding it.
-
-A collection that is delivered once and a collection that grows every day place
-different demands on the tool. The second must not pay for what it has already
-done.
-
-### Conversion resumes
-
-Conversion records the digest of each source in the Markdown it produces, and
-skips any file whose source is unchanged and whose output is present. This is
-the default; `--force` disables it.
-
-The unit is the chapter rather than the document, so a book split into 47
-chapters and interrupted at the 40th costs the remaining 7 on the next run.
-Progress is written after each unit and flushed to disk, so an interrupted run
-leaves a record that the next one reads.
-
-A run over a converted collection reports what it reused:
-
-```
-Already converted and unchanged: 8 (reused)
-Elapsed         : 0.4 min
-```
-
-A chapter is reconverted when its verification reported findings, since a result
-that was not certified is not a result worth keeping.
-
-### Packaging costs what was added
-
-Indexing meaning dominates the cost of packaging. On one measured book: 505
-seconds of encoding against 4 seconds of compression and 0.2 of encryption.
-Encoding the whole corpus on every publication makes adding one document cost a
-reindex of every previous one.
-
-A passage whose text has not changed has the same vector. `--reuse` reads the
-vectors of an existing package and encodes only what is new:
-
-```
-mdcx pack --output ./Documents_md --target corpus-2.mdcx --key "passphrase" \
-    --multilingual --reuse corpus-1.mdcx
-```
-
-```
-  meaning indexed with BAAI/bge-m3 (1024 dimensions)
-  passages encoded 395   reused 733
-```
-
-Measured over the chapters of one book, where 733 of 1,128 passages were
-unchanged, packaging took 15.4 seconds against 37.8 without reuse.
-
-Reuse also carries the calibration forward. A package given its questions with
-`--focus` hands them to the one built from it, so a corpus that grows keeps the
-threshold it was calibrated with instead of reverting to one estimated from
-passages — a change that barely moves the stored number and shifts the margin
-applied to it from 0.95 to 0.60. Passing `--focus` again overrides what was
-inherited, and the summary says when it inherited rather than doing it quietly.
-
-The vectors are read from the previous package, which already holds them and is
-already encrypted with the same key. No intermediate store is created: a vector
-allows the text it represents to be approximated, so keeping vectors outside the
-package would undo the encryption the format provides.
-
-Reuse requires the same model. Vectors from two models occupy different spaces,
-so a package encoded by another model contributes nothing rather than
-contributing values that cannot be compared.
-
-### Several packages as one corpus
-
-`MDCX_FILE` accepts more than one package, separated by the path separator of
-the platform or by a comma. The server queries all of them and returns one
-ranked list, with each result naming the package it came from.
-
-```json
-{
-  "mcpServers": {
-    "mdcx": {
-      "command": "python",
-      "args": ["-m", "mdcx.mcp_server"],
-      "env": {
-        "MDCX_FILE": "/corpora/2026-01.mdcx:/corpora/2026-02.mdcx",
-        "MDCX_KEY": "package-key"
-      }
-    }
-  }
-}
-```
-
-One key serves every package; several keys are matched to the packages in order.
-
-This makes each package immutable: it is indexed once and never rebuilt. A
-corpus grows by adding packages rather than by enlarging one, which also keeps
-each of them within what can be decrypted into memory, since a package is
-decrypted whole when it is opened.
-
-Results from different packages are merged by reciprocal rank. Their scores are
-computed over different corpus statistics — the frequency of a term depends on
-the corpus it is measured in — so the scores are not comparable between
-packages, while positions within each are.
+Handing a whole folder to `mdcx-convert` also amortises the load, at the cost of
+the ordering, per-document handling and failure isolation a queue provides.
 
 ## MCP server
 
-The server requires Python and this package. It does not require the conversion
-stack; its footprint is approximately 50 MB.
+```
+MDCX_FILE=/path/to/corpus.mdcx
+MDCX_KEY=passphrase
 
-```json
-{
-  "mcpServers": {
-    "mdcx": {
-      "command": "python",
-      "args": ["-m", "mdcx.mcp_server"],
-      "env": {
-        "MDCX_FILE": "/path/to/corpus.mdcx",
-        "MDCX_KEY": "package-key"
-      }
-    }
-  }
-}
+python -m mdcx.mcp_server
 ```
 
-With [uv](https://docs.astral.sh/uv/) the server runs without prior installation,
-which is the common arrangement for Python MCP servers:
+The key is supplied through the environment rather than on the command line, where
+it would be visible in the process table.
 
-```json
-{
-  "mcpServers": {
-    "mdcx": {
-      "command": "uvx",
-      "args": ["--from", "mdcx[mcp]", "python", "-m", "mdcx.mcp_server"],
-      "env": {
-        "MDCX_FILE": "/path/to/corpus.mdcx",
-        "MDCX_KEY": "package-key"
-      }
-    }
-  }
-}
-```
+`MDCX_FILE` and `MDCX_KEY` accept several packages, separated by the platform's
+path separator or by commas, queried as one corpus. One key serves all of them, or
+one key per package in the same order.
 
 Three tools are exposed:
 
 | Tool | Returns |
 |---|---|
-| `search` | passages answering a question, each with its source document, portable path and rank; `direction` restricts it to one side of a correspondence |
-| `info` | the corpus record, including the fidelity of its conversion |
-| `document` | a complete document, when passages are insufficient |
+| `search` | passages answering a question, with provenance |
+| `info` | the corpus record without querying it |
+| `document` | the full text of one document, by name or portable path |
 
-The package is verified before the server begins listening, so an incorrect path
-or key is reported at startup rather than on the first query.
+A `search` reply carries the passages with their source and rank, and reports what
+it could not do: `warning` when nothing in the corpus bears on the question,
+`read_as` when a passage was located under a different spelling, `prefer_applied`
+when a requested preference could not be honoured, and `unknown_terms` naming, per
+package, words of the question that package has never seen.
 
-A passage carries its `rank` and no score. The list is ordered by that rank and
-by nothing else: word matching and meaning score on scales with no common
-meaning — one has no upper bound and depends on the corpus it was measured in,
-the other runs from zero to one and does not — so there is no single number here
-that can be compared, sorted or filtered by.
+Where several packages are served, `similarity` is computed over all of them
+together while `answerable_at` is the lowest of their calibrated reaches, so the
+threshold in force comes from the narrowest package rather than from the one a
+passage came from. `answerable_at_by_package` reports each.
 
-What can be compared is reported once for the reply. `similarity` is how near
-the corpus comes to the question, and a `warning` appears when nothing in it is
-about the question. The passages are returned either way: the nearest passage is
-worth seeing even when it is not an answer, and a corpus that answers in another
-language must not be hidden by this.
+The server ends its own process when its client disconnects, and releases the
+embedding model after `MDCX_IDLE_UNLOAD_MINUTES` of inactivity — 30 by default,
+`0` to disable. The model reloads on the next question.
 
-How near counts as near is measured from the corpus rather than fixed. Packing
-records `answerable_at`, how near this corpus comes to a question it does
-answer, estimated by using its own passages as questions; the reply reports it,
-and the warning is judged against it.
+## Sources
 
-That estimate is only as good as passages resembling questions, and on some
-collections they do not. A catalogue of 80,844 records — all back-cover blurbs,
-all sharing a rhetorical shape — calibrated at 0.759 where a corpus of books
-calibrates at 0.580, and at 0.759 the warning fires on questions the catalogue
-answers well. `pack --focus "<question>"` is for that case: given the questions
-a package exists to answer, the threshold is taken from them instead of
-estimated, and `info` reports which of the two it was. Repeat the option to give
-several; the cut goes just under the weakest of them. A fixed threshold could not do this: the
-same questions reach 0.51 on one corpus and 0.55 on another, so any single cut
-falls inside the answered range of one collection or below another's, which is
-how it behaved before this was measured. A package built before this exists has
-no such number and is judged by the previous thresholds, unchanged.
+mdcx converts, packages and answers. It does not fetch, and depends on no network
+of its own. A catalogue is a plugin, declared through the `mdcx.sources` entry
+point group and meeting the contract in `mdcx.sources`:
 
-A package whose source material is gone can still be calibrated. The threshold
-used to be writable only by `pack`, and `pack` walks a folder of documents — so
-a package that outlived its material fell back to a constant nobody measured on
-it, and would in every future version. Nothing about the measurement needs the
-material: it needs the vectors, which are inside, and questions, which come from
-outside.
-
-```
-mdcx calibrate corpus.mdcx --key "passphrase"     --question "how heat travels by conduction and radiation"     --question "what the equivalence of mass and energy means"
+```toml
+[project.entry-points."mdcx.sources"]
+oapen = "my_package.oapen:Catalogue"
 ```
 
-The package is rewritten in place — same documents, same passages, same vectors,
-around a changed measure — and `info` reports it as `focus-after` rather than
-`focus`, because measured while packing and measured afterwards describe the
-corpus at different moments. A signed package needs its signing key; without it
-the command refuses rather than handing back an unsigned package.
+Keeping adapters out is deliberate. What appears to be a simple HTTP client is
+not: catalogues differ in how a download is reached, how paging is expressed, and
+how identifiers are formed, and that knowledge belongs with whoever holds it.
+Answering questions over an existing package requires none of this.
 
-The same judgement is available per package, which is what a consumer serving
-several of them needs in order to decide which one answers:
+What does not depend on any particular catalogue is provided:
+
+```
+python -m mdcx.sources --check <name>
+```
 
 ```python
-archive.closeness(connection, text)   # (nearest cosine, its clearance) or None
-archive.answers(connection, text)     # by that package's own calibration
+sources.looks_like(data, "pdf")   # by signature, not by declared type
+sources.identify(data)            # what the bytes are instead
+sources.patiently(call)           # retries RateLimited, honours Retry-After
+sources.conforms(source)          # the conformance check, as a function
 ```
 
-`answers` applies the margin that matches how the package was calibrated, which
-is the part easiest to get wrong and which raises no error when it is: applying
-the passage share to a threshold taken from questions was measured letting seven
-of eight unrelated queries through. Asking whether *anything* open is about a
-question is a different question — a property of the set — and stays where it
-was, in the warning the MCP server raises.
-
-## Vocabulary
-
-What the corpus knows about words, and by what rule.
-
-`vocabulary(connection)` returns the document frequency of every term together
-with the rule that produced it, and `unknown_terms(connection, text)` names the
-terms of a text this corpus has genuinely never seen.
-
-The rule matters more than it sounds. The index records terms of three
-characters or more — a single character where the script does not separate
-words — so absence from the table has two meanings: the corpus never saw the
-term, or the index was never going to record it. Weighting by rarity gives an
-absent term the maximum weight, so reading absence as novelty makes the
-shortest, emptiest words the most informative ones. Measured: questions a corpus
-answers well declared between 0.37 and 0.55 of unknown vocabulary, and fall to
-exactly zero once the rule is applied. `unknown_terms` applies it.
-
-`unknown_terms` is literal, and the index it reads is not the one that crosses
-languages. The meaning index reaches a Spanish question against an English
-corpus; the word index cannot, so asked across languages it returns every term
-of the text — a measure of which language the corpus is in rather than of what
-it knows. `unfamiliar(connection, text)` returns the same terms with the share and a
-`cross_language` flag. Prefer it wherever the language of the question is not
-known to match the corpus.
-
-The flag is decided by the language and not by the share, which took two wrong
-shapes to arrive at. The share measures how *much* vocabulary is missing and
-never why: it goes high both when the corpus is in another language and when it
-simply does not cover the subject, and it is not even a property of the question
-— it rises as the package shrinks, so one query measured 0.17 against a package
-of 266 documents and 0.83 against one of 29, in the same language. A fixed cut
-on it silences small packages systematically, which are the ones for which "I
-have never seen these words" is the strongest thing they can say. And no cut
-works anyway: a real crossing was measured at 0.60 and a same-language query at
-0.80.
-
-So the detected language decides, the share only says that something is missing
-at all, and a detector that does not answer is not read as one that disagrees —
-failing to identify a language is not evidence of a different one.
-
-Function words are not removed on top of that, deliberately. `die` in die
-casting and `les` in Les Misérables carry meaning in the language being
-searched, and which words are empty depends on the question being asked. What
-mdcx can state is what it never recorded; what counts as uninformative is the
-caller's.
-
-The keys of `df` are normalised — folded case, folded accents — so a caller
-tokenising with `search.tokenize_text` gets `GPU` where the table holds `gpu`.
-`unknown_terms` handles that; anyone reading `df` directly must.
-
-### The two signals disagree
-
-`assess(connection, text)` returns both, because each is wrong where the other
-is right and neither said so.
-
-The cosine cannot tell the senses of a homonym apart — a multilingual embedding
-places them together. Measured on a package of algebra: *graph coloring adjacent
-vertices different colors* came in at 0.6553 against a threshold of 0.5661 and
-returned lessons on comparing graphs and on the ellipse. `graph` as the plot of
-a function, not as a graph. The word the question turns on, `coloring`, the
-corpus had never seen.
-
-No quantity derived from the same vectors repairs that, which was measured
-rather than assumed: clearance does not separate — the false positive's falls
-inside the range of the questions the corpus answers *and* inside the range of
-the unrelated ones, and its closeness sits above four of eight legitimate
-questions — and neither does the minimum over windows of the query. Both are
-functions of a space that has already lost the distinction. What separates it is
-the literal vocabulary, which does tell an absent `coloring` from a present
-`graph`.
-
-The verdict is reported, not overruled. Whether an unfamiliar word should refuse
-a query depends on what the query is for, and a word can be peripheral: *the
-slope of a line drawn in Patagonia* is answerable and `patagonia` is unknown.
-The MCP `search` reply carries `unknown_terms` **per package** — a map from the
-package to the words of the question it has never seen, so a reader can cross
-the strange word with the package the passage they are about to cite came from.
-Not pooled: intersecting across packages emptied the signal as the library grew,
-because four packages each lacked something different and no term was missing
-from all four, while three of them had never seen the word the question turned
-on. A package is absent from the map when it knows every word, and when the
-question is in another language than that package.
-
-Where several packages are served, `similarity` is over all of them pooled and
-`answerable_at` is the **lowest** of their calibrated reaches, so the threshold
-in force comes from the narrowest package rather than from the one a passage
-came from. `answerable_at_by_package` gives each of them. The criterion is left
-as it is on measurement rather than preference: against the alternative — the
-reach of the package the best passage came from — the minimum wins six to one
-over 42 queries, because a question one narrow package answers would otherwise
-be condemned by a wider one's threshold.
-
-Note also that vectors are stored in half precision. They are renormalised when
-read, because rounding to half precision costs the normalisation and every
-quantity computed from them was slightly not a cosine.
-
-## Attachments
-
-Something to keep that is not text to search.
-
-A corpus used as a memory sometimes has to hold an object — a certificate, a
-table of coordinates — and everything in the folder became passages. One such
-artefact of 500 vertices measured 2,003 passages, 40.6 per cent of that corpus,
-and made every later write cost 1.57 times as much, because packing walks the
-whole corpus even when one document changed.
-
-It did not spoil the ranking, which was the fear and was wrong: coordinates
-resemble no question, so none of those passages reached a top five. The cost is
-weight and time.
-
-`indexed: false` in a document's front matter keeps it in the package — signed,
-encrypted, one file — and out of the index, the vectors and the passage count.
-`export` restores it verbatim, and the MCP `document` tool returns it by name,
-which is the only way in, since it cannot be searched for.
-
-`pack` also reports which document contributed the most passages, and says so
-when one holds a third or more of them.
-
-## Write cost
-
-What a write costs when a corpus is written to rather than distributed.
-
-Compressing and encrypting are properties of the whole file, so they cost the
-same whether one document was added or the corpus was rebuilt. That is a fixed
-price per write, and it grows with the corpus rather than with what was added.
-`pack` reports it as `seconds_compress` and `seconds_encrypt`, so a caller
-writing often can decide how often to write.
-
-`--fast` trades size for time where that is the right trade — a package that is
-rewritten every few minutes and never leaves the machine, rather than one that
-is distributed and read many times. Measured on a 30 MiB database of 190
-documents: 1.03 s for 2,170 KiB against 6.22 s for 1,569 KiB. Six times the
-speed for 38 per cent more bytes. Nothing else about the package changes.
-
-### Server lifetime
-
-What happens when the client goes away.
-
-The server ends its own process rather than returning and letting the
-interpreter decide when. Returning from `main` is not exiting: Python waits for
-every non-daemon thread before shutting down, and the libraries under an encoder
-start some. Ten server processes were measured alive at once, the oldest for two
-and a half hours, holding 7.25 GB between them and consuming no processor at
-all.
-
-And it lets go of the encoder after `MDCX_IDLE_UNLOAD_MINUTES` of silence — 30
-by default, `0` to disable — because the damage does not depend on the cause:
-three gigabytes held by a process answering nobody is worth avoiding either way.
-The next question reloads it in seconds.
-
-### Transcription recovery
-
-Reaching a word the transcription got wrong.
-
-A word that came out of optical recognition with one letter misread is a word
-the index does not contain, and literal matching can never return it. There is
-no error to show for it: the reply is simply empty, and the passage sits in the
-corpus unreachable.
-
-Optical recognition does not misread letters at random — it misreads the ones
-drawn alike, `0` for `O`, `1` for `l`, `5` for `S` — so grouping letters by shape
-puts the misread word and its original in one bucket. The bucket is far too
-coarse to answer with, holding hundreds of words, so it never answers: it
-proposes a handful of candidates and edit distance decides among them.
-
-```
-mdcx pack --output docs --target corpus.mdcx --key "passphrase" --shapes
-mdcx shapes corpus.mdcx --key "passphrase"      # to one written without it
-```
-
-Measured on a corpus of 188 documents, against the methods that already exist
-for the same problem: 76.5 % of misread words recovered, against 0 % for literal
-matching and 45.3 % for trigram overlap, at a seventh of the trigram cost. It
-costs 2.96 % of package there, and more on a corpus whose vocabulary is nearly
-all distinct — which is why it is asked for rather than assumed. A corpus that
-never went through optical recognition pays and gets nothing.
-
-Three boundaries worth knowing, and the third is the one that decides how to
-read a reply.
-
-It is **not a spell checker**: the same measurement over randomly substituted
-letters, the error a typist makes, falls to 49.6 % while trigrams do not move —
-the advantage comes from the shape, and so does its limit.
-
-It runs **only where the answer would otherwise be empty**: terms are matched
-with OR, so one word the corpus does have is enough to return passages, and then
-nothing is widened.
-
-And **half of what it proposes is not a transcription error**. Precision was
-measured at 49.9 %, against 59.1 % for trigrams — for Latin script the table is
-coarse, since all ten digits and 22 of 26 lowercase letters fall in one class, so
-in practice the sieve proposes any single substitution among them. `libre` finds
-`libro`, `precis` finds `precio`. That is survivable exactly because the reply
-says what it did: a caller reads `read_as` and decides, where a caller shown a
-bare passage would have no way to know.
-
-Where a passage was found under another spelling the reply says so, in
-`read_as`. Presenting it as a literal match would claim the document says what
-it does not, and a citation carrying the words of the document is what makes the
-package worth having.
-
-The technique is not new, and the attribution belongs here: it is the character
-shape codes Spitz described at Xerox in the nineties, used there over document
-images to avoid a full recognition pass. What differs is where it is applied —
-over text already converted, for the errors the conversion left behind.
-
-## Language support
-
-Retrieval by word is script-aware. A query matches the words present in the
-documents, in any writing system, and the results of a single search may include
-documents in several languages. The predominant language of a corpus is recorded
-and reported by `info`; it describes the corpus and does not restrict what a
-query returns.
-
-The following are verified by `tests/test_languages.py`, which builds one corpus
-holding the same four subjects — algebra, botany, printing and baking — in every
-language listed, then issues a query in each. Each query competes against the
-three other documents in its own language and against the remainder of the
-corpus. All 136 queries return the expected document in first position.
-
-| Script | Languages |
-|---|---|
-| Latin | English, Spanish, Portuguese, French, Italian, German, Dutch, Swedish, Danish, Norwegian, Finnish, Polish, Czech, Hungarian, Romanian, Turkish, Indonesian, Vietnamese, Catalan |
-| Cyrillic | Russian, Ukrainian, Bulgarian, Serbian |
-| Greek | Greek |
-| Arabic | Arabic, Persian |
-| Hebrew | Hebrew |
-| Devanagari | Hindi |
-| Bengali | Bengali |
-| Tamil | Tamil |
-| Thai | Thai |
-| Han | Chinese, Japanese |
-| Hangul | Korean |
-
-Support is a property of the writing system rather than of the language, so a
-language written in any of these scripts is covered whether or not it is listed.
-Three properties establish this:
-
-**Tokenisation.** A word is a run of letters, digits and the combining marks
-attached to them. The set of combining marks is derived from the Unicode
-character database rather than enumerated, which keeps the vowel signs of
-Devanagari, Bengali, Tamil and Thai attached to the letters they modify.
-
-**Accent folding.** Folding is restricted to combining marks that represent an
-accent placed on a letter, so that `café` matches `cafe`. The vowel signs of
-Indic scripts and the points of Hebrew and Arabic are preserved, since in those
-scripts they carry the sound of the syllable.
-
-**Segmentation.** Writing systems that do not separate words with spaces —
-Chinese, Japanese, Korean, Thai, Lao, Khmer, Burmese, Tibetan and Javanese — are
-indexed by character, at index time and query time alike. This is what a lexical
-index can match without a segmenter trained on a single language.
-
-Word matching operates within a language: the words of a query must be present in
-the document. A query written in one language reaches a document written in
-another only where the two share a term, as proper names and loanwords often do.
-When a query returns no result and none of its terms appear in the index, the
-response states this and names the language of the corpus, distinguishing an
-empty answer from material the corpus does not hold.
-
-Retrieval across languages is a separate capability, described below. It is
-optional and requires a model. Where the query is written in the language of the
-documents the two are merged, each covering what the other cannot; where it is
-not, word matching has nothing to contribute and is left out, because the few
-terms it does match there are accidents and they arrive first.
-
-## Cross-language retrieval
-
-Word matching operates within a language. A Spanish query and a German document
-on the same subject share no term, so a word index has nothing to match. Measured
-on a corpus written in 34 languages, a query retrieves 4.2% of the documents on
-its subject, comprising essentially those written in the language of the query.
-
-Retrieving the remainder requires representing meaning rather than spelling. A
-multilingual embedding model places a sentence and its translation at nearby
-points in a vector space, so a document can be retrieved through its content
-rather than its vocabulary. When built with `--multilingual`, a package stores a
-vector for each passage alongside the passage, under the same encryption, and the
-same query retrieves 96.9% of the documents.
-
-```
-pip install "mdcx[multilingual]"
-mdcx pack --output ./Documents_md --target corpus.mdcx \
-    --key "passphrase" --multilingual
-```
-
-The corpus is encoded once, when the package is built. A recipient encodes only
-their own queries.
-
-### Merged engines
-
-Both engines are retained because their failure modes are complementary. Measured
-on the same corpus of 136 documents in 34 languages:
-
-| Engine | Across languages | Expected document ranked first |
-|---|---|---|
-| Word | 4.2% | 136 of 136 |
-| Meaning | 98.5% | 126 of 136 |
-| Merged | 96.9% | 135 of 136 |
-
-The dense engine retrieves across languages but ranks less precisely within the
-language of the query. The lexical engine ranks precisely and does not retrieve
-beyond that language. Merging by reciprocal rank retains both properties, at a
-cost of one document in 136 relative to the lexical engine alone.
-
-Ranks are merged rather than scores, as a BM25 score and a cosine similarity have
-no common scale.
-
-`--mode lexical` and `--mode semantic` select a single engine.
-
-### Model selection
-
-The default is `BAAI/bge-m3`. Models were compared on FLORES-200, a corpus of
-sentences translated by professionals into 200 languages. The task is to retrieve
-a sentence given its translation, among candidates drawn from the same corpus, in
-both directions of every language pair.
-
-The selection criterion is the worst-performing language pair rather than the
-mean, since a mean can conceal a language on which a model performs poorly.
-
-| Model | Mean | Worst language | Worst pair |
-|---|---|---|---|
-| `BAAI/bge-m3` | 100.0% | 99.8% | 98.0% |
-| `sentence-transformers/LaBSE` | 99.5% | 97.7% | 96.0% |
-| `intfloat/multilingual-e5-large` | 98.9% | 96.5% | 92.0% |
-| `intfloat/multilingual-e5-small` | 97.0% | 94.4% | 92.0% |
-| `ibm-granite/granite-embedding-97m-multilingual-r2` | 95.4% | 91.3% | 84.0% |
-
-Measured over 132 language directions covering 10 writing systems, with 50
-candidates per query. In a larger run of 1,122 directions across all 34 languages
-with 100 candidates, LaBSE reached a mean of 99.6% and 93.5% on its worst
-language, with no pair below 90%.
-
-An alternative model is selected by name:
-
-```
-MDCX_MODEL=sentence-transformers/LaBSE mdcx pack ...
-```
-
-A package records the model that encoded it. A query encoded with a different
-model occupies a different vector space, so a mismatch disables meaning-based
-retrieval rather than returning results that cannot be compared.
+`Candidate.download` records which server a file would be fetched from, where the
+catalogue knows it without a further request, and `Candidate.host` reads it back.
+The conformance check reports when one host accounts for more than half of the
+candidates.
+
+`tests/test_sources_kit.py` contains a reference source of about twenty lines,
+implemented against no network.
 
 ## Portable paths
 
-How a document is named inside a package.
-
-No output contains absolute paths. Each document is identified by a pseudopath
-beginning with `@/`, resolved against the folder or package containing it, so a
-corpus remains valid on local disk, network share or cloud storage.
+Every document carries a portable path of the form `@/folder/document.md`,
+relative to the root of the collection. Absolute paths are not stored, so a
+package is readable on a machine whose directory layout differs. `export`
+reconstructs the directory structure from them.
 
 ## Signing
 
-A package can be signed so that its issuer can be verified rather than declared.
-The signature covers the digest of the encrypted body, attesting to both origin
-and content, and is verified without the encryption key.
-
 ```
 mdcx keygen
-mdcx pack --output ./Documents_md --target corpus.mdcx --key "passphrase" \
-          --issuer "Acme Ltd" --signing-key <private-key>
-mdcx verify corpus.mdcx --public-key <public-key>
+mdcx pack --output ./docs --target corpus.mdcx --key "..." \
+    --issuer "Organisation" --signing-key <hex private key>
+mdcx verify corpus.mdcx --public-key <hex public key>
 ```
 
-Verification requires the body to be intact. A signature covering only the
-recorded digest would accept a package whose contents had been replaced while its
-header was left unmodified.
-
-The issuer field is free text and is not evidence of origin on its own.
+Signing is Ed25519 over the digest of the encrypted body together with the header,
+so altering either invalidates the signature. Verification requires only the
+public key, not the passphrase.
 
 ## Encryption
 
-Packages are encrypted at rest and decrypted in memory when opened; no plaintext
-is written to disk. This protects a file in transit and at rest. It is not
-equivalent to searching over encrypted data without decryption, which is a
-distinct field with documented leakage attacks and per-query costs measured in
-seconds.
+The package body is encrypted with AES-256-GCM, with the key derived by scrypt
+from the passphrase and a per-package salt. The header — format, issuer, counts,
+integrity digest, signature, language, dates and calibration — is outside the
+encrypted body and readable without the key, so a recipient can decide whether a
+package is worth opening.
 
-The key is derived with scrypt at N = 2^15, r = 8, p = 1. Those parameters
-require 32 MB of memory per attempt, which is what resists the parallelisation a
-GPU would otherwise bring to a search: memory, unlike arithmetic, does not
-become cheap by adding cores. One derivation takes 286 ms single-threaded on the
-development machine, approximately 3.5 attempts per second per core.
+An empty passphrase is refused at packing time. Supply the passphrase through
+`MDCX_KEY`, `--key-file`, or `--key -` to read it from standard input; `--key`
+places it in the process table for the duration of the command.
 
-That cost falls on an attacker and on the legitimate opening of a package alike.
-It multiplies the work of a search; it does not make a weak passphrase safe. The
-strength of the encryption is the strength of the passphrase, and one drawn from
-a dictionary stays within reach of an offline search whatever the derivation
-costs.
+## Package format
+
+A `.mdcx` file is a magic number, a JSON header, and an encrypted body. The body is
+a compressed SQLite database holding:
+
+| Table | Contents |
+|---|---|
+| `document` | one row per document: name, portable path, origin, dates, normalised text |
+| `passage` | one row per passage, with its position in its document |
+| `passage_fts` | the full-text index, declared over `passage` |
+| `passage_vector` | the embedding of each passage, when meaning was indexed |
+| `term_shape` | the transcription-recovery index, when built |
+| `attachment` | documents kept with the corpus and excluded from it |
+| `df` | document frequency per term |
+| `meta` | corpus record: language, calibration, model, counts |
+
+Embeddings are stored in half precision and renormalised when read. A package
+written by an earlier version omits the tables added since, and every entry point
+that reads one checks first, so an older package continues to answer.
 
 ## Limitations
 
-Retrieval returns documents whose content is close to the query. It does not
-translate them: passages are returned in the language in which they were written.
-
-Documents that expose no text, such as scanned drawings, are read by optical
-character recognition and counted as unverifiable rather than as findings, since
-no text original exists against which to measure fidelity. Coverage is computed
-over the documents that could be measured, so an unverifiable document neither
-raises nor lowers it.
-
-Coverage measures the tokens preserved by a conversion. It does not measure the
-preservation of table structure, which is reported separately.
-
-Deciding that a grid of drawn rules is a table, rather than prose someone framed
-for emphasis, is done by how many of its rows run to more than one line. That
-test is not exact in either direction: prose laid out in short lines can pass it,
-and a table whose cells wrap can fail it. A separating signal was looked for in
-the material at hand and not found — the longest cell in the sample belongs to a
-legitimate table, so cell length does not divide them — and no further threshold
-was added on the strength of one collection. Where the decision goes wrong, the
-text is still present and still counted in coverage; what is lost is its shape.
-
-A package is decrypted in full when it is opened, so its size is bounded by the
-memory available. A corpus larger than that is held as several packages and
-queried together, as described under
-[Working incrementally](#incremental-packaging).
+- Conversion fidelity is measured against the text a document exposes. A document
+  that exposes none cannot be verified, and is marked as such.
+- Retrieval across languages requires the `multilingual` extra and its model.
+- The transcription-recovery filter addresses errors of transcription, not of
+  typing, and a substantial share of what it proposes is not an error.
+- A package is decrypted into memory in full. A corpus larger than available
+  memory is held as several packages queried as one.
+- Calibration thresholds are measured per corpus. A package built before that
+  measurement existed is judged by fixed thresholds.
 
 ## Tests
 
 ```
-pip install pytest
-python -m pytest tests/ -v
+pytest
 ```
 
-254 tests. Most of them exist because something failed once; the file that
-covers it says which, so a correction that is undone is noticed.
-
-**Retrieval**
-
-| File | Scope |
+| File | Covers |
 |---|---|
-| `test_languages.py` | retrieval in 34 languages across 11 writing systems, and the requirement that a term shared by several languages returns the documents of all of them |
-| `test_multilingual.py` | retrieval across languages, and the requirement that merging engines preserves the precision of the lexical engine |
-| `test_multipackage.py` | querying several packages as one corpus, including key configuration and the reporting of a missing package |
-| `test_relevance.py` | that serving several packages does not bury the answer among the ones that hold nothing about it |
-| `test_direction.py` | restricting a search to one side of a correspondence, and the requirement that both engines filter by the same form of the value |
-| `test_answer_quality.py` | what the server says when it cannot answer, and the places where a number meant something other than it appeared to |
-| `test_describes_itself.py` | that every field a reply carries and every argument a tool accepts are accounted for in the description the caller reads, and that no field is promised after it stopped arriving |
-| `test_encoder.py` | how the encoder spends the accelerator, and that batching leaves the vectors unchanged |
-| `test_package_identity.py` | that a cache belongs to a package rather than to a memory address, so a package cannot answer with the vectors or the corpus statistics of one that was closed |
-
-**Conversion**
-
-| File | Scope |
-|---|---|
-| `test_formats.py` | identification of a file by content rather than extension, in both directions, and the extraction of reference text from EPUB |
-| `test_conversion_order.py` | which engine reads a document, when the search for a better one stops, and what rejects a table that is not one |
-| `test_single_extraction.py` | that a document is extracted once however many engines read it, and that what each is given is its own to edit |
-| `test_table_cells.py` | that a character of a drawn table lands in exactly one cell, including a glyph the outer rule cuts |
-| `test_table_shapes.py` | the reading of a table the page does not draw, where the model supplies the shape and the text layer the words |
-| `test_headings.py` | that a chapter keeps the section titles its book already carried, whichever engine converted it |
-| `test_reporting.py` | that the summary separates a document measured and found short from one that could not be measured at all |
-| `test_server_leaves.py` | that a server whose client has gone ends its own process rather than waiting on a thread nobody will join, and that it lets go of the encoder after a long silence |
-| `test_shapekey.py` | recovering a word optical recognition misread: that letters drawn alike share a key, that the sieve proposes and never decides, that it runs only where the answer would be empty, and that the reply says what was read as what |
-| `test_card_sizing.py` | who may use the card and how a run finds out it guessed wrong: that no visible device is no card, that the gate bounding card use is sized by the card rather than by a lane, and that documents can be converted one at a time in one process |
-| `test_sources_kit.py` | the source contract and what a plugin should not have to write again: reading four bytes, waiting when a server asks, and checking a plugin against the contract — plus a source in twenty lines, which does not go out of date the way a paragraph does |
-| `test_incremental.py` | reuse of vectors between packages: that unchanged passages are not encoded again, that an edited one is, and that reuse produces the same ranking |
-
-**The package as it is installed**
-
-| File | Scope |
-|---|---|
-| `test_stress.py` | hostile inputs: empty and corrupted files, names in other alphabets, malformed queries including SQL injection, truncated and tampered packages, concurrent access, and compaction against content loss |
-| `test_entrypoints.py` | that every command the package declares can be started and can report its version, and that every MCP tool publishes the signature of the function that answers it |
-| `test_machine_share.py` | that a conversion leaves a share of the machine free, counting threads as well as processes; that the lanes are sized from the video memory, the work and the processors rather than from constants; and that a turn on the card is given back even when the model raises |
-| `test_console.py` | that a document name the console cannot represent does not stop the conversion, in the parent process and in the workers |
-
-Tests that need a model skip themselves when it is absent, so the suite passes
-on a plain `pip install mdcx` as well as on `[all]`. Seven files depend on the
-`multilingual` extra and one on `tables`.
-
-Continuous integration runs the suite on Python 3.11 and 3.13, on Linux and
-Windows.
+| `test_formats.py` | engine selection and escalation, per format |
+| `test_package_identity.py` | the container: schema, encryption, signing, integrity |
+| `test_relevance.py` | ranking, and which passages an answer draws on |
+| `test_multilingual.py`, `test_encoder.py` | encoding, fusion and cross-language retrieval |
+| `test_answer_quality.py` | calibration thresholds and the warning |
+| `test_dates.py` | dates, their provenance and the recency preference |
+| `test_shapekey.py` | transcription recovery and its boundaries |
+| `test_sources_kit.py` | the source contract and its conformance check |
+| `test_card_sizing.py` | device detection, lane sizing and resident conversion |
+| `test_closed_package.py` | calibrating and extending an existing package |
+| `test_incremental.py` | reuse of vectors between packages |
+| `test_server_leaves.py` | server lifetime and idle release |
+| `test_describes_itself.py` | that every published field and argument is documented |
 
 ## Contributing
 
-Issues and pull requests are accepted at
-[github.com/jorgell23-sys/mdcx](https://github.com/jorgell23-sys/mdcx).
-
-A change needs a test that has been seen to fail without it, and a change about
-cost or quality needs the measurement that justifies it. [CONTRIBUTING.md](CONTRIBUTING.md)
-sets out what makes a report act on itself and what a pull request is expected
-to carry; [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) covers the rest.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Issue templates for defects and
+measurements are under `.github/ISSUE_TEMPLATE`.
 
 ## Security
 
-To report a vulnerability, open a security advisory at
-[github.com/jorgell23-sys/mdcx/security/advisories](https://github.com/jorgell23-sys/mdcx/security/advisories)
-rather than a public issue.
-
-Packages are encrypted with AES-256-GCM and keys derived with scrypt. The
-encryption protects a package at rest and in transit; it does not protect against
-a compromised host, where the key is present in memory while the package is open.
+See [SECURITY.md](SECURITY.md) for supported versions and how to report a
+vulnerability.
 
 ## Releases
 
-Version history and release notes:
-[github.com/jorgell23-sys/mdcx/releases](https://github.com/jorgell23-sys/mdcx/releases).
+Released to [PyPI](https://pypi.org/project/mdcx/), to the MCP registry as
+`io.github.jorgell23-sys/markdown-document-search`, and archived on Zenodo.
 
-Versioning follows [Semantic Versioning](https://semver.org/). The `.mdcx` format
-is read backwards-compatibly: a package written by an earlier version remains
-readable by a later one.
-
-Every release is listed in [CHANGELOG.md](CHANGELOG.md), which states what
-changed and, where a change rests on a measurement, the measurement.
+[CHANGELOG.md](CHANGELOG.md) records what changed in each release.
 
 ## Authorship
 
-Conceived and directed by Jorge Ellena G., implemented with the assistance of
-Claude (Anthropic).
-
-Design decisions in this package are recorded alongside the measurements that
-justify them, including the ones that were rejected. Several constants here are
-the third value that was tried, and the two that failed are written down beside
-them so the next attempt starts somewhere new. Where no measurement separated
-two options, that is recorded too, rather than settled by a heuristic that
-happened to fit the material at hand.
+Jorge Ellena G. See [NOTICE](NOTICE) for third-party components and their
+licences.
 
 ## Citation
 
-Archived on Zenodo with a permanent identifier. The concept DOI resolves to the
-latest version:
+To cite mdcx in academic work, use [CITATION.cff](CITATION.cff) or the DOI:
 
-    https://doi.org/10.5281/zenodo.22015991
+```
+https://doi.org/10.5281/zenodo.22015991
+```
 
 ## Licence
 
-Apache 2.0. See
-[LICENSE](https://github.com/jorgell23-sys/mdcx/blob/main/LICENSE). Third-party
-components and their licences are listed in
-[NOTICE](https://github.com/jorgell23-sys/mdcx/blob/main/NOTICE).
-
-PyMuPDF is not used. Its AGPL licence would require software incorporating this
-package to be published under AGPL, including software offered as a network
-service.
+Apache License 2.0. See [LICENSE](LICENSE).
