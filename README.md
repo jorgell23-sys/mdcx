@@ -51,9 +51,10 @@ returns only the passages that bear on the question. mdcx implements the second.
 Three properties define the result:
 
 - **Fidelity is checked.** Each conversion is compared against the text the
-  original exposes, read by a library independent of the engine that produced
-  the conversion, and the coverage achieved is recorded per file. Files that
-  expose no text are marked unverifiable rather than reported as complete.
+  original exposes and the coverage achieved is recorded per file. Files that
+  expose no text are marked unverifiable rather than reported as complete. What
+  the comparison establishes differs by engine, and
+  [Verification](#verification) states which.
 - **The corpus is one artefact.** Passages, index and provenance are held in a
   single AES-256-GCM file whose header can be read without the key, and which
   may be signed.
@@ -73,10 +74,10 @@ returning its nearest passage.
 
 Python 3.11 or later. No other component is required to query a package.
 
-The floor is 3.11 because a package is held as one SQLite database and
-serialised in memory to be encrypted, and `sqlite3` gained the required call in
-that version. Conversion and cross-language retrieval each add dependencies,
-listed under [Installation](#installation).
+The floor is 3.11 because a package is one SQLite database, loaded from the
+decrypted bytes when it is opened, and `sqlite3` gained the required call in that
+version. Conversion and cross-language retrieval each add dependencies, listed
+under [Installation](#installation).
 
 ## Installation
 
@@ -171,10 +172,16 @@ does not stop the thread it started.
 
 ### Verification
 
-Each conversion is compared against the text the original exposes, using a
-library independent of the conversion engine. The index records the coverage
-achieved per file. Documents that expose no text — scanned drawings, for example
-— are marked unverifiable, since no text original exists to measure against.
+Each conversion is compared against the text the original exposes. The index
+records the coverage achieved per file. Documents that expose no text — scanned
+drawings, for example — are marked unverifiable, since no text original exists to
+measure against.
+
+The reference is read by a library independent of the layout and OCR engines, so
+for those the comparison is between two different readings of the document. For
+native extraction it is not: the reference and the extraction are the same read,
+and the comparison measures what the subsequent structuring and compaction kept.
+The reference is read once and used for both.
 
 ## Packaging
 
@@ -420,8 +427,11 @@ inherited, and the summary records when a calibration was inherited.
 
 Compression and encryption are properties of the whole file, so they cost the same
 whether one document was added or the corpus rebuilt. `pack` reports
-`seconds_compress` and `seconds_encrypt` so a caller writing frequently can decide
-how often to write.
+`seconds_seal` so a caller writing frequently can decide how often to write.
+
+The database is written out as it is built and then compressed, encrypted and
+hashed in one pass over it, in blocks. The peak memory of writing a package is
+therefore set by the block rather than by the size of the corpus.
 
 ## Resident conversion
 
@@ -437,10 +447,17 @@ with resident.warm(report=print) as convert:
         record = convert(path, output_root)
 ```
 
-`record` is the same one `mdcx-convert` writes for that document.
-`resident.convert_documents(paths, output_root)` is the same as a generator, and
-`resident.cost_of_starting()` returns the seconds spent, so a log can report them.
-Several such processes each amortise their own startup.
+The files written are those `mdcx-convert` writes for that document, chapters
+included: a long PDF becomes one Markdown per chapter in a folder of the
+document's name, alongside an index Markdown linking them. `split=False` asks
+for the document as a single file instead.
+
+`record` is the record `mdcx-convert` writes. Where the document was split it is
+the index record, and the chapter records are under `record["chapter_records"]`.
+`resident.convert_documents(paths, output_root)` is the same as a generator,
+yielding one record per document, and `resident.cost_of_starting()` returns the
+seconds spent, so a log can report them. Several such processes each amortise
+their own startup.
 
 Handing a whole folder to `mdcx-convert` also amortises the load, at the cost of
 the ordering, per-document handling and failure isolation a queue provides.
@@ -581,7 +598,8 @@ that reads one checks first, so an older package continues to answer.
 - The transcription-recovery filter addresses errors of transcription, not of
   typing, and a substantial share of what it proposes is not an error.
 - A package is decrypted into memory in full. A corpus larger than available
-  memory is held as several packages queried as one.
+  memory is held as several packages queried as one. Writing a package does not
+  have this bound: it is built and sealed in blocks.
 - Calibration thresholds are measured per corpus. A package built before that
   measurement existed is judged by fixed thresholds.
 
@@ -601,7 +619,10 @@ pytest
 | `test_dates.py` | dates, their provenance and the recency preference |
 | `test_shapekey.py` | transcription recovery and its boundaries |
 | `test_sources_kit.py` | the source contract and its conformance check |
-| `test_card_sizing.py` | device detection, lane sizing and resident conversion |
+| `test_card_sizing.py` | device detection, lane sizing and turns on the card |
+| `test_resident_output.py` | what the resident converter writes, chapters included |
+| `test_packing_cost.py` | the memory of packing and the cost of reading the original |
+| `test_deep_documents.py` | documents deeper than the interpreter's recursion limit |
 | `test_closed_package.py` | calibrating and extending an existing package |
 | `test_incremental.py` | reuse of vectors between packages |
 | `test_server_leaves.py` | server lifetime and idle release |

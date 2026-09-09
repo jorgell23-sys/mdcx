@@ -221,11 +221,15 @@ def test_the_fixed_price_of_a_write_is_reported(orchard, tmp_path):
 
     Compressing and encrypting are properties of the whole file, so they cost
     the same whether one document was added or the corpus was rebuilt.
+
+    One number rather than two since they became one pass over the database:
+    holding a whole compressed copy of the corpus so that the two could be
+    timed apart is not worth what it cost, which was 35.6 GB of memory and no
+    package written.
     """
     written = archive.pack(orchard, tmp_path / "N.mdcx", "k")
 
-    assert "seconds_compress" in written
-    assert "seconds_encrypt" in written
+    assert "seconds_seal" in written
 
 
 # --- The one that was not reported -------------------------------------------

@@ -44,9 +44,11 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import sqlite3
 import struct
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -134,6 +136,69 @@ def _decrypt(body: bytes, derived_key: bytes, nonce: bytes) -> bytes:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     return AESGCM(derived_key).decrypt(nonce, body, None)
 
+
+# How much of the database is held at a time while it is being sealed.
+#
+# The whole of it used to be, three times over: the serialised database, its
+# compressed form and the encrypted result, all alive together and nothing
+# written until all three existed. Measured by a consumer on 134,677 documents
+# and 4.17 GiB of text: 35.6 GB of resident memory after 34 minutes, growing
+# about 5 GB a minute, and no package written. There was no size at which it
+# stopped being reasonable and started being fatal -- it simply grew until the
+# machine ran out, with no error, no warning and no parameter to ask for less.
+SEAL_BLOCK_BYTES = 8 * 1024 * 1024
+
+
+def _seal(source: Path, target: Path, derived_key: bytes,
+          preset: int) -> tuple[bytes, str, int]:
+    """Compress, encrypt and hash a file into another, a block at a time.
+
+    Returns the nonce, the digest of what was written, and how many bytes that
+    was -- the three things the header needs and the only three that have to
+    outlive the operation.
+
+    The bytes produced are the same ones `lzma.compress` and `AESGCM.encrypt`
+    produce for the same input: XZ is a stream format and GCM is a stream
+    cipher whose tag goes at the end, which is exactly what `AESGCM.encrypt`
+    appends. So this changes what the packing costs and not what a package is,
+    and a reader of any version opens it.
+    """
+    import lzma
+
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    nonce = os.urandom(12)
+    encryptor = Cipher(algorithms.AES(derived_key), modes.GCM(nonce)).encryptor()
+    compressor = lzma.LZMACompressor(preset=preset)
+    digest = hashlib.sha256()
+    written = 0
+
+    def put(chunk: bytes) -> None:
+        nonlocal written
+        if not chunk:
+            return
+        sealed = encryptor.update(chunk)
+        if sealed:
+            digest.update(sealed)
+            out.write(sealed)
+            written += len(sealed)
+
+    with open(source, "rb") as raw, open(target, "wb") as out:
+        while True:
+            block = raw.read(SEAL_BLOCK_BYTES)
+            if not block:
+                break
+            put(compressor.compress(block))
+        put(compressor.flush())
+        put(encryptor.finalize())
+        # The authentication tag, which `AESGCM.encrypt` puts at the end of the
+        # ciphertext and `AESGCM.decrypt` expects to find there.
+        digest.update(encryptor.tag)
+        out.write(encryptor.tag)
+        written += len(encryptor.tag)
+
+    return nonce, digest.hexdigest(), written
+
 # Provenances a date may carry, worst last. The order is what they are worth:
 # a date from the source that published the work is the work's; a modification
 # time is the file's, and saying so is the whole point of recording where it
@@ -211,13 +276,23 @@ def _date_of(document: dict, supplied: dict[str, tuple[str, str]],
     return None, None
 
 
-def _build_database(folder: Path, semantic: bool = False,
+def _build_database(folder: Path, into: Path, semantic: bool = False,
                     reuse: dict | None = None,
                     focus: list[str] | None = None,
                     dates: dict | None = None,
                     use_mtime: bool = False,
-                    shapes: bool = False) -> tuple[bytes, dict]:
-    """Build the in-memory database with documents, index and provenance."""
+                    shapes: bool = False) -> tuple[int, dict]:
+    """Build the database with documents, index and provenance, into a file.
+
+    Written out rather than handed back as bytes. `serialize()` returns the
+    whole database as one object, which was then compressed into a second and
+    encrypted into a third -- three copies of the corpus alive at once for a
+    value nothing reads in between. Writing it to a file leaves the pages where
+    SQLite already put them and lets the sealing read them a block at a time.
+
+    Returns how many bytes were written, which is the one thing about it the
+    caller reports.
+    """
     from . import search as B
 
     # A folder of Markdown, or a JSONL file with one record per line. The
@@ -426,9 +501,16 @@ def _build_database(folder: Path, semantic: bool = False,
                     (k, json.dumps(v) if not isinstance(v, str) else v))
     connection.commit()
 
-    data = connection.serialize()
+    # Copied out page by page rather than serialised in one object. The
+    # database is built in memory because that is where the indexing is fast;
+    # what does not have to happen is a second whole copy of it beside the
+    # first.
+    spill = sqlite3.connect(into)
+    spill.executescript("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;")
+    connection.backup(spill)
+    spill.close()
     connection.close()
-    return bytes(data), summary
+    return into.stat().st_size, summary
 
 def _split_blocks(text: str) -> list[str]:
     return [b for b in text.split("\n\n") if b.strip()]
@@ -548,30 +630,42 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
             focus = previous
             inherited_focus = True
 
+    # Two scratch files beside the target rather than in the system's temporary
+    # folder: a package of a large corpus is large, and the disk with room for
+    # it is the one the caller chose.
+    workspace = tempfile.mkdtemp(prefix=".mdcx-pack-", dir=str(target.parent))
+    built = Path(workspace) / "database"
+    sealed = Path(workspace) / "body"
+
     t0 = time.perf_counter()
-    base_score, summary = _build_database(folder, semantic=semantic, reuse=reuse,
-                                          focus=focus, dates=dates,
-                                          use_mtime=use_mtime, shapes=shapes)
+    bytes_database, summary = _build_database(folder, built, semantic=semantic,
+                                              reuse=reuse, focus=focus,
+                                              dates=dates, use_mtime=use_mtime,
+                                              shapes=shapes)
     t_base = time.perf_counter() - t0
 
     # An empty package is written without complaint and fails only when queried,
     # long after the mistake. The usual cause is pointing at the folder of source
     # documents rather than at the converted Markdown.
     if not summary["documents"]:
+        shutil.rmtree(workspace, ignore_errors=True)
         raise ValueError(
             f"No Markdown documents found in {folder}. "
             "This should be the output folder of a conversion, not the source documents."
         )
 
-    t0 = time.perf_counter()
-    compressed = lzma.compress(base_score, preset=FAST_PRESET if fast else PRESET)
-    t_comp = time.perf_counter() - t0
-
     salt = os.urandom(16)
-    t0 = time.perf_counter()
     derived_key = _derive_key(key, salt)
-    nonce, body = _encrypt(compressed, derived_key)
-    t_encrypt = time.perf_counter() - t0
+
+    # Compressed, encrypted and hashed in one pass over the database, block by
+    # block. The two stages used to be separate and each held a whole copy of
+    # the corpus; timing them apart is no longer possible and no longer worth
+    # the memory it cost.
+    t0 = time.perf_counter()
+    nonce, body_digest, bytes_body = _seal(
+        built, sealed, derived_key, FAST_PRESET if fast else PRESET)
+    t_seal = time.perf_counter() - t0
+    built.unlink(missing_ok=True)
 
     header = {
         "file_format": "mdcx",
@@ -587,7 +681,7 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         "compression": "lzma",
         "salt": salt.hex(),
         "nonce": nonce.hex(),
-        "body_digest": hashlib.sha256(body).hexdigest(),
+        "body_digest": body_digest,
         "signature": "",
         "public_key": "",
         "conversion": summary.get("conversion", {}),
@@ -617,15 +711,20 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
 
     encoded_header = json.dumps(header, ensure_ascii=False).encode("utf-8")
 
+    # The header carries the digest of the body, so the body has to exist
+    # before the header can be written. It is copied in rather than held: the
+    # point of the whole change is that no stage holds the corpus.
     with open(target, "wb") as f:
         f.write(MAGIC)
         f.write(struct.pack("<I", len(encoded_header)))
         f.write(encoded_header)
-        f.write(body)
+        with open(sealed, "rb") as body_file:
+            shutil.copyfileobj(body_file, f, SEAL_BLOCK_BYTES)
+    shutil.rmtree(workspace, ignore_errors=True)
 
     return {
-        "bytes_database": len(base_score),
-        "bytes_compressed": len(compressed),
+        "bytes_database": bytes_database,
+        "bytes_compressed": bytes_body,
         "bytes_file": target.stat().st_size,
         "seconds_index": round(t_base, 2),
         # Compressing and encrypting are properties of the whole file, so they
@@ -634,8 +733,7 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         # corpus rather than with what was added -- reported here so a caller
         # writing often can decide how often to write, and use --fast when the
         # package is being rewritten rather than distributed.
-        "seconds_compress": round(t_comp, 2),
-        "seconds_encrypt": round(t_encrypt, 2),
+        "seconds_seal": round(t_seal, 2),
         # Said out loud, because inheriting it silently would be the same fault
         # as dropping it silently, only in the other direction.
         **({"focus_inherited": True} if inherited_focus else {}),
@@ -2362,8 +2460,7 @@ def main() -> int:
                   "passages")
         print(f"  database {r['bytes_database']:,} -> compressed {r['bytes_compressed']:,} "
               f"-> file {r['bytes_file']:,} bytes".replace(",", "."))
-        print(f"  index {r['seconds_index']}s  compress {r['seconds_compress']}s  "
-              f"encrypt {r['seconds_encrypt']}s")
+        print(f"  index {r['seconds_index']}s  seal {r['seconds_seal']}s")
         if r.get("embedding_model"):
             print(f"  meaning indexed with {r['embedding_model']} "
                   f"({r['embedding_dimensions']} dimensions)")

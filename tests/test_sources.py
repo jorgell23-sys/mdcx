@@ -74,9 +74,18 @@ def test_mdcx_ships_no_catalogue_of_its_own():
     If a catalogue were ever added to the package itself, this is where that
     decision would show up rather than being discovered later.
     """
-    assert sources.available() == {}, (
-        "a source is installed with mdcx itself, which makes the package "
-        "depend on a network it was built not to need")
+    from importlib.metadata import entry_points
+
+    # What mdcx ships, not what happens to be installed beside it. Asking
+    # `available()` conflates the two: a catalogue the user installed on
+    # purpose -- which is the whole design -- failed this, so the test was
+    # measuring the environment where the property belongs to the package.
+    from_mdcx = [ep.name for ep in entry_points(group=sources.ENTRY_POINT_GROUP)
+                 if ep.dist is not None and ep.dist.name in ("mdcx", "mdcx-mcp")]
+
+    assert from_mdcx == [], (
+        f"mdcx itself installs {from_mdcx}, which makes the package depend on "
+        "a network it was built not to need")
 
 
 def test_asking_with_nothing_installed_says_so_precisely(monkeypatch):

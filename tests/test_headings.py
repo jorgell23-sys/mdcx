@@ -89,7 +89,10 @@ def test_the_headings_reach_the_markdown():
     original_open, original_par = _pdf.open_document, _pdf.page_paragraphs_fast
     try:
         _pdf.open_document = lambda _: Document([Page(), Page()])
-        _pdf.page_paragraphs_fast = lambda _: ["cuerpo del capitulo"]
+        # La firma acepta el texto ya extraido y la pagina ya parseada: leer
+        # la pagina dos veces era el gasto que se quito.
+        _pdf.page_paragraphs_fast = (
+            lambda page, text=None, textpage=None: ["cuerpo del capitulo"])
         pages, meta = engines._native_pages(
             Path("cap.pdf"), {1: [(1, "Chapter 3"), (2, "Solutions")], 2: [(3, "Osmosis")]})
     finally:

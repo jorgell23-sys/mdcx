@@ -414,7 +414,46 @@ def _lane_sizes(total_cap: int, gpu_fraction: float, has_gpu: bool) -> tuple[int
     return gpu, max(1, cpu)
 
 
-def _worker_budget(threads: int, gate, batch: int | None = None) -> None:
+def _sizes_without_a_card_lane(gpu_workers: int, cpu_workers: int,
+                               max_cores: int, card_bound: int) -> tuple[int, int]:
+    """The two lane sizes once the card's lane turns out to have no documents.
+
+    A lane with nothing in it gets no processes. They would pay the imports
+    and, if they touch anything, the models -- measured at some sixteen seconds
+    each -- to then receive no document at all, while the cores they hold are
+    the ones the other lane is short of.
+
+    What those cores may not do is arrive at the other lane free of the ceiling
+    they were under. `_lane_sizes` caps the processor lane by what the card can
+    hold resident, and handing it the emptied lane's processes on top of that
+    spends the same video memory twice. Measured on the release that did:
+    six processes loading models onto a 6 GB card that holds two, the card
+    full, every turn queueing behind what was already resident, and two
+    documents giving up after the full five-minute wait. Three books took
+    444.7 s where invoking the tool once per document from outside took 65 --
+    seven times slower, on the default path, from a change meant to free cores.
+
+    The emptied lane's processes are therefore not handed over at all while
+    anything still reaches the card. The number `_lane_sizes` arrived at is
+    already the right one: it capped the processor lane by what the card holds
+    while `gpu_workers` of them compute on it, and emptying the card's lane
+    changes which lane those computing processes belong to, not how much video
+    memory they take. The freed cores go unused on purpose -- what bounds this
+    lane is the card, not the processor count, which is the reverse of what
+    intuition says and the reason the mistake was easy to make.
+
+    Where nothing reaches the card there is nothing resident to fit, so the
+    cores are genuinely free and the cap is spent in full. That is the
+    `--no-docling` path, and it must not be narrowed by a card that happens to
+    be present without being used.
+    """
+    if card_bound:
+        return 0, max(1, cpu_workers)
+    return 0, max(1, min(max_cores, cpu_workers + gpu_workers))
+
+
+def _worker_budget(threads: int, gate, batch: int | None = None,
+                   permits: int | None = None) -> None:
     """Start a worker that keeps to its share of the machine.
 
     Two shares, and they are not the same thing.
@@ -445,7 +484,7 @@ def _worker_budget(threads: int, gate, batch: int | None = None) -> None:
         os.environ[variable] = str(threads)
     if batch:
         os.environ["MDCX_TATR_BATCH"] = str(batch)
-    engines.set_gpu_gate(gate)
+    engines.set_gpu_gate(gate, permits)
 
 
 def _select_start_method() -> str:
@@ -763,14 +802,9 @@ def main() -> int:
         # over everything there is to convert.
         gpu_fraction = card_bound / max(1, len(pending))
         gpu_workers, cpu_workers = _lane_sizes(args.max_cores, gpu_fraction, has_gpu)
-        # A lane with nothing in it gets no processes. They would pay the
-        # imports and, if they touch anything, the models -- measured at some
-        # sixteen seconds each -- to then receive no document at all, while the
-        # cores they hold are the ones the other lane is short of.
         if not lanes[LANE_GPU] and args.gpu_workers is None:
-            cpu_workers = max(cpu_workers, min(args.max_cores,
-                                               cpu_workers + gpu_workers))
-            gpu_workers = 0
+            gpu_workers, cpu_workers = _sizes_without_a_card_lane(
+                gpu_workers, cpu_workers, args.max_cores, card_bound)
         # The formula is the default, not a ruling: a machine that knows better
         # says so, and is then held only to the total.
         if args.gpu_workers is not None:
@@ -831,9 +865,10 @@ def main() -> int:
               f"CPU lane: {len(lanes[LANE_CPU])} documents in {cpu_workers} processes | "
               f"cap {args.max_cores} of {os.cpu_count() or '?'} cores, "
               f"{threads_per_worker} thread(s) each | "
-              f"card: {card_bound} document(s) expected to reach it, "
+              f"card: {card_bound} document(s) expected to reach it from "
+              f"{'either lane' if lanes[LANE_GPU] else 'the CPU lane'}, "
               f"{resident} process(es) with models resident, up to "
-              f"{gpu_workers} computing at a time, batch {batch}")
+              f"{card_gate} computing at a time, batch {batch}")
         if start_method == "spawn" and sys.platform != "win32":
             print("Workers start with spawn: a CUDA context does not survive fork, "
                   "which would disable docling in every child.")
@@ -891,11 +926,11 @@ def main() -> int:
             with ProcessPoolExecutor(
                     max_workers=max(1, gpu_workers), initializer=_worker_budget,
                     max_tasks_per_child=recycle,
-                    initargs=(threads_per_worker, gate, batch)) as gpu_pool, \
+                    initargs=(threads_per_worker, gate, batch, card_gate)) as gpu_pool, \
                  ProcessPoolExecutor(
                     max_workers=cpu_workers, initializer=_worker_budget,
                     max_tasks_per_child=recycle,
-                    initargs=(threads_per_worker, gate, batch)) as cpu_pool:
+                    initargs=(threads_per_worker, gate, batch, card_gate)) as cpu_pool:
                 futures = {}
                 for job in lanes[LANE_GPU]:
                     fut = gpu_pool.submit(

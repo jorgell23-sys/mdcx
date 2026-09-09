@@ -51,12 +51,72 @@ def count_pages(path: Path) -> int:
     finally:
         doc.close()
 
-def page_text(page) -> str:
+def page_text(page, textpage=None) -> str:
+    """The plain text of a page.
+
+    A caller that already parsed the page passes its textpage in and keeps
+    ownership of it: parsing is the expensive half and doing it twice for the
+    same page is the same work billed again.
+    """
+    if textpage is not None:
+        return textpage.get_text_range() or ""
     tp = page.get_textpage()
     try:
         return tp.get_text_range() or ""
     finally:
         tp.close()
+
+
+# The plain text of the document being converted, page by page.
+#
+# Converting a PDF read it twice, and the second read was not a different kind
+# of reading: `extract._pdf_text` calls `page_text`, and the native engine
+# reaches `page_text` too, through `page_paragraphs_fast`. The same function,
+# over the same pages, for the same characters. Measured by a consumer over
+# eight works: 0.808 s to convert and 0.681 s to read it again -- a quarter of
+# the conversion spent producing something already in hand.
+#
+# So this is not a sample or an approximation of the reference: it is the
+# reference, kept from the pass that produced it. What the comparison measures
+# is unchanged, because what it compares against is unchanged.
+#
+# One document at a time. A worker converts one document at a time and the
+# text of a book is on the order of a megabyte, so remembering the current one
+# is bounded; remembering more would grow with the run.
+_PAGES: dict = {}
+
+
+def _stamp(path: Path):
+    try:
+        stat = path.stat()
+        return str(path), stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return None
+
+
+def remember_pages(path: Path, pages: list[str]) -> None:
+    """Keep this document's page text for whatever reads it next."""
+    stamp = _stamp(path)
+    if stamp is None:
+        return
+    _PAGES.clear()
+    _PAGES[stamp] = pages
+
+
+def pages_remembered(path: Path) -> list[str] | None:
+    """The page text kept for this exact file, or None.
+
+    Keyed by size and modification time as well as by name, so that a rebuilt
+    temporary -- a chapter cut from a book reuses names -- cannot be served the
+    previous document's text.
+    """
+    stamp = _stamp(path)
+    return _PAGES.get(stamp) if stamp is not None else None
+
+
+def forget_pages() -> None:
+    """Release the kept text. Called when a document is done with."""
+    _PAGES.clear()
 
 def page_blocks(page) -> list[Block]:
     """Text fragments of a page, in reading order."""
@@ -227,9 +287,15 @@ def page_paragraphs(page) -> list[str]:
         paragraphs.append(" ".join(accumulated))
     return paragraphs
 
-def page_paragraphs_fast(page) -> list[str]:
-    """Paragraphs from the plain page text, without inspecting rectangles."""
-    text = page_text(page)
+def page_paragraphs_fast(page, text: str | None = None,
+                         textpage=None) -> list[str]:
+    """Paragraphs from the plain page text, without inspecting rectangles.
+
+    `text` is the page's text where the caller already has it, which is the
+    whole of the saving: this is the second of the two reads of every PDF.
+    """
+    if text is None:
+        text = page_text(page, textpage)
     if not text.strip():
         return []
     paragraphs: list[str] = []

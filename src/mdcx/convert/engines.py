@@ -54,10 +54,17 @@ _DEVICE_CACHE: dict = {}
 _GPU_GATE = None
 
 
-def set_gpu_gate(gate) -> None:
-    """Give this worker the gate that limits how many processes use the card."""
-    global _GPU_GATE
+def set_gpu_gate(gate, permits: int | None = None) -> None:
+    """Give this worker the gate that limits how many processes use the card.
+
+    `permits` is how many the gate was created with. A semaphore does not say,
+    and the number is the whole of what a worker needs to explain a wait to
+    whoever is reading the run: a queue of one behind three permits is
+    contention, the same wait behind one permit is a run that was sized wrong.
+    """
+    global _GPU_GATE, _GATE_PERMITS
     _GPU_GATE = gate
+    _GATE_PERMITS = permits
 
 
 # Permits this process is holding. A count rather than a flag, because the
@@ -73,6 +80,23 @@ _TURNS_HELD = 0
 # holding anything, the card idle and the count at zero. Going ahead without a
 # turn risks contention; waiting for one that will not come is certain death.
 TURN_WAIT_SECONDS = 300.0
+
+# How long a wait has to be before it is worth a line. Waiting for a turn is
+# normal and saying so every time would bury the run in noise; waiting minutes
+# is not, and five of them in silence is how a run that had been sized wrong
+# presented itself as a slow one. Measured: three books that took 65 s converted
+# one process at a time took 444.7 s through the tool's own orchestration, of
+# which 600 s of thread time were two documents waiting for a turn.
+TURN_REPORT_AFTER = 30.0
+
+# How many permits the gate was made with, when the caller said. Used only to
+# explain a wait -- the gate itself is what enforces anything.
+_GATE_PERMITS: int | None = None
+
+# Said once per process rather than once per document: the condition is a
+# property of how the run was sized, so repeating it per document would report
+# the same fact as many times as there are documents.
+_WAIT_REPORTED = False
 
 
 class _Turn:
@@ -98,12 +122,25 @@ class _Turn:
         # Waited for in slices rather than in one blocking call, so the wait
         # returns to Python often enough to be interrupted by the document
         # timeout instead of sitting inside C until the run ends.
+        global _WAIT_REPORTED
         waited = 0.0
         while waited < TURN_WAIT_SECONDS:
             if _GPU_GATE.acquire(timeout=1.0):
                 _TURNS_HELD += 1
                 return self
             waited += 1.0
+            # Said while it is still happening, and said with its cause. The
+            # symptom on its own -- a document that took minutes -- reads as a
+            # slow document, which is the wrong thing to go and look at.
+            if waited >= TURN_REPORT_AFTER and not _WAIT_REPORTED:
+                _WAIT_REPORTED = True
+                console.safe_print(
+                    f"!!! waiting for a turn on the card ({waited:.0f}s so far"
+                    + (f", {_GATE_PERMITS} permit(s) for the whole run"
+                       if _GATE_PERMITS else "")
+                    + "). Every process that loaded the models is on the card "
+                      "whether or not it holds a turn, so this is what a card "
+                      "too full to compute on looks like.", flush=True)
         console.safe_print(
             f"!!! no turn on the card after {TURN_WAIT_SECONDS:.0f}s; going "
             "ahead without one", flush=True)
@@ -355,6 +392,10 @@ def _extract_pages(path: Path, headings: dict | None = None) -> tuple[list[str],
             headings.setdefault(page, []).append((level, title))
 
     doc = _pdf.open_document(path)
+    # The text of these pages, where reading the original already produced it.
+    # Absent when this engine is reached without that step, in which case each
+    # page is read here as before.
+    known = _pdf.pages_remembered(path)
     pages: list[str] = []
     found = 0
     announced = 0
@@ -378,7 +419,10 @@ def _extract_pages(path: Path, headings: dict | None = None) -> tuple[list[str],
             for level, title in headings.get(index + 1, []):
                 parts.append("#" * min(max(level, 1), 6) + " " + title)
                 titled += 1
-            prose = [t for t in _pdf.page_paragraphs_fast(page) if t]
+            prose = [t for t in _pdf.page_paragraphs_fast(
+                page,
+                text=known[index] if known and index < len(known) else None,
+                textpage=textpage) if t]
             if table:
                 found += 1
                 written = sum(len(t) for t in prose)

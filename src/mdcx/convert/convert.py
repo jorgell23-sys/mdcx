@@ -24,6 +24,7 @@ import contextlib
 import json
 import os
 import re
+import sys
 import tempfile
 import time
 import traceback
@@ -38,7 +39,12 @@ _H_RE = re.compile(r"(?m)^#{1,6}\s+\S")
 _TBL_RE = re.compile(r"(?m)^\s*\|[-: |]+\|\s*$")
 _LI_RE = re.compile(r"(?m)^\s*[-*+]\s+\S")
 
-PLAN_MAX_PAGES = 2
+# The same number the extractor uses to decide whether counting what is drawn
+# on the pages is worth doing at all. One definition, because two would let the
+# extractor stop counting for exactly the documents this still asks about, and
+# the failure would be silent: a diagram of two pages quietly stopping being
+# recognised as one.
+PLAN_MAX_PAGES = extract.DRAWING_MAX_PAGES
 
 RECOVERY_LINE_RATIO = 0.5
 
@@ -324,9 +330,127 @@ def _good_enough(name: str, meta: dict, v: dict, score: tuple,
         return False        # an engine that cannot answer defers to the model
     return not pending
 
+# How deep the interpreter may recurse while a document is being converted, and
+# how much stack the thread doing it gets.
+#
+# Both numbers, not one. `setrecursionlimit` moves where Python raises; it does
+# not give the thread anywhere to put the frames, so raising it alone converts a
+# catchable exception into a stack overflow that takes the process down -- and a
+# process in a conversion pool takes its lane's batch with it. The stack size
+# can only be set before a thread is created, which is why the retry runs in a
+# thread of its own rather than in place.
+#
+# Measured by a consumer over 119,235 mathematics PDFs: two in a hundred
+# thousand came out with no Markdown at all and `RecursionError` in the record,
+# and the same files converted whole -- 190,072 characters, no errors -- at
+# these two values. The documents were never the problem; the default limit of
+# the interpreter was.
+DEEP_RECURSION_LIMIT = 20000
+DEEP_STACK_BYTES = 64 * 1024 * 1024
+
+
+def _depth_was_the_limit(record: dict) -> bool:
+    """Whether this record failed for want of recursion depth rather than material.
+
+    The distinction is the whole point: one is discarded and the other is
+    retried, and `RecursionError` on its own reads as a broken file.
+    """
+    if record.get("engine") != "none":
+        return False
+    return any("RecursionError" in str(e) for e in (record.get("errors") or []))
+
+
+def _with_deep_stack(call):
+    """Run `call` in a thread with room to recurse, and return what it returns.
+
+    A thread rather than the current one because the stack size is fixed when a
+    thread is made. The limit is restored afterwards so that a caller who
+    embedded mdcx does not silently inherit a different interpreter.
+    """
+    import threading
+
+    result: dict = {}
+
+    def run():
+        previous = sys.getrecursionlimit()
+        sys.setrecursionlimit(DEEP_RECURSION_LIMIT)
+        try:
+            result["value"] = call()
+        except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
+            result["error"] = exc
+        finally:
+            sys.setrecursionlimit(previous)
+
+    try:
+        previous_stack = threading.stack_size(DEEP_STACK_BYTES)
+    except (ValueError, RuntimeError):
+        # A platform that will not give us the stack. Retrying without it would
+        # trade a caught exception for a dead process, so the document keeps
+        # the failure it already has.
+        return None
+    try:
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join()
+    finally:
+        try:
+            threading.stack_size(previous_stack)
+        except (ValueError, RuntimeError):
+            pass
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
 def convert_one(job: Job, output_root: Path, use_docling: bool = True,
                 save_lossless: bool = True, compact: bool = True) -> dict:
-    """Convert one file and write its mirrored .md. Returns the index record."""
+    """Convert one file and write its mirrored .md. Returns the index record.
+
+    A document that ran out of recursion depth is converted a second time with
+    more of it. That costs nothing on anything that converts normally -- the
+    retry is reached only from a record that already failed -- and recovers
+    material that was being discarded as broken while being perfectly
+    convertible.
+    """
+    from . import pdf as _pdf
+
+    try:
+        return _convert_one_recovering(job, output_root, use_docling,
+                                       save_lossless, compact)
+    finally:
+        # The page text is kept only for as long as the document that produced
+        # it is being converted. Holding it past that would make the memory a
+        # function of the run rather than of one document.
+        _pdf.forget_pages()
+
+
+def _convert_one_recovering(job: Job, output_root: Path, use_docling: bool,
+                            save_lossless: bool, compact: bool) -> dict:
+    record = _convert_one(job, output_root, use_docling, save_lossless, compact)
+    if not _depth_was_the_limit(record):
+        return record
+    deeper = _with_deep_stack(
+        lambda: _convert_one(job, output_root, use_docling, save_lossless,
+                             compact))
+    if deeper is None or _depth_was_the_limit(deeper):
+        # Still the environment and not the document: said in a field, because
+        # a consumer deciding what to retry cannot act on a traceback, and
+        # "RecursionError" reads as a file to throw away.
+        failed = deeper if deeper is not None else record
+        failed["failure"] = "environment"
+        failed.setdefault("errors", []).append(
+            "The structure of this document is deeper than the interpreter "
+            f"allows. Retried at sys.setrecursionlimit({DEEP_RECURSION_LIMIT}) "
+            f"with a {DEEP_STACK_BYTES >> 20} MiB stack and it was still not "
+            "enough; the document is convertible at a greater depth.")
+        return failed
+    deeper["recovered"] = "recursion depth"
+    return deeper
+
+
+def _convert_one(job: Job, output_root: Path, use_docling: bool = True,
+                 save_lossless: bool = True, compact: bool = True) -> dict:
+    """One conversion attempt, in whatever interpreter it is given."""
     started = time.time()
     record: dict = {
         "source_pseudopath": job.source_pseudopath,
@@ -385,8 +509,18 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
         "document_pseudopath": to_pseudopath(job.parent_target) if job.parent_target else None,
     } if job.is_chapter else None
 
+    # Timed, because the price of the guarantee was nobody's to see. Reading
+    # the original a second time to have something independent to compare
+    # against was measured at 25% of a conversion -- 0.681 s a work against
+    # 0.808 s to convert it -- while comparing the two was 4%. A consumer
+    # profiling its pipeline attributes that quarter to "converting PDFs is
+    # slow" and goes to optimise the half that is not the cost, which is what
+    # happened to the one who measured it.
+    t0 = time.time()
     reference, ref_meta = extract.reference_text(source, job.kind)
+    record["seconds_reference"] = round(time.time() - t0, 3)
     record["reference_meta"] = ref_meta
+    spent_verifying = 0.0
     if ref_meta.get("pages"):
         record["pages"] = ref_meta["pages"]
 
@@ -406,7 +540,9 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
             record["errors"].append(f"{name}: {type(exc).__name__}: {exc}")
             continue
 
+        t0 = time.time()
         v = verify.compare(reference, md)
+        spent_verifying += time.time() - t0
         score = _score(md, v)
         attempts.append({
             "engine": name,
@@ -452,6 +588,8 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
     record["table_rows"] = sum(
         1 for line in best_md.splitlines() if line.lstrip().startswith("|"))
 
+    record["seconds_verify"] = round(spent_verifying, 3)
+
     if best_v is None:
         record["verification"] = {"status": "error", "measurable": False,
                                  "coverage": None, "numeric_coverage": None}
@@ -461,11 +599,14 @@ def convert_one(job: Job, output_root: Path, use_docling: bool = True,
 
     recovered_lines = 0
     if best_v.get("measurable") and best_v.get("missing_tokens"):
+        t0 = time.time()
         block, recovered_lines = _recovery_block(reference, best_md)
         if block:
             best_md = best_md.rstrip() + block
             best_v = verify.compare(reference, best_md)
             best_v["recovered"] = True
+        spent_verifying += time.time() - t0
+        record["seconds_verify"] = round(spent_verifying, 3)
 
     record["recovered_lines"] = recovered_lines
     record["verification"] = best_v

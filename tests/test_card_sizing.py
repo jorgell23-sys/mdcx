@@ -236,3 +236,79 @@ def test_a_file_outside_the_root_is_still_converted(tmp_path):
     job = resident.job_for(tmp_path / "loose.txt", input_root=elsewhere)
 
     assert job.rel_target == Path("loose.md")
+
+
+# --- The freed cores were not free (1.24.1) -----------------------------------
+
+
+def test_emptying_the_card_lane_does_not_hand_over_its_processes():
+    """The regression 1.24.1 shipped, and the reason it was easy to make.
+
+    Emptying the card's lane looked like it freed processes, so they were given
+    to the processor lane. They were not free: `_lane_sizes` had already capped
+    that lane by what the card holds while `gpu_workers` of them compute on it,
+    and emptying the lane changes which lane the computing processes belong to,
+    not how much video memory they take. Handing them over spent the same
+    memory twice -- seven processes loading models onto a card that fits four.
+
+    Measured by whoever reported it: three books, 444.7 s through the tool's
+    own orchestration against 65 s invoking it once per document from outside,
+    with two documents giving up after the full five-minute wait for a turn.
+    """
+    gpu, cpu = cli._sizes_without_a_card_lane(3, 4, 9, card_bound=6)
+
+    assert gpu == 0, "the empty lane still asks for processes"
+    assert cpu == 4, "the emptied lane's processes were handed over again"
+
+
+def test_with_nothing_reaching_the_card_the_cores_really_are_free():
+    """`--no-docling`, which is a production path and not a corner case. No
+    process loads models, so there is nothing resident to fit and the cap is
+    spent in full. A card that is merely present must not narrow this."""
+    gpu, cpu = cli._sizes_without_a_card_lane(3, 4, 9, card_bound=0)
+
+    assert (gpu, cpu) == (0, 7)
+
+
+def test_the_cap_still_bounds_the_reassignment():
+    """The total is the one promise --max-cores makes."""
+    gpu, cpu = cli._sizes_without_a_card_lane(6, 6, 8, card_bound=0)
+
+    assert cpu == 8
+
+
+def test_a_lane_is_never_left_without_a_process():
+    """Zero is not `none` to a pool; it raises."""
+    assert cli._sizes_without_a_card_lane(0, 0, 4, card_bound=3)[1] >= 1
+    assert cli._sizes_without_a_card_lane(0, 0, 4, card_bound=0)[1] >= 1
+
+
+def test_the_run_reports_the_gate_and_not_the_lane():
+    """`up to N computing at a time` was printed from `gpu_workers`, which with
+    the card's lane empty is zero -- so the run said no process could use the
+    card while four of them did. What bounds simultaneous use is the gate."""
+    source = (Path(__file__).resolve().parents[1]
+              / "src" / "mdcx" / "cli.py").read_text(encoding="utf-8")
+
+    assert "f\"{card_gate} computing at a time" in source
+    assert "f\"{gpu_workers} computing at a time" not in source
+
+
+def test_a_long_wait_for_a_turn_is_said_while_it_happens():
+    """Five minutes of silence per document made a run that had been sized
+    wrong present itself as a slow one. The threshold is well inside the wait,
+    so the line arrives in time to be acted on."""
+    from mdcx.convert import engines
+
+    assert 0 < engines.TURN_REPORT_AFTER < engines.TURN_WAIT_SECONDS
+
+
+def test_the_worker_is_told_how_many_permits_there_are():
+    """A wait behind three permits is contention; the same wait behind one is a
+    run sized wrong. A semaphore does not say which, so the number is passed."""
+    from mdcx.convert import engines
+
+    engines.set_gpu_gate(None, 3)
+    assert engines._GATE_PERMITS == 3
+    engines.set_gpu_gate(None, None)
+    assert engines._GATE_PERMITS is None

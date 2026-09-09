@@ -12,6 +12,60 @@ log.
 
 ## [Unreleased]
 
+## [1.25.0] — 2026-09-08
+
+### Fixed
+
+- **Regression in 1.24.1.** Emptying the card's lane handed its processes to
+  the processor lane, past the ceiling `_lane_sizes` had set for what the card
+  can hold resident. Six or seven processes then loaded models onto a card that
+  fits four, filled it, and every turn queued behind what was already there:
+  three books took 444.7 s where invoking the tool once per document from
+  outside took 65. The freed cores are now left unused while anything reaches
+  the card, which is what the card being the bound rather than the processor
+  count means. With `--no-docling` nothing is resident and the cores are spent
+  in full, as before.
+- The run reported `up to N computing at a time` from the size of the GPU lane,
+  which with that lane empty is zero -- so it said no process could use the
+  card while four of them did. It reports the gate, which is what bounds
+  simultaneous use, and names the lane the card is reached from.
+- A wait for a turn on the card is reported at 30 s with its cause instead of
+  only after the full five minutes. Waiting is not itself the fault; five
+  minutes of silence per document is how a run that had been sized wrong
+  presented itself as a slow one.
+- A PDF whose structure is deeper than the interpreter's recursion limit is
+  converted on a second attempt, in a thread with a 64 MiB stack and a limit of
+  20,000, and the caller's own limit is restored. Measured by a consumer over
+  119,235 mathematics PDFs: two in a hundred thousand were coming out with no
+  Markdown at all and `RecursionError` in the record, and converted whole at
+  that depth. Where it is still not enough the record says
+  `failure: "environment"`, because `RecursionError` alone reads as a broken
+  file and the material was being discarded.
+
+### Changed
+
+- `pack()` no longer holds the corpus several times over. The database is
+  written out page by page instead of serialised into a second copy, and it is
+  then compressed, encrypted and hashed in one pass in blocks of 8 MiB. The
+  bytes written are the same ones the previous path produced -- verified byte
+  for byte -- so the package format does not change and any reader opens it.
+- `mdcx.convert.resident` writes what `mdcx-convert` writes, chapters
+  included. It returned well-formed records and wrote a 130-page book as one
+  Markdown where the command line writes its chapters and an index; for anyone
+  converting in order to retrieve passages the chapter is the unit that gets
+  cited, and nothing announced the difference. `split=False` asks for the
+  unsplit form deliberately.
+- Converting a PDF no longer reads it twice. The plain text of each page was
+  extracted once for the reference and again by the native engine, through the
+  same function; it is now read once and shared, and the Markdown produced is
+  identical. Counting embedded images, which answers only whether a PDF of a
+  page or two is a diagram, is no longer done on every page of every document.
+  Measured over six books, 929 pages: reading the original fell 32.4% and the
+  native engine 16.5%, together 23.5% of converting and verifying.
+- The record says what reading the original cost (`seconds_reference`) and what
+  comparing against it cost (`seconds_verify`), which are optimised in
+  different places and could not be told apart.
+
 ## [1.24.1] — 2026-09-08
 
 ### Changed
@@ -205,7 +259,8 @@ log.
 First public release: conversion with measured fidelity, the encrypted `.mdcx`
 container, lexical and dense retrieval, and the MCP server.
 
-[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.24.1...HEAD
+[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.25.0...HEAD
+[1.25.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.25.0
 [1.24.1]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.24.1
 [1.24.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.24.0
 [1.23.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.23.0

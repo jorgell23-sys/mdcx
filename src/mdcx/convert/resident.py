@@ -39,6 +39,20 @@ process, keep the control.
             record = convert(pdf, output_root)
             ...                               # decide, retry, stop, reorder
 
+Measured by a consumer with its own queue, on eight books through the native
+path: 4.85 s a work invoking `mdcx.cli` once per document against 1.69 s here,
+which is 2.87x and is exactly the startup no longer being paid per work.
+
+**What it writes.** The same files `mdcx-convert` writes, chapters included: a
+long PDF becomes one Markdown per chapter in a folder of the document's name,
+plus an index Markdown linking them. This is not a detail of presentation --
+for anyone converting in order to retrieve passages, the chapter is the unit
+that gets found and cited, and a book as a single 130-page file is one place
+instead of seven. The first release of this module did not split, said only
+that the *record* matched `mdcx-convert`, and so lost the granularity of
+anyone who moved here for the speed without noticing. `split=False` asks for
+the unsplit form deliberately.
+
 What it does not do is run anything in parallel. One process converts one
 document at a time, and several of these are several processes -- each paying
 its own startup once and amortising it over everything it is given. Where the
@@ -51,7 +65,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .paths import Job, file_digest
+from .paths import Job, file_digest, make_chapter_jobs, to_pseudopath
 
 
 def cost_of_starting() -> float:
@@ -115,15 +129,54 @@ def _kind_of(source: Path) -> str:
     return suffix or "text"
 
 
+def plan_split(job: Job, threshold: int | None = None) -> tuple[list, dict | None]:
+    """The chapters of this document and what an index of them would need.
+
+    The same decision `mdcx.cli` makes between planning and converting, in one
+    place so the two cannot answer it differently. A document under the
+    threshold, one without a usable outline, and anything that is not a PDF all
+    come back with no chapters, which is the caller's signal to convert it
+    whole.
+    """
+    from . import chapters as _chapters
+    from . import pdf as _pdf
+
+    if job.kind != "pdf":
+        return [], None
+    threshold = (_chapters.SPLIT_THRESHOLD_PAGES if threshold is None
+                 else threshold)
+    caps = _chapters.plan_chapters(job.source, threshold)
+    if len(caps) < 2:
+        return [], None
+    return caps, {
+        "document": job.rel_source.name,
+        "pseudopath_index": to_pseudopath(job.rel_target),
+        "chapters_folder": to_pseudopath(job.rel_target.with_suffix("")),
+        "chapters": len(caps),
+        # What the original had, beside what the chapters cover. A document
+        # split into chapters that do not span it is a truncated conversion,
+        # and with only the covered count there is no way to tell.
+        "pages_total": _pdf.count_pages(job.source),
+        "from_pdf_outline": caps[0].from_toc,
+        "rel_target": job.rel_target,
+        "rel_source": job.rel_source,
+        "children": [],
+    }
+
+
 @contextmanager
 def warm(report=None):
     """Hold the engines for as long as the block runs, and hand back a converter.
 
-    The converter takes a path and an output folder and returns the same record
-    `mdcx-convert` writes for that document, so whatever reads one reads the
-    other. Errors are not swallowed here: a caller keeping its own queue is
-    exactly the caller that wants to decide what to do about a document that
-    failed.
+    The converter takes a path and an output folder and returns the record for
+    that document -- the same record `mdcx-convert` writes, so whatever reads
+    one reads the other. Where the document was split, the record returned is
+    the index record -- `is_document_index` -- and the chapter records are
+    under `record["chapter_records"]`, which is the same pair of things
+    `mdcx-convert` puts in its manifest.
+
+    Errors are not swallowed here: a caller keeping its own queue is exactly
+    the caller that wants to decide what to do about a document that failed.
 
     `report` is called once with the seconds the startup cost, so a log can say
     it rather than a reader having to measure it.
@@ -135,24 +188,50 @@ def warm(report=None):
         report(spent)
 
     def convert(source, output_root, *, input_root=None, use_docling=True,
-                save_lossless=True, compact=True) -> dict:
-        return convert_one(job_for(source, input_root), Path(output_root),
-                           use_docling=use_docling,
-                           save_lossless=save_lossless, compact=compact)
+                save_lossless=True, compact=True, split=True,
+                split_threshold=None) -> dict:
+        from . import index as _index
+
+        output_root = Path(output_root)
+        job = job_for(source, input_root)
+        caps, info = (plan_split(job, split_threshold) if split else ([], None))
+        if not caps:
+            return convert_one(job, output_root, use_docling=use_docling,
+                               save_lossless=save_lossless, compact=compact)
+
+        records = []
+        for chapter_job in make_chapter_jobs(job, caps):
+            record = convert_one(chapter_job, output_root,
+                                 use_docling=use_docling,
+                                 save_lossless=save_lossless, compact=compact)
+            record["is_chapter"] = True
+            records.append(record)
+        document = _index.write_document_index(info, records, output_root)
+        # Not under "chapters": the index record already uses that for the
+        # count, which the manifest reads. Overwriting it with the list would
+        # be this module quietly changing a field of a shared format.
+        document["chapter_records"] = records
+        return document
 
     yield convert
 
 
 def convert_documents(sources, output_root, *, input_root=None,
-                      use_docling=True, save_lossless=True, compact=True):
+                      use_docling=True, save_lossless=True, compact=True,
+                      split=True, split_threshold=None):
     """Convert each of these documents in this process, yielding one record each.
 
     The short form of `warm`, for a caller that already has the list. It is a
     generator on purpose: the record for the first document arrives before the
     second is started, so a queue can act on it.
+
+    One record a document, not a chapter: a caller iterating this is counting
+    documents. The chapters of a split document are under
+    `record["chapter_records"]`.
     """
     with warm() as convert:
         for source in sources:
             yield convert(source, output_root, input_root=input_root,
                           use_docling=use_docling,
-                          save_lossless=save_lossless, compact=compact)
+                          save_lossless=save_lossless, compact=compact,
+                          split=split, split_threshold=split_threshold)

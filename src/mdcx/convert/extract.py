@@ -30,6 +30,20 @@ from pathlib import Path
 OCR_SHARE = 0.5
 
 
+# Beyond how many pages a document cannot be a drawing, so counting what is
+# drawn on it answers nothing.
+#
+# The count exists for one decision: whether a PDF of a page or two is a diagram
+# to be handed straight to the native engine. It was nevertheless taken on every
+# page of every document, and it is not cheap -- `get_objects()` walks every
+# object on the page where reading the text walks the characters. Measured over
+# six books from the collection this came from, 929 pages: reading the text took
+# 2.272 s and counting the images 2.484 s, so **52% of what reading the original
+# a second time cost was spent answering a question about documents of two
+# pages, on books of three hundred.**
+DRAWING_MAX_PAGES = 2
+
+
 def _pdf_text(path: Path) -> tuple[str, dict]:
     from . import pdf as _pdf
 
@@ -37,12 +51,17 @@ def _pdf_text(path: Path) -> tuple[str, dict]:
     parts: list[str] = []
     pages_without_text = 0
     images = 0
+    # Decided once for the document rather than per page: it is a property of
+    # how long the document is, and asking per page would be the same waste in
+    # a different shape.
+    count_images = len(doc) <= DRAWING_MAX_PAGES
     try:
         for page in doc:
             txt = _pdf.page_text(page)
             if len(txt.strip()) < 20:
                 pages_without_text += 1
-            images += _pdf.count_images(page)
+            if count_images:
+                images += _pdf.count_images(page)
             parts.append(txt)
         # Optical recognition is applied to the whole document, so it has to be
         # decided about the whole document. A single page without text is
@@ -61,11 +80,20 @@ def _pdf_text(path: Path) -> tuple[str, dict]:
             "pages": len(doc),
             "pages_without_text": pages_without_text,
             "pages_without_text_share": round(empty, 4),
-            "embedded_images": images,
+            # Absent rather than zero where it was not counted, so that a
+            # reader cannot mistake "not asked" for "none": the two mean
+            # different things and only one of them is a fact about the
+            # document.
+            **({"embedded_images": images} if count_images else {}),
             "needs_ocr": empty >= OCR_SHARE,
         }
     finally:
         doc.close()
+    # Kept for the engine that is about to read the same pages. This is the
+    # second read the profile found: the native engine reaches `page_text`
+    # through `page_paragraphs_fast`, which is this same call over these same
+    # pages, so what it needs is already here.
+    _pdf.remember_pages(path, parts)
     return "\n".join(parts), meta
 
 
