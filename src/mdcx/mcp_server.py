@@ -52,12 +52,69 @@ def _split_setting(value: str) -> list[str]:
     return [t.strip() for t in parts if t.strip()]
 
 
-def _open_packages() -> list[dict]:
-    """Open every configured package once and reuse them.
+class _Configured(dict):
+    """A configured package, opened the first time something reads it.
 
-    Decryption and decompression take a fraction of a second and need not be
-    repeated per query. Each database is held in memory, so an open package
-    leaves no plaintext copy on disk.
+    Opening decompresses the body, and on a large package that is not the
+    fraction of a second this once assumed: measured by a consumer, 14.85 s for
+    a 254 MB package, of which 94% is the decompressor. With 65 of them the
+    server spent sixteen minutes before it could answer a single call, and the
+    client gave up at thirty seconds -- so a corpus that had grown past a
+    certain size simply stopped being servable, with no error to read.
+
+    Each database is also held in memory, so opening every package at startup
+    asks for the whole corpus decompressed at once whether or not a query ever
+    touches it.
+
+    Opened on use rather than at startup, therefore. A package that cannot be
+    opened is now discovered when it is queried, which is later but is also the
+    moment a client can do something about it.
+
+    Named apart from `archive._Package`, which is the sqlite3 connection
+    factory and a different thing entirely.
+
+    A dict subclass so that the twenty-odd places that read `package["connection"]`
+    keep working unchanged: `__missing__` fires exactly when the entry has not
+    been opened yet.
+    """
+
+    def __missing__(self, key):
+        if key not in ("connection", "header"):
+            raise KeyError(key)
+        connection, header = archive.open_package(self["path"], self["key"])
+        dict.__setitem__(self, "connection", connection)
+        dict.__setitem__(self, "header", header)
+        return dict.__getitem__(self, key)
+
+    def is_open(self) -> bool:
+        """Whether this package has been read from yet."""
+        return "connection" in self.keys()
+
+
+def _resident_mib(package: dict) -> int | None:
+    """How much memory this package's database holds, or None if not opened.
+
+    The uncompressed size, which is what `deserialize` put in memory. Asking
+    the connection for its page count is cheap and exact, where the file size
+    on disk describes the compressed body instead.
+    """
+    if isinstance(package, _Configured) and not package.is_open():
+        return None
+    try:
+        connection = package["connection"]
+        pages = connection.execute("PRAGMA page_count").fetchone()[0]
+        size = connection.execute("PRAGMA page_size").fetchone()[0]
+        return int(pages * size) // (1024 * 1024)
+    except Exception:  # noqa: BLE001 - a figure, not a guarantee
+        return None
+
+
+def _open_packages() -> list[dict]:
+    """The configured packages, each opened when it is first read.
+
+    What this settles at startup is only what was configured -- that the paths
+    exist and that the keys line up -- because those are the errors a client
+    can do nothing about once it is connected.
     """
     if "packages" in _STATE:
         return _STATE["packages"]
@@ -85,13 +142,9 @@ def _open_packages() -> list[dict]:
         target = Path(path)
         if not target.is_file():
             raise RuntimeError(f"Package not found: {target}")
-        connection, header = archive.open_package(target, key)
-        packages.append({"name": target.name, "path": target,
-                         "connection": connection, "header": header})
+        packages.append(_Configured(name=target.name, path=target, key=key))
 
     _STATE["packages"] = packages
-    _STATE["connection"] = packages[0]["connection"]
-    _STATE["header"] = packages[0]["header"]
     return packages
 
 
@@ -751,6 +804,14 @@ def create_server():
         header = package["header"]
         return {
             "package": package["name"],
+            # Whether this package is currently decompressed in memory, and
+            # what that costs. A server holds each open package's database
+            # resident, so how large a corpus one process can serve is bounded
+            # by memory -- and nothing said so, which meant finding out when
+            # the operating system decided. Reported per package so the bound
+            # can be seen coming rather than met.
+            "open": package.is_open() if isinstance(package, _Configured) else True,
+            "resident_mib": _resident_mib(package),
             "format": f"{header.get('file_format')} v{header.get('version')}",
             "issuer": header.get("issuer") or "(not declared)",
             "created_utc": header.get("created_utc"),
@@ -869,7 +930,11 @@ def create_server():
 
 def main() -> int:
     try:
-        _connection()
+        # What is configured, not what is in it. Opening the corpus here is
+        # what kept the server from ever reaching `run()`: a large collection
+        # takes longer to decompress than the client waits for a connection,
+        # and the client's timeout says nothing about which package was slow.
+        configured = _open_packages()
     except Exception as exc:  # noqa: BLE001
         print(f"Cannot open corpus: {exc}", file=sys.stderr)
         return 2
@@ -880,8 +945,11 @@ def main() -> int:
         print(f"Cannot start server: {exc}", file=sys.stderr)
         return 2
 
-    header = _STATE.get("header", {})
-    print(f"mdcx: {header.get('documents')} documents ready.", file=sys.stderr)
+    # How many packages, not how many documents: counting the documents would
+    # mean opening every one of them, which is the whole of what this stopped
+    # doing. What each holds is in the header, read when it is first queried.
+    print(f"mdcx: {len(configured)} package(s) configured, opened as queried.",
+          file=sys.stderr)
 
     _watch_for_idleness()
     try:

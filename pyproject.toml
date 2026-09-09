@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mdcx"
-version = "1.26.0"
+version = "1.27.0"
 description = "Convert a document collection to verified Markdown, package it encrypted with its search index and provenance, and serve it to agents over MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -49,6 +49,11 @@ convert = [
 ]
 # Model Context Protocol server.
 mcp = ["mcp>=1.0"]
+# Packages compressed with zstd. Opening is what a server pays before it can
+# answer anything, and on a large body zstd reads back in a fraction of the
+# time LZMA takes. Optional because LZMA is in the standard library and every
+# package written before this is compressed with it.
+zstd = ["zstandard>=0.22"]
 # Retrieval across languages. A query written in one language reaches documents
 # written in another, which word matching cannot do: the words are not shared.
 # It brings a multilingual embedding model and its runtime.
@@ -92,14 +97,14 @@ all = [
     "docling>=2.0", "pypdfium2>=4.0", "python-docx>=1.0", "openpyxl>=3.1",
     "python-pptx>=1.0", "mcp>=1.0", "rapidocr>=3.0", "onnxruntime>=1.16",
     "sentence-transformers>=3.0", "numpy>=1.24",
-    "transformers>=4.40", "timm>=1.0", "torch>=2.0",
+    "transformers>=4.40", "timm>=1.0", "torch>=2.0", "zstandard>=0.22",
 ]
 # Everything, on a machine that keeps its own accelerated onnxruntime. The only
 # difference is that the CPU runtime is not pinned, so upgrading does not put it
 # back over `onnxruntime-gpu`.
 all-gpu = [
     "docling>=2.0", "pypdfium2>=4.0", "python-docx>=1.0", "openpyxl>=3.1",
-    "python-pptx>=1.0", "mcp>=1.0", "rapidocr>=3.0",
+    "python-pptx>=1.0", "mcp>=1.0", "rapidocr>=3.0", "zstandard>=0.22",
     "sentence-transformers>=3.0", "numpy>=1.24",
     "transformers>=4.40", "timm>=1.0", "torch>=2.0",
 ]

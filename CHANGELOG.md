@@ -12,6 +12,60 @@ log.
 
 ## [Unreleased]
 
+## [1.27.0] — 2026-09-09
+
+### Fixed
+
+- **A script that writes its vowels as combining marks was indexed in
+  fragments.** FTS5's `unicode61` counts letters, numbers and private use as
+  parts of a token; combining marks are none of those, so Devanagari and the
+  scripts like it were cut at every vowel. Measured on one Hindi passage: 21
+  terms in the index for the 13 words it holds, and the word a reader would
+  search for was not among them. The tokenizer is now declared with those
+  categories included. The declaration travels with the package, so one written
+  before this keeps the tokenizer it was built with and opens unchanged --
+  rebuild a package to index it whole.
+- The MCP server no longer opens the whole corpus before it exists as a server.
+  Opening a package decompresses its body, which on a large one is not the
+  fraction of a second this assumed: measured by a consumer, 14.85 s for a
+  254 MB package, so a collection of 65 spent sixteen minutes while the client
+  gave up at thirty seconds. A corpus that had grown past a certain size simply
+  stopped being servable, and the only symptom was a connection timeout naming
+  nothing. Packages are opened when a query reaches them; a package that cannot
+  be opened is now found at that point, which is where a client can report it.
+
+### Added
+
+- `pack(compression="zstd")` and `mdcx pack --compression`. The header has
+  always recorded what compressed the body and could only ever say one thing.
+  Which is smaller depends on the material -- measured on one corpus zstd was
+  smaller than LZMA, on another larger -- while zstd is consistently faster to
+  read back, and opening is what a server pays before it can answer. LZMA
+  remains the default; `mdcx[zstd]` supplies the reader for the other.
+- `info` reports, per package, whether it is open and how much memory it holds.
+  How large a corpus one server can hold is bounded by memory, and the bound
+  was met rather than seen coming.
+
+### Changed
+
+- A lexical query reads what each candidate passage holds of the question from
+  the index rather than tokenising the passage again, and takes the passage
+  length from a count stored when the package was built. Measured: 5.2 times
+  faster, with identical documents, scores and terms.
+
+  The index is used only where it tokenises the way this module does, decided
+  per package by comparing the two on its own passages. That is what found the
+  indexing defect above; it remains as the safeguard for packages written
+  before the fix, whose own tokenizer this module does not own.
+- `df` is asked for the terms of the query rather than read whole. It holds one
+  row per term in the corpus -- 521,231 on the corpus this came from -- so
+  reading it made every query slower as the corpus grew, for counts it then
+  discarded. Measured at that size: 0.4526 s against 0.00004 s.
+- The literal-phrase branch reads only the documents already in the ranking,
+  which are the only ones it can reorder. It read `document.normalized_text`
+  for the whole corpus -- 257 MB in one package of a 17 GB collection -- to
+  prefer among documents already in hand.
+
 ## [1.26.0] — 2026-09-09
 
 ### Added
@@ -278,7 +332,8 @@ log.
 First public release: conversion with measured fidelity, the encrypted `.mdcx`
 container, lexical and dense retrieval, and the MCP server.
 
-[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.26.0...HEAD
+[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.27.0...HEAD
+[1.27.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.27.0
 [1.26.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.26.0
 [1.25.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.25.0
 [1.24.1]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.24.1

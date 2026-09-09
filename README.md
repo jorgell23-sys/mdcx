@@ -201,6 +201,7 @@ mdcx pack --output ./Documents_md --target corpus.mdcx --key "passphrase"
 | `--issuer`, `--signing-key` | see [Signing](#signing) |
 | `--fast` | compress for speed rather than size |
 | `--preset 0-9` | the compression level, overriding `--fast` |
+| `--compression lzma\|zstd` | what compresses the body |
 
 `--output` accepts a folder of Markdown, a single file, or a `.jsonl` file with
 one record per line, which is how a catalogue of records is packed without first
@@ -212,6 +213,14 @@ is compressed once and downloaded many times, while a corpus rebuilt whenever it
 grows pays the clock and not the bytes. The level travels inside the compressed
 stream, so a package written at any level is opened by any reader, and nothing
 else about the package changes.
+
+`--compression` chooses what compresses the body. The header records the name
+and a package is read by what its header names, so existing packages are
+unaffected and either kind is opened by a reader that has the module for it.
+LZMA is the default and needs nothing; zstd needs `mdcx[zstd]`. Which is
+smaller depends on the material — measured on one corpus zstd was smaller, on
+another larger — while zstd is consistently faster to read back, which is what
+a server pays before it can answer anything.
 
 `pack` returns `seconds_index` and `seconds_seal`, and `seconds_index_by_phase`
 divides the first among reading the folder, cutting passages, counting terms,
@@ -623,11 +632,17 @@ that reads one checks first, so an older package continues to answer.
 - Conversion fidelity is measured against the text a document exposes. A document
   that exposes none cannot be verified, and is marked as such.
 - Retrieval across languages requires the `multilingual` extra and its model.
+- A package written before 1.27.0 carries the tokenizer it was built with,
+  which cut scripts that write their vowels as combining marks at every mark.
+  Such a package opens and answers unchanged; rebuilding it indexes those words
+  whole.
 - The transcription-recovery filter addresses errors of transcription, not of
   typing, and a substantial share of what it proposes is not an error.
 - A package is decrypted into memory in full. A corpus larger than available
-  memory is held as several packages queried as one. Writing a package does not
-  have this bound: it is built and sealed in blocks.
+  memory is held as several packages queried as one, and the server opens each
+  only when a query reaches it; `info` reports which are open and what they
+  hold. Writing a package does not have this bound: it is built and sealed in
+  blocks.
 - Calibration thresholds are measured per corpus. A package built before that
   measurement existed is judged by fixed thresholds.
 

@@ -79,8 +79,14 @@ def test_the_lexical_caches_are_keyed_by_content_and_not_by_address(tmp_path):
     package = _build(tmp_path, "botanica", BOTANICA, with_semantics=False)
     connection, _ = archive.open_package(package, "k")
     archive.query(connection, "sunlight sugar chlorophyll", limit=2)
-    _keys_are_digests("_STATS_CACHE", archive._STATS_CACHE)
+    # `_SCALE_CACHE` is the one a query fills now: the per-term counts are
+    # asked for by term rather than held whole, so `_STATS_CACHE` is only
+    # reached through `vocabulary()`. Both are checked, because the property
+    # belongs to every cache that outlives the object it was filled from.
+    _keys_are_digests("_SCALE_CACHE", archive._SCALE_CACHE)
     _keys_are_digests("_COLUMN_CACHE", archive._COLUMN_CACHE)
+    archive.vocabulary(connection)
+    _keys_are_digests("_STATS_CACHE", archive._STATS_CACHE)
 
 
 @needs_model
@@ -116,9 +122,10 @@ def test_a_connection_this_module_did_not_open_is_not_cached(tmp_path):
     stray.execute("CREATE TABLE df (term TEXT, passages INTEGER)")
     stray.execute("CREATE TABLE meta (key TEXT, value TEXT)")
     assert archive._cache_key(stray) is None
-    before = len(archive._STATS_CACHE)
+    before = len(archive._STATS_CACHE), len(archive._SCALE_CACHE)
     archive._corpus_statistics(stray)
-    assert len(archive._STATS_CACHE) == before, (
+    archive._corpus_scale(stray)
+    assert (len(archive._STATS_CACHE), len(archive._SCALE_CACHE)) == before, (
         "it was cached under a key that cannot identify it")
 
 

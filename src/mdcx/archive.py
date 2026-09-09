@@ -150,8 +150,57 @@ def _decrypt(body: bytes, derived_key: bytes, nonce: bytes) -> bytes:
 SEAL_BLOCK_BYTES = 8 * 1024 * 1024
 
 
+# What may compress a body, and what the header then says it was compressed
+# with. The header has always carried the name; until now it could only ever
+# say one thing.
+#
+# Measured by a consumer on 784 MB of their own database: LZMA wrote 254 MB and
+# took 14.01 s to read back, zstd at level 3 wrote 233 MB and took 1.14 s. On
+# that material zstd is smaller *and* faster to open, so this is not a trade
+# between size and speed -- which is why it is worth offering rather than
+# arguing about. Opening is what a server pays before it can answer anything.
+#
+# LZMA stays the default: it is what every package written so far says, and a
+# package is opened by what its header names.
+COMPRESSORS = ("lzma", "zstd")
+
+DEFAULT_COMPRESSION = "lzma"
+
+# What level to use when zstd is asked for without one. Level 3 is zstd's own
+# default and the level the measurement above was taken at.
+ZSTD_LEVEL = 3
+
+
+def _zstd():
+    """The zstd module, or a refusal that says how to get it."""
+    try:
+        import zstandard
+    except ImportError as missing:  # pragma: no cover - depends on the install
+        raise RuntimeError(
+            "This package is compressed with zstd, which needs the `zstandard` "
+            "module: pip install zstandard") from missing
+    return zstandard
+
+
+def _decompress(body: bytes, compression: str) -> bytes:
+    """Undo whatever compressed this body, by name.
+
+    A package written before this existed carries no name, and it was LZMA.
+    """
+    name = (compression or DEFAULT_COMPRESSION).lower()
+    if name == "zstd":
+        return _zstd().ZstdDecompressor().stream_reader(body).read()
+    if name in ("lzma", "xz"):
+        import lzma
+
+        return lzma.decompress(body)
+    raise ValueError(
+        f"This package says it was compressed with {compression!r}, which this "
+        "version does not know how to read.")
+
+
 def _seal(source: Path, target: Path, derived_key: bytes,
-          preset: int) -> tuple[bytes, str, int]:
+          preset: int, compression: str = DEFAULT_COMPRESSION) -> tuple[bytes, str, int]:
     """Compress, encrypt and hash a file into another, a block at a time.
 
     Returns the nonce, the digest of what was written, and how many bytes that
@@ -170,7 +219,13 @@ def _seal(source: Path, target: Path, derived_key: bytes,
 
     nonce = os.urandom(12)
     encryptor = Cipher(algorithms.AES(derived_key), modes.GCM(nonce)).encryptor()
-    compressor = lzma.LZMACompressor(preset=preset)
+    if compression == "zstd":
+        # Its own level scale, not LZMA's. `preset` is passed through where a
+        # caller named one, since both run 0..9 in the same direction, and the
+        # zstd default otherwise.
+        compressor = _zstd().ZstdCompressor(level=preset or ZSTD_LEVEL).compressobj()
+    else:
+        compressor = lzma.LZMACompressor(preset=preset)
     digest = hashlib.sha256()
     written = 0
 
@@ -352,12 +407,34 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
             -- Searchable form of the same text. Identical to it for every
             -- script that separates words; Chinese, Japanese and Korean are
             -- split into characters so a lexical index can match them.
-            search_text TEXT
+            search_text TEXT,
+            -- How many tokens this passage holds, by the same rule that built
+            -- `df`. BM25 needs it to normalise, and a query used to get it by
+            -- tokenising every candidate passage again -- measured at half the
+            -- time a lexical query took. It is known here, where the passages
+            -- are being counted anyway, so it is written down once instead of
+            -- recomputed on every query for the life of the package.
+            tokens INTEGER
         );
         -- The index is declared external to the content so the text is not stored
         -- twice: FTS5 indexes what lives in the passage table.
+        --
+        -- The categories are named because the default set -- letters, numbers
+        -- and private use -- leaves out the combining marks, and a script that
+        -- writes its vowels as marks is therefore cut at every one of them.
+        -- Measured on one Hindi passage: 21 terms in the index against the 13
+        -- words it holds, so a word was indexed as fragments and the term a
+        -- reader would search for was not among them.
+        --
+        -- That also made the index and this module disagree about what a
+        -- passage contains, which is what a lexical score is computed from.
+        -- With Mn and Mc included the two produce the same 13 terms.
+        --
+        -- The declaration travels with the package, so one written before this
+        -- keeps the tokenizer it was built with and opens unchanged.
         CREATE VIRTUAL TABLE passage_fts USING fts5(
-            search_text, content='passage', content_rowid='id', tokenize='unicode61'
+            search_text, content='passage', content_rowid='id',
+            tokenize="unicode61 categories 'L* N* Co Mn Mc'"
         );
         -- Vector of each passage, when the package was built with semantic
         -- retrieval. Half precision: the loss against single precision is far
@@ -430,7 +507,10 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
             # identical to the original, and the compression of the package
             # absorbs the duplication.
             connection.execute(
-                "INSERT INTO passage VALUES (?,?,?,?,?)",
+                # Columns named rather than positional: adding one to the
+                # table should not silently break the write.
+                "INSERT INTO passage (id, document_id, position, text, "
+                "search_text) VALUES (?,?,?,?,?)",
                 # Left empty here and filled by `_index_passages`, which is
                 # the only thing that reads it -- writing it now would mean
                 # normalising the whole corpus twice and rewriting the table an
@@ -447,12 +527,17 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
     df_count: _Counter = _Counter()
     lengths: list[int] = []
     with phase("terms"):
-        for (text,) in connection.execute("SELECT text FROM passage"):
+        counted: list[tuple[int, int]] = []
+        for identifier, text in connection.execute(
+                "SELECT id, text FROM passage"):
             tk = _B.tokenize_text(_B._normalize(text))
             lengths.append(len(tk))
+            counted.append((len(tk), identifier))
             for t in set(tk):
                 if indexable_term(t):
                     df_count[t] += 1
+        connection.executemany("UPDATE passage SET tokens = ? WHERE id = ?",
+                               counted)
     connection.executemany("INSERT INTO df VALUES (?,?)", df_count.items())
 
     # Built from `df` and not from the passages, so the sieve and the search
@@ -613,7 +698,8 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
          focus: list[str] | None = None,
          dates: dict | None = None, use_mtime: bool = False,
          fast: bool = False, shapes: bool = False,
-         preset: int | None = None) -> dict:
+         preset: int | None = None,
+         compression: str = DEFAULT_COMPRESSION) -> dict:
     """Write the .mdcx file and return its figures.
 
     `preset` is the LZMA level, 0 to 9, and overrides `fast` when given. The
@@ -625,8 +711,13 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
     30.0% of the original against 26.1%. Which of those is right is the
     caller's to decide, not this module's.
 
-    The preset travels inside the XZ stream, so a package written at any level
-    is opened by any reader.
+    The preset travels inside the compressed stream, so a package written at
+    any level is opened by any reader.
+
+    `compression` names what compresses the body: "lzma" or "zstd". The header
+    records it, and a package is opened by what its header names, so writing
+    one with zstd does not change how anything else is read. Reading a zstd
+    package needs the `zstandard` module; LZMA needs nothing.
     """
     import lzma
 
@@ -711,7 +802,14 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         raise ValueError(f"preset must be between 0 and 9, not {preset}")
     else:
         level = preset
-    nonce, body_digest, bytes_body = _seal(built, sealed, derived_key, level)
+    if compression not in COMPRESSORS:
+        raise ValueError(
+            f"compression must be one of {', '.join(COMPRESSORS)}, "
+            f"not {compression!r}")
+    if compression == "zstd":
+        _zstd()   # refused here rather than after the corpus was indexed
+    nonce, body_digest, bytes_body = _seal(built, sealed, derived_key, level,
+                                           compression)
     t_seal = time.perf_counter() - t0
     built.unlink(missing_ok=True)
 
@@ -726,7 +824,7 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         "language_confidence": summary.get("language_confidence"),
         "encryption": "AES-256-GCM",
         "key_derivation": {"algorithm": "scrypt", "n": SCRYPT_N, "r": SCRYPT_R, "p": SCRYPT_P},
-        "compression": "lzma",
+        "compression": compression,
         "salt": salt.hex(),
         "nonce": nonce.hex(),
         "body_digest": body_digest,
@@ -777,6 +875,7 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         # decide it and a reader comparing two packages needs to
         # know they were written the same way.
         "compression_preset": level,
+        "compression": compression,
         "bytes_file": target.stat().st_size,
         "seconds_index": round(t_base, 2),
         # What that number is made of. One figure for indexing hid which part
@@ -1687,12 +1786,13 @@ def open_package(path: Path, key: str) -> tuple[sqlite3.Connection, dict]:
     # therefore serialised through _CONNECTION_LOCK.
     connection = sqlite3.connect(":memory:", check_same_thread=False,
                                  factory=_Package)
-    connection.deserialize(lzma.decompress(compressed))
+    connection.deserialize(_decompress(compressed, header.get("compression")))
     connection.digest = header["body_digest"]
     return connection, header
 
 _SQL_TEMPLATE = """
-    SELECT d.name, d.pseudopath, d.source, p.text, bm25(passage_fts) AS score{dates}
+    SELECT d.name, d.pseudopath, d.source, p.text, bm25(passage_fts) AS score,
+           p.id AS passage_id, {length}{dates}
     FROM passage_fts
     JOIN passage p ON p.id = passage_fts.rowid
     JOIN document d ON d.id = p.{document_column}
@@ -1734,8 +1834,11 @@ def document_column(connection: sqlite3.Connection) -> str:
 def _run_match(connection: sqlite3.Connection, expr: str, limit: int,
               only: str | None) -> list[dict]:
     fechas = ", d.dated, d.dated_from" if has_dates(connection) else ""
+    # The stored token count where the package has one, so the scoring loop
+    # does not have to read the passage back to find out how long it is.
+    length = "p.tokens" if _has_token_counts(connection) else "NULL"
     sql = _SQL_TEMPLATE.format(document_column=document_column(connection),
-                               dates=fechas)
+                               dates=fechas, length=length)
     params: list = [expr]
     if only:
         sql += " AND d.source = ?"
@@ -1750,9 +1853,12 @@ def _run_match(connection: sqlite3.Connection, expr: str, limit: int,
     out = []
     for r in rows:
         item = {"document": r[0], "pseudopath": r[1], "source": r[2],
-                "passage": r[3], "score": round(-r[4], 3)}
+                "passage": r[3], "score": round(-r[4], 3),
+                # Under private names: they are how the scoring loop reaches
+                # the index, and they are removed before the reply is built.
+                "_passage_id": r[5], "_tokens": r[6]}
         if fechas:
-            item["dated"], item["dated_from"] = r[5], r[6]
+            item["dated"], item["dated_from"] = r[7], r[8]
         out.append(item)
     return out
 
@@ -1836,14 +1942,34 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
             # another spelling, which they were not.
             notes["read_as"] = {t: list(c) for t, c in widened.items()}
 
-    df, n_passages, avg_length = _corpus_statistics(connection)
+    n_passages, avg_length = _corpus_scale(connection)
+    df = _frequencies_for(connection, distinct_terms)
+
+    # What each candidate holds of the question, from the index that already
+    # recorded it. Half of a lexical query was spent reading the candidate
+    # passages back and tokenising them for counts FTS5 had taken when the
+    # package was built. Where the index cannot answer -- an older package, an
+    # unusual one -- this comes back None and each passage is read as before.
+    seen = _occurrences(connection, distinct_terms,
+                        [r["_passage_id"] for r in candidates])
 
     by_document: dict[str, list[dict]] = {}
     for r in candidates:
-        freq = _term_frequencies(r["passage"], distinct_terms)
+        if seen is not None and r.get("_tokens"):
+            freq = seen.get(r["_passage_id"], {})
+            length = max(int(r["_tokens"]), 1)
+        else:
+            # Tokenised once. The frequencies and the length are two readings
+            # of the same list, and taking them apart normalised every
+            # candidate passage twice for one answer.
+            tokens = B.tokenize_text(B._normalize(r["passage"]))
+            freq = {}
+            for t in tokens:
+                if t in distinct_terms:
+                    freq[t] = freq.get(t, 0) + 1
+            length = max(len(tokens), 1)
         if not freq:
             continue
-        length = max(len(B.tokenize_text(B._normalize(r["passage"]))), 1)
         score = 0.0
         for t, f in freq.items():
             d_t = df.get(t, 1)
@@ -1853,6 +1979,10 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
         r = dict(r)
         r["score"] = round(score, 3)
         r["terms"] = sorted(freq)
+        # The two private keys were how this loop reached the index; they are
+        # not part of what a caller is given.
+        r.pop("_passage_id", None)
+        r.pop("_tokens", None)
         by_document.setdefault(r["document"], []).append(r)
 
     ranking = []
@@ -1865,9 +1995,26 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
 
     if len(phrase.split()) >= 5:
         needle = B._normalize(phrase)
+        # Asked of the documents already in the ranking, and of no others. What
+        # this branch does is reorder them; a document it found outside the
+        # ranking could not appear in the reply, so reading the whole corpus to
+        # find one was work with nowhere to go. The column exists to catch a
+        # quotation that straddles the cut between two passages, which the
+        # passage index cannot see -- that still works, over the candidates.
+        #
+        # It is not a small saving at scale: `normalized_text` is the corpus
+        # again, 257 MB in one package of a collection whose whole is 17 GB.
+        names = [passages[0]["document"] for _score, passages in ranking]
+        preferred = []
         with _CONNECTION_LOCK:
-            preferred = [n for (n, t) in connection.execute(
-                "SELECT name, normalized_text FROM document") if t and needle in t]
+            for start in range(0, len(names), _TERMS_PER_STATEMENT):
+                batch = names[start:start + _TERMS_PER_STATEMENT]
+                placeholders = ",".join("?" * len(batch))
+                preferred.extend(
+                    n for (n, t) in connection.execute(
+                        "SELECT name, normalized_text FROM document "
+                        f"WHERE name IN ({placeholders})", batch)
+                    if t and needle in t)
         if preferred:
             position = {d: i for i, d in enumerate(preferred)}
             ranking.sort(key=lambda pair: (position.get(pair[1][0]["document"], len(position)),
@@ -2305,8 +2452,205 @@ def corpus_statistics(connection: sqlite3.Connection) -> tuple[dict, int, float]
     return _corpus_statistics(connection)
 
 
+# What a query needs from the corpus that is not a per-term count: how many
+# passages it holds and how long they are on average. Two scalars, so they are
+# read once and kept, where the frequencies themselves are asked for by term.
+_SCALE_CACHE: dict = {}
+
+
+def _has_token_counts(connection: sqlite3.Connection) -> bool:
+    """Whether this package stored how long each passage is.
+
+    Packages written before it did not, and are read by tokenising the
+    candidates as before. The column is the fast path, not the only one.
+    """
+    key = _cache_key(connection)
+    if key is not None and key in _TOKENS_CACHE:
+        return _TOKENS_CACHE[key]
+    try:
+        with _CONNECTION_LOCK:
+            columns = {row[1] for row in
+                       connection.execute("PRAGMA table_info(passage)")}
+            present = "tokens" in columns
+            if present:
+                row = connection.execute(
+                    "SELECT count(*) FROM passage WHERE tokens IS NULL").fetchone()
+                present = not row[0]
+    except Exception:  # noqa: BLE001
+        present = False
+    if key is not None:
+        _TOKENS_CACHE[key] = present
+    return present
+
+
+_TOKENS_CACHE: dict = {}
+
+# The name of the vocabulary table this module creates on an open package to
+# read term occurrences from the index. It holds no data of its own -- fts5vocab
+# is a view over what FTS5 already stored -- so creating it costs nothing and
+# writing it touches only the in-memory copy.
+_INSTANCES = "mdcx_fts_instances"
+
+
+# Whether this package's index tokenises the way this module does, decided per
+# package by comparing them on real passages rather than by guessing from the
+# script.
+_AGREEMENT_CACHE: dict = {}
+
+# How many passages to compare. Enough that a disagreement shows up, few enough
+# that deciding costs nothing next to the query it saves.
+_AGREEMENT_SAMPLE = 8
+
+
+def _index_agrees(connection: sqlite3.Connection) -> bool:
+    """Whether the terms FTS5 holds are the terms this module counts.
+
+    They are not always. FTS5 tokenises with `unicode61`, and on Devanagari
+    that splits words at the vowel marks: measured on one passage, 22 terms in
+    the index against 14 from `tokenize_text`, with almost none in common. A
+    count taken from the index there is a count of a different string, and the
+    passage is dropped for holding none of the query -- which is what it looks
+    like from outside: the language stops retrieving anything.
+
+    Deciding by script would be guessing about a tokenizer this module does not
+    own, so the two are compared on passages of this package. Once, and kept.
+    """
+    key = _cache_key(connection)
+    if key is not None and key in _AGREEMENT_CACHE:
+        return _AGREEMENT_CACHE[key]
+    from . import search as B
+
+    agrees = False
+    try:
+        with _CONNECTION_LOCK:
+            connection.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS {_INSTANCES} "
+                "USING fts5vocab(passage_fts, instance)")
+            rows = connection.execute(
+                "SELECT id, text FROM passage ORDER BY id LIMIT ?",
+                (_AGREEMENT_SAMPLE,)).fetchall()
+            agrees = bool(rows)
+            for identifier, text in rows:
+                mine = {t for t in B.tokenize_text(B._normalize(text))}
+                theirs = {t for (t,) in connection.execute(
+                    f"SELECT DISTINCT term FROM {_INSTANCES} WHERE doc = ?",
+                    (identifier,))}
+                # Theirs may hold more -- the index also carries the title and
+                # whatever else the indexed column joins -- but every term this
+                # module would count has to be one the index knows under the
+                # same name, or the count comes back wrong rather than absent.
+                if not mine or not mine <= theirs:
+                    agrees = False
+                    break
+    except Exception:  # noqa: BLE001 - an older or unusual package
+        agrees = False
+    if key is not None:
+        _AGREEMENT_CACHE[key] = agrees
+    return agrees
+
+
+def _occurrences(connection: sqlite3.Connection, terms, rowids) -> dict:
+    """How many times each term appears in each of these passages.
+
+    Read from the index rather than by tokenising the passages again. FTS5
+    already recorded every occurrence when the package was built; asking it is
+    a lookup where re-reading the text is work proportional to the text.
+    Measured over 1,200 candidate passages and four terms: 0.0057 s against
+    0.1403 s, which is 24.7 times.
+
+    It is also exact in a way a substring test is not -- it will not find
+    `curve` inside `curvature` -- which is why the counts are kept at all.
+
+    Returns None where the index cannot answer, so the caller tokenises. That
+    covers more than an old package: what FTS5 holds is the *indexed* form of
+    the text, and for a script that does not separate words -- Chinese,
+    Japanese, Korean, and any term `segment_for_index` rewrites -- the token in
+    the index is not the term that was asked for. Counting those from the index
+    would silently answer about a different string, so the text is read
+    instead. It is exactly the case the multilingual tests caught.
+    """
+    if not rowids or not terms:
+        return {}
+    if not _index_agrees(connection):
+        return None
+    try:
+        with _CONNECTION_LOCK:
+            connection.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS {_INSTANCES} "
+                "USING fts5vocab(passage_fts, instance)")
+            found: dict = {}
+            ids = list(rowids)
+            for term in dict.fromkeys(terms):
+                for start in range(0, len(ids), _TERMS_PER_STATEMENT):
+                    batch = ids[start:start + _TERMS_PER_STATEMENT]
+                    marks = ",".join("?" * len(batch))
+                    for doc, how_many in connection.execute(
+                            f"SELECT doc, count(*) FROM {_INSTANCES} "
+                            f"WHERE term = ? AND doc IN ({marks}) GROUP BY doc",
+                            [term] + batch):
+                        found.setdefault(doc, {})[term] = how_many
+            return found
+    except Exception:  # noqa: BLE001 - an older or unusual package
+        return None
+
+
+def _corpus_scale(connection: sqlite3.Connection) -> tuple[int, float]:
+    """How many passages the corpus holds, and their mean length."""
+    key = _cache_key(connection)
+    if key is not None and key in _SCALE_CACHE:
+        return _SCALE_CACHE[key]
+    with _CONNECTION_LOCK:
+        row = connection.execute(
+            "SELECT value FROM meta WHERE key='passages'").fetchone()
+        n = int(json.loads(row[0])) if row else 1
+        row = connection.execute(
+            "SELECT value FROM meta WHERE key='mean_passage_length'").fetchone()
+        lm = float(json.loads(row[0])) if row else 60.0
+    if not n:
+        n = 1
+    if key is None:
+        return n, lm
+    _SCALE_CACHE[key] = (n, lm)
+    return _SCALE_CACHE[key]
+
+
+# How many terms to ask for in one statement. SQLite has a ceiling on host
+# parameters, and a query widened by the shape sieve can carry more terms than
+# anyone types.
+_TERMS_PER_STATEMENT = 500
+
+
+def _frequencies_for(connection: sqlite3.Connection,
+                     terms) -> dict[str, int]:
+    """How many passages hold each of these terms.
+
+    Asked for by term rather than read whole. `df` has one row per term in the
+    corpus -- measured at 521,231 rows on a corpus of mathematics -- and a
+    query uses between one and ten of them, so reading the table made every
+    query slower as the corpus grew, for counts it then discarded. The rows are
+    keyed by term, so this is a lookup.
+    """
+    wanted = [t for t in dict.fromkeys(terms) if t]
+    if not wanted:
+        return {}
+    found: dict[str, int] = {}
+    with _CONNECTION_LOCK:
+        for start in range(0, len(wanted), _TERMS_PER_STATEMENT):
+            batch = wanted[start:start + _TERMS_PER_STATEMENT]
+            placeholders = ",".join("?" * len(batch))
+            for term, passages in connection.execute(
+                    f"SELECT term, passages FROM df WHERE term IN ({placeholders})",
+                    batch):
+                found[term] = passages
+    return found
+
+
 def _corpus_statistics(connection: sqlite3.Connection) -> tuple[dict, int, float]:
-    """Document frequency per term and mean passage length, as packed."""
+    """Document frequency per term and mean passage length, as packed.
+
+    The whole table, which is what `vocabulary()` publishes. A query does not
+    go through here: it asks for the terms it has, through `_frequencies_for`.
+    """
     key = _cache_key(connection)
     if key is not None and key in _STATS_CACHE:
         return _STATS_CACHE[key]
@@ -2433,6 +2777,13 @@ def main() -> int:
                         "the bytes; a package meant to be distributed is the "
                         "opposite case. The level travels inside the stream, "
                         "so any reader opens what any level wrote")
+    e.add_argument("--compression", choices=COMPRESSORS,
+                   default=DEFAULT_COMPRESSION,
+                   help="what compresses the body. The header records it and a "
+                        "package is opened by what its header names, so this "
+                        "changes nothing for existing packages. zstd opens "
+                        "faster, which is what a server pays before it can "
+                        "answer, and needs the `zstandard` module to read")
     e.add_argument("--date-from-mtime", action="store_true",
                    help="fall back to the file's modification time, recorded "
                         "as such. It is the file's date and not the work's, so "
@@ -2513,7 +2864,8 @@ def main() -> int:
                  focus=args.focus,
                  dates=read_dates(Path(args.dates)) if args.dates else None,
                  use_mtime=args.date_from_mtime, fast=args.fast,
-                 shapes=args.shapes, preset=args.preset)
+                 shapes=args.shapes, preset=args.preset,
+                 compression=args.compression)
         print(f"Packed: {args.target}")
         print(f"  documents {r['documents']}   passages {r['passages']}"
               + (f"   attachments {r['attachments']}" if r.get("attachments") else ""))
