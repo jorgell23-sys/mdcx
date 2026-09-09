@@ -200,14 +200,42 @@ mdcx pack --output ./Documents_md --target corpus.mdcx --key "passphrase"
 | `--reuse PACKAGE` | reuse vectors from an existing package |
 | `--issuer`, `--signing-key` | see [Signing](#signing) |
 | `--fast` | compress for speed rather than size |
+| `--preset 0-9` | the compression level, overriding `--fast` |
 
 `--output` accepts a folder of Markdown, a single file, or a `.jsonl` file with
 one record per line, which is how a catalogue of records is packed without first
 writing it to disk.
 
-`--fast` selects a lower compression preset. It is intended for a package that is
-rewritten frequently rather than distributed; nothing else about the package
-changes.
+`--fast` selects a lower compression preset, and `--preset` names one directly.
+Sealing is a fixed price paid on every write: a package meant to be distributed
+is compressed once and downloaded many times, while a corpus rebuilt whenever it
+grows pays the clock and not the bytes. The level travels inside the compressed
+stream, so a package written at any level is opened by any reader, and nothing
+else about the package changes.
+
+`pack` returns `seconds_index` and `seconds_seal`, and `seconds_index_by_phase`
+divides the first among reading the folder, cutting passages, counting terms,
+building the shape index and encoding. With `--multilingual` the encoding
+dominates the rest by two orders of magnitude, and what it costs is set by how
+long the passages are rather than how many: the model is charged per token.
+
+The figure to plan a large corpus with is therefore a rate *and* the passage
+length it was measured at. On one 6 GB card, encoding 600 passages of each
+length:
+
+| words per passage | passages/s |
+|---:|---:|
+| 10 | 431 |
+| 20 | 196 |
+| 50 | 84 |
+| 90 | 52 |
+| 200 | 21 |
+
+A rate quoted without its passage length is not usable, and measuring one
+against text generated for the purpose gives the machine rather than the work:
+a consumer comparing 440 passages/s from invented 130-character texts against 25
+from their own 942-character passages read the difference as a defect in this
+library. The phase figures are what settle it for a given corpus.
 
 ## Querying
 

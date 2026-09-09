@@ -40,6 +40,7 @@ measured in seconds.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import math
@@ -299,8 +300,26 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
     # second is for a collection that is generated rather than converted,
     # where writing it out as files and reading it back is work with nothing
     # to show for it.
-    docs = (B.load_records(folder) if folder.is_file()
-            else B.load_documents(folder))
+    # How long each part of indexing took, so that the one number a caller sees
+    # can be accounted for. `seconds_index` on its own says a corpus took six
+    # hours without saying whether the answer is a different corpus, a different
+    # batch, or nothing the caller can do -- and a consumer who profiled it
+    # attributed the whole of it to the model, which turned out to be a small
+    # part of it.
+    spent: dict[str, float] = {}
+    clock = time.perf_counter
+
+    @contextlib.contextmanager
+    def phase(name: str):
+        started = clock()
+        try:
+            yield
+        finally:
+            spent[name] = round(spent.get(name, 0.0) + clock() - started, 3)
+
+    with phase("read"):
+        docs = (B.load_records(folder) if folder.is_file()
+                else B.load_documents(folder))
     connection = sqlite3.connect(":memory:")
     connection.executescript("""
         PRAGMA journal_mode = OFF;
@@ -386,6 +405,7 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
                            (i, d["name"], d["pseudopath"], d["folder"], d["text"]))
 
     n_passages = 0
+    _t_passages = clock()
     for i, d in enumerate(docs, 1):
         d["dated"], d["dated_from"] = _date_of(d, supplied, use_mtime)
         text = d["text"]
@@ -422,14 +442,17 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
     from . import search as _B
     from collections import Counter as _Counter
 
+    spent["passages"] = round(clock() - _t_passages, 3)
+
     df_count: _Counter = _Counter()
     lengths: list[int] = []
-    for (text,) in connection.execute("SELECT text FROM passage"):
-        tk = _B.tokenize_text(_B._normalize(text))
-        lengths.append(len(tk))
-        for t in set(tk):
-            if indexable_term(t):
-                df_count[t] += 1
+    with phase("terms"):
+        for (text,) in connection.execute("SELECT text FROM passage"):
+            tk = _B.tokenize_text(_B._normalize(text))
+            lengths.append(len(tk))
+            for t in set(tk):
+                if indexable_term(t):
+                    df_count[t] += 1
     connection.executemany("INSERT INTO df VALUES (?,?)", df_count.items())
 
     # Built from `df` and not from the passages, so the sieve and the search
@@ -443,7 +466,8 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
     # errors, which a corpus that never went through optical recognition does
     # not have. Charging every corpus for what serves some of them is the thing
     # this project keeps declining to do.
-    summary_shape = shapekey.build(connection) if shapes else {}
+    with phase("shapes"):
+        summary_shape = shapekey.build(connection) if shapes else {}
     avg_length = sum(lengths) / len(lengths) if lengths else 60.0
 
     # The language of the corpus is recorded so that a client, a model, or the
@@ -494,7 +518,8 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
         except Exception:  # noqa: BLE001
             pass
     if semantic:
-        summary.update(_embed_passages(connection, reuse, focus))
+        with phase("encode"):
+            summary.update(_embed_passages(connection, reuse, focus))
 
     for k, v in summary.items():
         connection.execute("INSERT INTO meta VALUES (?,?)",
@@ -505,6 +530,7 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
     # database is built in memory because that is where the indexing is fast;
     # what does not have to happen is a second whole copy of it beside the
     # first.
+    summary["index_seconds"] = spent
     spill = sqlite3.connect(into)
     spill.executescript("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;")
     connection.backup(spill)
@@ -586,8 +612,22 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
          reuse_from: Path | None = None,
          focus: list[str] | None = None,
          dates: dict | None = None, use_mtime: bool = False,
-         fast: bool = False, shapes: bool = False) -> dict:
-    """Write the .mdcx file and return its figures."""
+         fast: bool = False, shapes: bool = False,
+         preset: int | None = None) -> dict:
+    """Write the .mdcx file and return its figures.
+
+    `preset` is the LZMA level, 0 to 9, and overrides `fast` when given. The
+    two constants `fast` chooses between are a decision about a distributed
+    package -- compressed once and downloaded many times -- and there is a
+    second case they cannot express: a corpus rebuilt whenever it grows, where
+    the clock matters and the bytes do not. Measured by a consumer over 120 MiB
+    of their own text, preset 0 wrote in 5.9 s against 24.5 s at preset 3, for
+    30.0% of the original against 26.1%. Which of those is right is the
+    caller's to decide, not this module's.
+
+    The preset travels inside the XZ stream, so a package written at any level
+    is opened by any reader.
+    """
     import lzma
 
     if not folder.is_dir() and not folder.is_file():
@@ -662,8 +702,16 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
     # the corpus; timing them apart is no longer possible and no longer worth
     # the memory it cost.
     t0 = time.perf_counter()
-    nonce, body_digest, bytes_body = _seal(
-        built, sealed, derived_key, FAST_PRESET if fast else PRESET)
+    if preset is None:
+        level = FAST_PRESET if fast else PRESET
+    elif not 0 <= preset <= 9:
+        # Said rather than clamped: a caller who asked for 12 has a reason to
+        # think it exists, and quietly writing at 9 would leave them measuring
+        # a level they did not choose.
+        raise ValueError(f"preset must be between 0 and 9, not {preset}")
+    else:
+        level = preset
+    nonce, body_digest, bytes_body = _seal(built, sealed, derived_key, level)
     t_seal = time.perf_counter() - t0
     built.unlink(missing_ok=True)
 
@@ -725,8 +773,18 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
     return {
         "bytes_database": bytes_database,
         "bytes_compressed": bytes_body,
+        # Which level actually wrote it, since three things can
+        # decide it and a reader comparing two packages needs to
+        # know they were written the same way.
+        "compression_preset": level,
         "bytes_file": target.stat().st_size,
         "seconds_index": round(t_base, 2),
+        # What that number is made of. One figure for indexing hid which part
+        # of it a caller could act on: reading the folder, cutting passages,
+        # counting terms, building the shape index, encoding. A consumer
+        # measuring 355 s of indexing attributed it to the model, which was a
+        # small part of it.
+        "seconds_index_by_phase": summary.get("index_seconds", {}),
         # Compressing and encrypting are properties of the whole file, so they
         # cost the same whether one document was added or the corpus was
         # rebuilt. That is a fixed price per write, and it grows with the
@@ -2368,6 +2426,13 @@ def main() -> int:
                         "For a package that is rewritten often rather than "
                         "distributed, where compressing is a fixed price paid "
                         "on every write")
+    e.add_argument("--preset", type=int, metavar="0-9",
+                   help="the LZMA level, overriding --fast. Sealing is a fixed "
+                        "price paid on every write, and where a corpus is "
+                        "rebuilt whenever it grows the clock costs more than "
+                        "the bytes; a package meant to be distributed is the "
+                        "opposite case. The level travels inside the stream, "
+                        "so any reader opens what any level wrote")
     e.add_argument("--date-from-mtime", action="store_true",
                    help="fall back to the file's modification time, recorded "
                         "as such. It is the file's date and not the work's, so "
@@ -2448,7 +2513,7 @@ def main() -> int:
                  focus=args.focus,
                  dates=read_dates(Path(args.dates)) if args.dates else None,
                  use_mtime=args.date_from_mtime, fast=args.fast,
-                 shapes=args.shapes)
+                 shapes=args.shapes, preset=args.preset)
         print(f"Packed: {args.target}")
         print(f"  documents {r['documents']}   passages {r['passages']}"
               + (f"   attachments {r['attachments']}" if r.get("attachments") else ""))

@@ -12,6 +12,25 @@ log.
 
 ## [Unreleased]
 
+## [1.26.0] — 2026-09-09
+
+### Added
+
+- `pack(preset=0..9)` and `mdcx pack --preset`, overriding `--fast`. The two
+  constants `--fast` chooses between both answer one question — what a
+  distributed package should cost, compressed once and downloaded many times —
+  and a corpus rebuilt whenever it grows is the other case, where the clock
+  costs and the bytes do not. Measured by a consumer over 120 MiB of their own
+  text: 5.9 s at preset 0 against 24.5 s at preset 3, for 30.0% of the original
+  against 26.1%. The level travels inside the compressed stream, so any reader
+  opens what any level wrote. `compression_preset` reports which level wrote a
+  package.
+- `seconds_index_by_phase`, dividing the indexing time among reading the
+  folder, cutting passages, counting terms, building the shape index and
+  encoding. One figure for indexing could not say which part of it a caller
+  could act on: a consumer measuring 355 s of it concluded the model was the
+  bottleneck and profiled the model.
+
 ## [1.25.0] — 2026-09-08
 
 ### Fixed
@@ -259,7 +278,8 @@ log.
 First public release: conversion with measured fidelity, the encrypted `.mdcx`
 container, lexical and dense retrieval, and the MCP server.
 
-[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.25.0...HEAD
+[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.26.0...HEAD
+[1.26.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.26.0
 [1.25.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.25.0
 [1.24.1]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.24.1
 [1.24.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.24.0

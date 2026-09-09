@@ -246,3 +246,126 @@ def test_the_shared_text_gives_the_same_paragraphs():
 
     assert pdf_module.page_paragraphs_fast(None, text=text) == [
         "First line second line", "A second paragraph."]
+
+
+# --- Where indexing time goes --------------------------------------------------
+
+
+def test_indexing_time_is_reported_by_phase(tmp_path):
+    """One number for indexing hid which part of it a caller could act on.
+
+    A consumer measuring 355 s of indexing against 10 s of sealing concluded
+    the model was the bottleneck and profiled it. Reading the folder, cutting
+    passages and counting terms are each a different decision -- a different
+    corpus, a different batch, or nothing the caller can do -- and the single
+    figure could not tell them apart.
+    """
+    corpus = tmp_path / "md"
+    corpus.mkdir()
+    for i in range(4):
+        (corpus / f"d{i}.md").write_text(
+            f"# Document {i}\n\n" + "\n\n".join(
+                f"A paragraph of prose about topic {j}, written out at some "
+                f"length so that it survives being cut into passages."
+                for j in range(4)) + "\n", encoding="utf-8")
+
+    written = archive.pack(corpus, tmp_path / "c.mdcx", "k")
+
+    phases = written["seconds_index_by_phase"]
+    assert set(phases) >= {"read", "passages", "terms"}
+    assert all(v >= 0.0 for v in phases.values())
+    # The parts are of the whole they claim to divide.
+    assert sum(phases.values()) <= written["seconds_index"] + 0.5
+
+
+def test_the_phases_account_for_what_was_asked_for(tmp_path):
+    """A phase that did not run is reported at zero rather than left out, so a
+    reader can tell "not asked for" from "took no time" by what they passed."""
+    corpus = tmp_path / "md"
+    corpus.mkdir()
+    (corpus / "a.md").write_text("# A\n\nSome prose to index.\n", encoding="utf-8")
+
+    written = archive.pack(corpus, tmp_path / "c.mdcx", "k", shapes=False)
+
+    assert written["seconds_index_by_phase"]["shapes"] == 0.0
+
+
+# --- Where to stop on the compression curve -----------------------------------
+
+
+def _small_corpus(path):
+    path.mkdir()
+    for i in range(6):
+        (path / f"d{i}.md").write_text(
+            f"# Document {i}\n\n" + "\n\n".join(
+                "Prose that repeats itself enough to be worth compressing, "
+                f"paragraph {j} of document {i}." for j in range(8)) + "\n",
+            encoding="utf-8")
+    return path
+
+
+def test_the_caller_chooses_where_to_stop_compressing(tmp_path):
+    """`fast` picks between two constants, and both answer the same question:
+    what a distributed package should cost, compressed once and downloaded
+    many times. A corpus rebuilt whenever it grows is the other case -- the
+    clock costs and the bytes do not -- and it could not be expressed.
+
+    Measured by the consumer who asked, over 120 MiB of their own text: 5.9 s
+    at preset 0 against 24.5 s at preset 3, for 30.0% of the original against
+    26.1%.
+    """
+    corpus = _small_corpus(tmp_path / "md")
+
+    quick = archive.pack(corpus, tmp_path / "quick.mdcx", "k", preset=0)
+    dense = archive.pack(corpus, tmp_path / "dense.mdcx", "k", preset=9)
+
+    assert quick["compression_preset"] == 0
+    assert dense["compression_preset"] == 9
+    assert quick["bytes_compressed"] >= dense["bytes_compressed"]
+
+
+def test_the_preset_overrides_fast(tmp_path):
+    """Two ways of saying the same thing need an order, or the caller is
+    guessing which one won."""
+    corpus = _small_corpus(tmp_path / "md")
+
+    written = archive.pack(corpus, tmp_path / "c.mdcx", "k",
+                           fast=True, preset=6)
+
+    assert written["compression_preset"] == 6
+
+
+def test_without_a_preset_fast_still_decides(tmp_path):
+    """Nothing that worked stops working."""
+    corpus = _small_corpus(tmp_path / "md")
+
+    quick = archive.pack(corpus, tmp_path / "f.mdcx", "k", fast=True)
+    dense = archive.pack(corpus, tmp_path / "s.mdcx", "k")
+
+    assert quick["compression_preset"] == archive.FAST_PRESET
+    assert dense["compression_preset"] == archive.PRESET
+
+
+def test_a_level_that_does_not_exist_is_refused(tmp_path):
+    """Clamping to 9 would leave a caller measuring a level they did not
+    choose, and believing they had."""
+    corpus = _small_corpus(tmp_path / "md")
+
+    for asked in (-1, 12):
+        try:
+            archive.pack(corpus, tmp_path / f"c{asked}.mdcx", "k", preset=asked)
+        except ValueError as refused:
+            assert str(asked) in str(refused)
+        else:
+            raise AssertionError(f"preset={asked} was accepted")
+
+
+def test_any_level_writes_a_package_any_reader_opens(tmp_path):
+    """The level travels inside the XZ stream, which is what makes this a
+    choice for the caller rather than a change to the format."""
+    corpus = _small_corpus(tmp_path / "md")
+
+    archive.pack(corpus, tmp_path / "c.mdcx", "k", preset=0)
+    connection, _ = archive.open_package(tmp_path / "c.mdcx", "k")
+
+    assert archive.query(connection, "paragraph", limit=2)
