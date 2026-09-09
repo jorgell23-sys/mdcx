@@ -4,9 +4,9 @@
 
 [![PyPI](https://img.shields.io/pypi/v/mdcx)](https://pypi.org/project/mdcx/) [![Python](https://img.shields.io/pypi/pyversions/mdcx)](https://pypi.org/project/mdcx/) [![tests](https://github.com/jorgell23-sys/mdcx/actions/workflows/tests.yml/badge.svg)](https://github.com/jorgell23-sys/mdcx/actions/workflows/tests.yml) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22015991.svg)](https://doi.org/10.5281/zenodo.22015991)
 
-Convert a document collection to Markdown, package it into a single encrypted
-archive with its search index and provenance, and serve it to agents over the
-Model Context Protocol.
+Convert a document collection to verified Markdown, package it into a single
+encrypted archive with its search index and provenance, and serve it to agents
+over the Model Context Protocol.
 
 ## Contents
 
