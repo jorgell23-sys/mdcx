@@ -51,6 +51,25 @@ RECOVERY_LINE_RATIO = 0.5
 def _yaml_escape(value: str) -> str:
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
+# The marker every engine writes to say which page a passage came from.
+_PAGE_MARKER = re.compile(r"<!--\s*page\s+(\d+)\s*-->")
+
+
+def _renumber_pages(markdown: str, first_page: int) -> str:
+    """Restate page markers in the numbering of the document, not the extract.
+
+    A chapter is converted from a PDF cut out of the book, and a cut PDF starts
+    at page one. The text is unaffected either way; what is lost is the one
+    thing the marker exists to carry, and it is lost silently -- two passages
+    of the same book both saying page 3, and a citation that leads nowhere.
+    """
+    if first_page <= 1:
+        return markdown
+    offset = first_page - 1
+    return _PAGE_MARKER.sub(
+        lambda m: f"<!-- page {int(m.group(1)) + offset} -->", markdown)
+
+
 def _front_matter(job: Job, record: dict) -> str:
     v = record["verification"]
     lines = [
@@ -72,6 +91,16 @@ def _front_matter(job: Job, record: dict) -> str:
     ]
     if record.get("pages"):
         lines.append(f"pages: {record['pages']}")
+    # Where this chapter sits in the document it was cut from. The chapter is
+    # converted from an extract, whose pages are numbered from one, so without
+    # these two numbers a passage of page 3 of the extract and a passage of
+    # page 3 of another chapter both claim to be page 3 -- and whoever follows
+    # the citation to the original finds neither. The page markers inside the
+    # text carry the document's own numbering for the same reason; these say it
+    # once, where a reader looks first.
+    if job.is_chapter and job.page_range:
+        lines.append(f"first_page: {job.page_range[0]}")
+        lines.append(f"last_page: {job.page_range[1]}")
     # A sample says so, and says what it is a sample of. Without both numbers a
     # sample of twenty pages of a book of six hundred is, by construction, a
     # truncated document that looks whole.
@@ -630,6 +659,13 @@ def _convert_one(job: Job, output_root: Path, use_docling: bool = True,
                 "content comes from optical recognition only; there is no original "
                 "text to verify it against. Visual review required."
             )
+
+    if job.is_chapter and job.page_range:
+        # The extract's pages are numbered from one; the document's are not.
+        # Renumbered here rather than inside each engine because every engine
+        # writes the same marker, and a chapter is the only thing whose pages
+        # are not the document's.
+        best_md = _renumber_pages(best_md, job.page_range[0])
 
     target = output_root / job.rel_target
     target.parent.mkdir(parents=True, exist_ok=True)

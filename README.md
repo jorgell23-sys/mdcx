@@ -162,7 +162,12 @@ An interrupted run resumes: work already recorded is not repeated unless
 `--force` is given.
 
 Long documents are split into chapters, each converted independently, with an
-index document recording the correspondence to the original. `--sample-pages`
+index document recording the correspondence to the original. A chapter is
+converted from an extract of the document, and its page markers state the
+document's own numbering rather than the extract's; its front matter declares
+`first_page` and `last_page`, so a passage can be cited back to the page it came
+from. The index document declares `type: document_index` and holds no text of
+its own — the text is in the chapters. `--sample-pages`
 converts a spread sample instead of the whole document; the front matter records
 both the pages taken and the document's total, so a sample is not mistaken for a
 short document.

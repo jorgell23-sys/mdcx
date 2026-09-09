@@ -12,6 +12,23 @@ log.
 
 ## [Unreleased]
 
+## [1.29.0] — 2026-09-09
+
+### Fixed
+
+- A chapter stated the page numbers of the extract it was converted from rather
+  than those of the document. Every chapter began at page 1: measured by a
+  consumer on a 95-page paper, the first three chapters all opened at `page 1`,
+  and the second begins at page 18 of the paper. No text was affected; what was
+  lost is the one thing the marker carries, and it was lost silently -- two
+  passages of the same book both claiming page 3, and a citation leading
+  nowhere. The markers now state the document's numbering.
+
+### Added
+
+- A chapter declares `first_page` and `last_page` in its front matter, so its
+  provenance can be read without counting markers.
+
 ## [1.28.0] — 2026-09-09
 
 ### Added
@@ -356,7 +373,8 @@ log.
 First public release: conversion with measured fidelity, the encrypted `.mdcx`
 container, lexical and dense retrieval, and the MCP server.
 
-[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.28.0...HEAD
+[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.29.0...HEAD
+[1.29.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.29.0
 [1.28.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.28.0
 [1.27.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.27.0
 [1.26.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.26.0
