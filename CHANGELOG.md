@@ -12,6 +12,30 @@ log.
 
 ## [Unreleased]
 
+## [1.28.0] — 2026-09-09
+
+### Added
+
+- `pack(expressions=True)` and `mdcx pack --expressions`: an index of the
+  expressions the word rule discards. A lexical index is built out of words,
+  and what tells one formula from another is punctuation. Measured by a
+  consumer over 25.1 million passages, `pq | b(b+p+q)` and `pq | b(b-p-q)` --
+  one sign apart, one true and one false -- retrieved the same 400 passages and
+  the same first document; asked on their own they return no terms at all and
+  retrieve nothing. With the index the statement is found and its negation is
+  not. Lookup is exact, since anything looser returns the confusion the index
+  exists to remove. Nothing is gained on prose, which yields no expressions.
+- `pack(quotes="boundary")` and `mdcx pack --quotes`. A quoted phrase often
+  starts in one passage and ends in the next, and the package has answered that
+  by keeping the whole normalised text of every document -- a second copy of
+  the corpus, measured by a consumer at a third of one package. The other shape
+  indexes the join between consecutive passages in a contentless table, and
+  finds a quotation spanning one cut. Measured here on passages of about a
+  hundred words: the database falls 38% and the compressed package 21%. What it
+  cannot do is find a quotation longer than the join, which the whole copy can,
+  so it is a choice between two costs; the header records which shape a package
+  has.
+
 ## [1.27.0] — 2026-09-09
 
 ### Fixed
@@ -332,7 +356,8 @@ log.
 First public release: conversion with measured fidelity, the encrypted `.mdcx`
 container, lexical and dense retrieval, and the MCP server.
 
-[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.27.0...HEAD
+[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.28.0...HEAD
+[1.28.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.28.0
 [1.27.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.27.0
 [1.26.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.26.0
 [1.25.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.25.0

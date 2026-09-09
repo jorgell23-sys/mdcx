@@ -332,12 +332,68 @@ def _date_of(document: dict, supplied: dict[str, tuple[str, str]],
     return None, None
 
 
+# How a package answers a quotation that runs past the end of a passage.
+#
+# "document" keeps the whole normalised text of every document and looks in it.
+# There is no limit to how long a quotation may be, and it costs a second copy
+# of the corpus -- measured on one package, 257.4 MB beside the 257.3 MB of the
+# passages, a third of the file.
+#
+# "boundary" indexes the join instead: the tail of each passage against the head
+# of the next, in a contentless FTS5 table that keeps the index and not the
+# text. A quotation that straddles one cut is found by a phrase match, which is
+# what the whole copy was being read for. What it cannot do is find one longer
+# than the join, which the whole copy can -- so this is a choice, not a
+# replacement.
+QUOTE_STRATEGIES = ("document", "boundary")
+
+# How much of each side of a cut the join carries. 250 characters is about forty
+# words, so a quotation of some eighty words spanning one cut fits whole.
+EDGE_CHARACTERS = 250
+
+
+def _build_edges(connection: sqlite3.Connection) -> int:
+    """Index the join between each passage and the next of its document.
+
+    Contentless, because the joined text is not a passage and must never be
+    returned as one: what a match gives back is the rowid, which is the id of
+    the passage that *opens* the join and does exist in the corpus.
+    """
+    from . import search as B
+
+    connection.execute(
+        "CREATE VIRTUAL TABLE passage_edge_fts USING fts5(txt, content='', "
+        "tokenize=\"unicode61 categories 'L* N* Co Mn Mc'\")")
+    rows = connection.execute(
+        "SELECT id, text, LEAD(text) OVER (PARTITION BY document_id "
+        "ORDER BY position) FROM passage").fetchall()
+    joins = [(identifier,
+              B._normalize(head[-EDGE_CHARACTERS:] + " " + tail[:EDGE_CHARACTERS]))
+             for identifier, head, tail in rows if tail]
+    connection.executemany(
+        "INSERT INTO passage_edge_fts(rowid, txt) VALUES (?,?)", joins)
+    return len(joins)
+
+
+def _has_edges(connection: sqlite3.Connection) -> bool:
+    """Whether this package indexed the joins between passages."""
+    try:
+        with _CONNECTION_LOCK:
+            return bool(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='passage_edge_fts'").fetchone())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _build_database(folder: Path, into: Path, semantic: bool = False,
                     reuse: dict | None = None,
                     focus: list[str] | None = None,
                     dates: dict | None = None,
                     use_mtime: bool = False,
-                    shapes: bool = False) -> tuple[int, dict]:
+                    shapes: bool = False,
+                    quotes: str = "document",
+                    expressions: bool = False) -> tuple[int, dict]:
     """Build the database with documents, index and provenance, into a file.
 
     Written out rather than handed back as bytes. `serialize()` returns the
@@ -394,9 +450,15 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
             -- from an invented date.
             dated TEXT,
             dated_from TEXT,
-            -- Normalised text of the whole document. Literal matching runs here rather
-            -- than over passages, because a quoted phrase often crosses the boundary
-            -- between paragraphs.
+            -- Normalised text of the whole document. Literal matching runs here
+            -- rather than over passages, because a quoted phrase often crosses
+            -- the boundary between paragraphs.
+            --
+            -- It is a second copy of the corpus, and on a large collection that
+            -- is what it costs: measured on one package, 257.4 MB against the
+            -- 257.3 MB of the passages themselves, a third of the file. NULL
+            -- where the package indexes the boundaries instead -- see
+            -- `passage_edge_fts` and the `quotes` argument to `pack`.
             normalized_text TEXT
         );
         CREATE TABLE passage (
@@ -496,7 +558,8 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
         connection.execute(
             "INSERT INTO document VALUES (?,?,?,?,?,?,?,?,?,?)",
             (i, d["name"], d["pseudopath"], d["source"], d["folder"], archive, status,
-             d.get("dated"), d.get("dated_from"), d["norm"]))
+             d.get("dated"), d.get("dated_from"),
+             d["norm"] if quotes == "document" else None))
         for j, block in enumerate(d["blocks"] if "blocks" in d else _split_blocks(text)):
             if not block.strip():
                 continue
@@ -551,6 +614,15 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
     # errors, which a corpus that never went through optical recognition does
     # not have. Charging every corpus for what serves some of them is the thing
     # this project keeps declining to do.
+    with phase("edges"):
+        edges = _build_edges(connection) if quotes == "boundary" else 0
+
+    with phase("expressions"):
+        from . import expressions as _expressions
+
+        summary_expressions = (_expressions.build(connection)
+                               if expressions else {})
+
     with phase("shapes"):
         summary_shape = shapekey.build(connection) if shapes else {}
     avg_length = sum(lengths) / len(lengths) if lengths else 60.0
@@ -563,6 +635,12 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
     language, confidence = B.detect_language(sample)
 
     summary = {
+        # How this package answers a quotation that runs past a passage, and
+        # what that cost. A reader comparing two packages needs to know which
+        # of the two shapes they have.
+        "quotes": quotes,
+        **({"passage_edges": edges} if edges else {}),
+        **summary_expressions,
         "documents": len(docs),
         "language": language,
         "language_confidence": round(confidence, 3),
@@ -699,7 +777,9 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
          dates: dict | None = None, use_mtime: bool = False,
          fast: bool = False, shapes: bool = False,
          preset: int | None = None,
-         compression: str = DEFAULT_COMPRESSION) -> dict:
+         compression: str = DEFAULT_COMPRESSION,
+         quotes: str = "document",
+         expressions: bool = False) -> dict:
     """Write the .mdcx file and return its figures.
 
     `preset` is the LZMA level, 0 to 9, and overrides `fast` when given. The
@@ -713,6 +793,13 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
 
     The preset travels inside the compressed stream, so a package written at
     any level is opened by any reader.
+
+    `quotes` decides how a quotation that runs past the end of a passage is
+    found: "document" keeps the whole normalised text of every document, which
+    has no length limit and costs a second copy of the corpus; "boundary"
+    indexes the join between consecutive passages instead, which finds a
+    quotation spanning one cut and not one longer than the join. Measured on
+    one package, that copy was 257.4 MB of a 783.8 MB database.
 
     `compression` names what compresses the body: "lzma" or "zstd". The header
     records it, and a package is opened by what its header names, so writing
@@ -772,7 +859,8 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
     bytes_database, summary = _build_database(folder, built, semantic=semantic,
                                               reuse=reuse, focus=focus,
                                               dates=dates, use_mtime=use_mtime,
-                                              shapes=shapes)
+                                              shapes=shapes, quotes=quotes,
+                                              expressions=expressions)
     t_base = time.perf_counter() - t0
 
     # An empty package is written without complaint and fails only when queried,
@@ -802,6 +890,10 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         raise ValueError(f"preset must be between 0 and 9, not {preset}")
     else:
         level = preset
+    if quotes not in QUOTE_STRATEGIES:
+        raise ValueError(
+            f"quotes must be one of {', '.join(QUOTE_STRATEGIES)}, "
+            f"not {quotes!r}")
     if compression not in COMPRESSORS:
         raise ValueError(
             f"compression must be one of {', '.join(COMPRESSORS)}, "
@@ -825,6 +917,9 @@ def pack(folder: Path, target: Path, key: str, issuer: str = "",
         "encryption": "AES-256-GCM",
         "key_derivation": {"algorithm": "scrypt", "n": SCRYPT_N, "r": SCRYPT_R, "p": SCRYPT_P},
         "compression": compression,
+        # In the header because it decides what a reader can ask of the
+        # package, and the header is read without the key.
+        "quotes": summary.get("quotes", "document"),
         "salt": salt.hex(),
         "nonce": nonce.hex(),
         "body_digest": body_digest,
@@ -1831,6 +1926,88 @@ def document_column(connection: sqlite3.Connection) -> str:
     return name
 
 
+def _documents_holding(connection: sqlite3.Connection, needle: str,
+                       names: list[str]) -> list[str]:
+    """Which of these documents contain this phrase, read from their own text.
+
+    Asked of the documents already in the ranking, and of no others. This
+    branch reorders them; a document it found outside the ranking could not
+    appear in the reply, so reading the whole corpus to find one was work with
+    nowhere to go -- and `normalized_text` is the corpus again.
+    """
+    found: list[str] = []
+    with _CONNECTION_LOCK:
+        for start in range(0, len(names), _TERMS_PER_STATEMENT):
+            batch = names[start:start + _TERMS_PER_STATEMENT]
+            placeholders = ",".join("?" * len(batch))
+            found.extend(
+                name for (name, text) in connection.execute(
+                    "SELECT name, normalized_text FROM document "
+                    f"WHERE name IN ({placeholders})", batch)
+                if text and needle in text)
+    return found
+
+
+def _documents_joining(connection: sqlite3.Connection, needle: str) -> list[str]:
+    """Which documents hold this phrase across a cut, by the indexed join.
+
+    The rowid of a match is the passage that opens the join, which is a passage
+    of the corpus; the joined text is not, and is never given back as one.
+
+    A phrase this way is found by index rather than by reading, so unlike the
+    branch above it does not need to be told which documents to look at.
+    """
+    try:
+        with _CONNECTION_LOCK:
+            rows = connection.execute(
+                "SELECT d.name FROM passage_edge_fts e "
+                "JOIN passage p ON p.id = e.rowid "
+                f"JOIN document d ON d.id = p.{document_column(connection)} "
+                "WHERE passage_edge_fts MATCH ?",
+                ['"' + needle.replace('"', "") + '"']).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [name for (name,) in rows]
+
+
+def _by_expression(connection: sqlite3.Connection, stated: dict,
+                   limit: int, only: str | None) -> list[dict]:
+    """The passages that state these expressions, as a reply.
+
+    Ranked by how many of the question's expressions a passage carries, which
+    is the whole of what can be said about a match that has no words to weigh.
+    """
+    per_passage: dict[int, list[str]] = {}
+    for expression, passages in stated.items():
+        for identifier in passages:
+            per_passage.setdefault(identifier, []).append(expression)
+    if not per_passage:
+        return []
+
+    ids = sorted(per_passage, key=lambda i: -len(per_passage[i]))[:limit]
+    marks = ",".join("?" * len(ids))
+    sql = ("SELECT p.id, d.name, d.pseudopath, d.source, p.text "
+           "FROM passage p JOIN document d ON d.id = p."
+           + document_column(connection)
+           + f" WHERE p.id IN ({marks})")
+    params: list = list(ids)
+    if only:
+        sql += " AND d.source = ?"
+        params.append(only.upper())
+    with _CONNECTION_LOCK:
+        rows = connection.execute(sql, params).fetchall()
+
+    order = {identifier: n for n, identifier in enumerate(ids)}
+    rows.sort(key=lambda r: order.get(r[0], len(order)))
+    return [{"document": r[1], "pseudopath": r[2], "source": r[3],
+             "passage": r[4],
+             # Named apart from a lexical score, which it is not: nothing was
+             # weighted by rarity because there were no words to weigh.
+             "score": float(len(per_passage[r[0]])),
+             "terms": sorted(per_passage[r[0]]),
+             "matched_by": "expression"} for r in rows]
+
+
 def _run_match(connection: sqlite3.Connection, expr: str, limit: int,
               only: str | None) -> list[dict]:
     fechas = ", d.dated, d.dated_from" if has_dates(connection) else ""
@@ -1899,8 +2076,26 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
 
     asked = B.searchable_terms(B._normalize(effective))
     terms = B.expand_terms(list(asked), _corpus_language(connection))
+
+    # The expressions of the question, where the package indexed them. Word
+    # matching discards the symbols, so `pq | b(b+p+q)` and `pq | b(b-p-q)`
+    # reduce to the same terms -- and asked on their own, to none at all. A
+    # corpus of mathematics asked about a statement is asking about exactly
+    # what the tokenizer removed.
+    from . import expressions as _expressions
+
+    stated: dict = {}
+    if _expressions.has_index(connection):
+        wanted = _expressions.extract(effective)
+        if wanted:
+            with _CONNECTION_LOCK:
+                stated = _expressions.passages_stating(connection, wanted)
+
     if not terms:
-        return []
+        # Nothing to match on words. If the question carried an expression the
+        # corpus states, that is the answer; before this it was silence.
+        return (_by_expression(connection, stated, limit, only)
+                if stated else [])
     distinct_terms = set(terms)
 
     expr = " OR ".join(f'"{B.segment_for_index(t)}"' for t in distinct_terms)
@@ -2004,17 +2199,11 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
         #
         # It is not a small saving at scale: `normalized_text` is the corpus
         # again, 257 MB in one package of a collection whose whole is 17 GB.
-        names = [passages[0]["document"] for _score, passages in ranking]
-        preferred = []
-        with _CONNECTION_LOCK:
-            for start in range(0, len(names), _TERMS_PER_STATEMENT):
-                batch = names[start:start + _TERMS_PER_STATEMENT]
-                placeholders = ",".join("?" * len(batch))
-                preferred.extend(
-                    n for (n, t) in connection.execute(
-                        "SELECT name, normalized_text FROM document "
-                        f"WHERE name IN ({placeholders})", batch)
-                    if t and needle in t)
+        preferred = (_documents_joining(connection, needle)
+                     if _has_edges(connection)
+                     else _documents_holding(connection, needle,
+                                             [passages[0]["document"]
+                                              for _score, passages in ranking]))
         if preferred:
             position = {d: i for i, d in enumerate(preferred)}
             ranking.sort(key=lambda pair: (position.get(pair[1][0]["document"], len(position)),
@@ -2777,6 +2966,22 @@ def main() -> int:
                         "the bytes; a package meant to be distributed is the "
                         "opposite case. The level travels inside the stream, "
                         "so any reader opens what any level wrote")
+    e.add_argument("--expressions", action="store_true",
+                   help="index the expressions the word rule discards. A "
+                        "lexical index is built out of words, and what makes "
+                        "one formula differ from another is punctuation: "
+                        "`b(b+p+q)` and `b(b-p-q)` reduce to the same terms, "
+                        "and asked on their own to none at all. Worth it for a "
+                        "corpus that is interrogated by statement, and nothing "
+                        "for prose")
+    e.add_argument("--quotes", choices=QUOTE_STRATEGIES, default="document",
+                   help="how a quotation that runs past the end of a passage "
+                        "is found. `document` keeps the whole normalised text "
+                        "of every document, which has no length limit and is a "
+                        "second copy of the corpus; `boundary` indexes the "
+                        "join between consecutive passages, which finds a "
+                        "quotation spanning one cut and not one longer than "
+                        "the join")
     e.add_argument("--compression", choices=COMPRESSORS,
                    default=DEFAULT_COMPRESSION,
                    help="what compresses the body. The header records it and a "
@@ -2865,7 +3070,8 @@ def main() -> int:
                  dates=read_dates(Path(args.dates)) if args.dates else None,
                  use_mtime=args.date_from_mtime, fast=args.fast,
                  shapes=args.shapes, preset=args.preset,
-                 compression=args.compression)
+                 compression=args.compression, quotes=args.quotes,
+                 expressions=args.expressions)
         print(f"Packed: {args.target}")
         print(f"  documents {r['documents']}   passages {r['passages']}"
               + (f"   attachments {r['attachments']}" if r.get("attachments") else ""))

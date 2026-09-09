@@ -21,6 +21,8 @@ over the Model Context Protocol.
 - [Calibration](#calibration)
 - [Vocabulary](#vocabulary)
 - [Transcription recovery](#transcription-recovery)
+- [Expressions](#expressions)
+- [Quotations across a cut](#quotations-across-a-cut)
 - [Attachments](#attachments)
 - [Dates](#dates)
 - [Correspondence](#correspondence)
@@ -197,6 +199,8 @@ mdcx pack --output ./Documents_md --target corpus.mdcx --key "passphrase"
 | `--dates FILE` | supply publication dates; see [Dates](#dates) |
 | `--date-from-mtime` | fall back to file modification time |
 | `--shapes` | build the transcription-recovery index |
+| `--expressions` | index the expressions the word rule discards |
+| `--quotes document\|boundary` | how a quotation across a cut is found |
 | `--reuse PACKAGE` | reuse vectors from an existing package |
 | `--issuer`, `--signing-key` | see [Signing](#signing) |
 | `--fast` | compress for speed rather than size |
@@ -499,6 +503,37 @@ their own startup.
 Handing a whole folder to `mdcx-convert` also amortises the load, at the cost of
 the ordering, per-document handling and failure isolation a queue provides.
 
+### Expressions
+
+A lexical index is built out of words, and the rule that decides what a word is
+discards the symbols. For prose that is correct. For a corpus interrogated by
+statement it removes the content: `pq | b(b+p+q)` and `pq | b(b-p-q)` differ by
+one sign and reduce to the same terms, and asked on their own they reduce to no
+terms at all and retrieve nothing.
+
+`--expressions` keeps them beside the words, as their own index. A token that
+mixes symbols with alphanumerics is an expression; prose yields none. A question
+carrying an expression the corpus states is then answered by it, and one
+carrying an expression the corpus does not state is answered with nothing rather
+than with the passages that merely discuss the subject. Lookup is exact, since
+anything looser returns the confusion the index exists to remove.
+
+An expression containing a space is not recovered: deciding where a formula ends
+inside a sentence is a different problem, and guessing would fill the index with
+fragments of prose.
+
+### Quotations across a cut
+
+A quoted phrase often starts in one passage and ends in the next. `--quotes
+document`, the default, keeps the normalised text of every document and looks in
+it: there is no limit to how long a quotation may be, and it is a second copy of
+the corpus — measured on one package, a third of the file.
+
+`--quotes boundary` indexes the join between consecutive passages instead, in a
+table that keeps the index and not the text. A quotation spanning one cut is
+found by phrase match; one longer than the join is not, which the whole copy
+would still find. The header records which shape a package has.
+
 ## MCP server
 
 ```
@@ -661,6 +696,8 @@ pytest
 | `test_answer_quality.py` | calibration thresholds and the warning |
 | `test_dates.py` | dates, their provenance and the recency preference |
 | `test_shapekey.py` | transcription recovery and its boundaries |
+| `test_expressions.py` | statements the word rule cannot tell apart |
+| `test_quotations.py` | a quotation that crosses the cut between passages |
 | `test_sources_kit.py` | the source contract and its conformance check |
 | `test_card_sizing.py` | device detection, lane sizing and turns on the card |
 | `test_resident_output.py` | what the resident converter writes, chapters included |
