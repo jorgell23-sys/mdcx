@@ -150,6 +150,7 @@ document, together with an index of the run.
 | `--only PATTERN`, `--limit N` | restrict the run |
 | `--force` | ignore the cache and reconvert |
 | `--no-docling` | native engines only |
+| `--formulas` | transcribe formulas to LaTeX |
 | `--no-gpu` | do not use the device |
 | `--no-lossless` | do not write the backup JSON |
 | `--no-compact` | keep converter scaffolding in the Markdown |
@@ -176,6 +177,32 @@ short document.
 Without a limit one such document holds a worker for the length of the run.
 `--recycle-after` replaces a worker periodically, since abandoning a document
 does not stop the thread it started.
+
+### Formulas
+
+The text layer of a PDF does not carry the structure of a formula: the bar of a
+fraction is a drawn stroke, and a superscript is loose text on another line. A
+faithful extraction of that layer therefore renders a quotient as a single line.
+Nothing has gone wrong — the structure was never there to extract.
+
+`--formulas` transcribes the formulas to LaTeX, which means reading their image
+rather than their text. That is recognition rather than extraction: a different
+kind of claim about the document, and one that can be wrong in ways extraction
+cannot, so it is asked for rather than assumed. It needs the structured engine —
+`--no-docling` turns it off and the run says so — and a model that is fetched
+once with `docling-tools models download-hf-repo docling-project/CodeFormulaV2`;
+where the model is missing the run refuses at the start rather than failing on
+the first page that holds a formula.
+
+It is not free. Measured on one 20-page paper on this machine: 17.7 s without
+and 348.7 s with, for 56 transcribed formulas where the text layer yielded none.
+Prose gains nothing from it.
+
+The transcription is appended under its own heading rather than replacing the
+text. On that paper the structured engine transcribed the formulas and lost 11%
+of the words, while native extraction covered the text and carried no formula —
+so choosing between them gives up one of the two. The record reports how many
+were transcribed as `formulas`.
 
 ### Verification
 

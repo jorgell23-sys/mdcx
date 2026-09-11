@@ -594,6 +594,15 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="convert only the first N files")
     ap.add_argument("--force", action="store_true", help="ignore the cache and reconvert everything")
     ap.add_argument("--no-docling", action="store_true", help="use native engines only")
+    ap.add_argument("--formulas", action="store_true",
+                    help="transcribe formulas to LaTeX as well as reading "
+                         "their text. The text layer of a PDF does not carry "
+                         "the structure of a formula -- the bar of a fraction "
+                         "is a drawn stroke -- so a faithful extraction gives "
+                         "a quotient as one line. Recovering it means reading "
+                         "the image, which is recognition rather than "
+                         "extraction: it costs a model and time, and produces "
+                         "a transcription. Nothing on prose")
     ap.add_argument("--no-gpu", action="store_true",
                     help="do not use the GPU even if available (all work on CPU)")
     ap.add_argument("--no-lossless", action="store_true", help="do not write the backup JSON")
@@ -652,6 +661,32 @@ def main() -> int:
 
     if args.no_gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+    # Through the environment, which is how the workers are configured: they
+    # are separate processes and do not see `args`. Set rather than defaulted,
+    # so that asking for it on the command line overrides a variable left set
+    # from an earlier run.
+    if args.formulas:
+        os.environ["MDCX_FORMULAS"] = "1"
+        # The recogniser lives inside the structured engine, so asking for
+        # formulas without it is asking for nothing. Said rather than ignored:
+        # the consumer who asked for this converts with --no-docling, because
+        # the cheap path is many times faster on their material, and would have
+        # got exactly the same output with no indication why.
+        if args.no_docling:
+            print("Warning: --formulas needs the structured engine and "
+                  "--no-docling turns it off, so no formula will be "
+                  "transcribed. Drop --no-docling to use it.")
+        else:
+            # Settled before the run rather than on the first page that holds
+            # a formula. The converter builds without the model and fails when
+            # it meets one, once per document, from inside docling -- and mdcx
+            # pins the artifacts folder and works offline when it has local
+            # models, so nothing fetches it on the way past.
+            missing = engines.formula_model_missing()
+            if missing:
+                print(f"Cannot transcribe formulas: {missing}")
+                return 2
 
     use_docling = not args.no_docling and engines.docling_available()
     has_gpu = (not args.no_gpu) and engines.gpu_available()

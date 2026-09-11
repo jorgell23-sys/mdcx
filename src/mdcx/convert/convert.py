@@ -168,6 +168,47 @@ def _recovery_block(reference: str, markdown: str) -> tuple[str, int]:
         )
     return "".join(parts), len(recovered)
 
+# What a transcribed formula looks like in the Markdown docling writes.
+_FORMULA = re.compile(r"\$\$?[^$]{3,}?\$\$?", re.S)
+
+
+def _formula_appendix(transcribed: str, chosen: str) -> tuple[str, int]:
+    """The formulas of the structured reading, appended to the chosen text.
+
+    Two engines answer two different questions here and neither answers both.
+    Measured on a twenty-page paper: native extraction covered the text
+    entirely and carried no formula, while the structured engine transcribed
+    fifty-six and lost 11% of the words. Choosing between them means giving up
+    one of the two, and choosing the structured one quietly would lose text --
+    which is what the verification exists to prevent.
+
+    So nothing is given up. The reading that verified is kept, and the formulas
+    are appended with their own heading, the way the recovery appendix keeps
+    content an engine dropped. They are then in the document and findable, which
+    is what asking for them was for.
+
+    Appended only where they are not already there: when the structured engine
+    is itself the chosen reading, this would duplicate every one of them.
+    """
+    if not transcribed or chosen.count("$") > 4:
+        return "", 0
+    found = [m.group(0).strip() for m in _FORMULA.finditer(transcribed)]
+    found = [f for f in dict.fromkeys(found) if len(f) > 6]
+    if not found:
+        return "", 0
+    lines = [
+        "\n\n---\n\n",
+        "## Formulas\n\n",
+        "> Transcribed from the layout of the page by the structured engine, "
+        "because the text layer of a PDF does not carry the structure of a "
+        "formula. These are a transcription and not an extraction: they can be "
+        "wrong in ways the text above cannot. The reading kept above is the one "
+        "that verified against the original.\n\n",
+    ]
+    lines.extend(f"- `{f}`\n" for f in found)
+    return "".join(lines), len(found)
+
+
 def _is_drawing(job: Job, ref_meta: dict) -> bool:
     """Report whether the document behaves like a drawing rather than text."""
     if job.kind != "pdf":
@@ -347,6 +388,18 @@ def _good_enough(name: str, meta: dict, v: dict, score: tuple,
             and _nothing_left_to_recover(
                 list(attempts or []) + [{"coverage": v.get("coverage")}])):
         return True
+
+    # A native reading cannot carry what was asked for. Formulas are
+    # transcribed by the structured engine and by nothing else, so accepting a
+    # cheaper result because it covers the words hands back a document without
+    # them -- the model is paid for and the transcription never happens, which
+    # is indistinguishable from the switch not working.
+    #
+    # Measured: with the recognition asked for, a paper of fifty-six formulas
+    # came back resolved by `nativo`, verified at full coverage, and with no
+    # formula in it.
+    if engines.formulas_wanted() and not name.startswith("docling"):
+        return False
 
     if v.get("status") != "ok" or score[0] != 1 or score[1] <= 0:
         return False
@@ -553,6 +606,8 @@ def _convert_one(job: Job, output_root: Path, use_docling: bool = True,
     if ref_meta.get("pages"):
         record["pages"] = ref_meta["pages"]
 
+    formulas = engines.formulas_wanted()
+    transcribed = ""
     best_md = ""
     best_v: dict | None = None
     best_engine = "none"
@@ -568,6 +623,13 @@ def _convert_one(job: Job, output_root: Path, use_docling: bool = True,
             attempts.append({"engine": name, "error": f"{type(exc).__name__}: {exc}"})
             record["errors"].append(f"{name}: {type(exc).__name__}: {exc}")
             continue
+
+        # Kept where the recognition was asked for, because the engine that
+        # transcribes formulas is not always the engine that reads the text
+        # best -- and on the paper this was measured against it is not. See
+        # `_formula_appendix`.
+        if formulas and name.startswith("docling"):
+            transcribed = md
 
         t0 = time.time()
         v = verify.compare(reference, md)
@@ -636,6 +698,16 @@ def _convert_one(job: Job, output_root: Path, use_docling: bool = True,
             best_v["recovered"] = True
         spent_verifying += time.time() - t0
         record["seconds_verify"] = round(spent_verifying, 3)
+
+    # The formulas of the structured reading, where one was asked for and the
+    # reading that verified is not it. Appended after the verification, because
+    # they are not part of what was measured against the original -- they are a
+    # transcription of what the page shows, which the text layer never held.
+    if formulas:
+        appendix, how_many = _formula_appendix(transcribed, best_md)
+        if appendix:
+            best_md = best_md.rstrip() + appendix
+        record["formulas"] = how_many
 
     record["recovered_lines"] = recovered_lines
     record["verification"] = best_v

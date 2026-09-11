@@ -266,9 +266,60 @@ def docling_available() -> bool:
     except Exception:
         return False
 
-def _get_docling_converter(ocr: bool):
+def formulas_wanted() -> bool:
+    """Whether to transcribe formulas to LaTeX as well as read their text.
+
+    Off unless asked for. The text layer of a PDF does not carry the structure
+    of a formula -- the bar of a fraction is a drawn stroke and a superscript is
+    loose text on another line -- so a faithful extraction of it yields
+    `f(p, s) = Gamma(p + s) Gamma(s)Gamma(p + 1)` where the page shows a
+    quotient. Recovering the structure means reading the *image* of the formula,
+    which is recognition rather than extraction: a different kind of claim about
+    the document, and one that can be wrong in ways extraction cannot.
+
+    Measured by a consumer over 92 arXiv papers against their LaTeX source: a
+    formula written by a person matches the converted text in 0 to 7.6% of
+    cases. For the ~44,000 works they hold with no LaTeX source there is nothing
+    else to recover it from.
+
+    So it is offered, not assumed: it costs a model and time, it is worth
+    nothing on prose, and what it produces is a transcription.
+    """
+    raw = (_os.environ.get("MDCX_FORMULAS") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on", "si", "sí")
+
+
+# What docling calls the model that transcribes formulas, and where it keeps it.
+FORMULA_MODEL = "docling-project/CodeFormulaV2"
+
+
+def formula_model_missing() -> str | None:
+    """Why formulas cannot be transcribed here, or None if they can.
+
+    Checked before the run rather than discovered inside it. The converter
+    builds happily without the model and fails on the first page that holds a
+    formula, one document at a time, with a traceback from inside docling --
+    and mdcx sets `artifacts_path` and works offline when it has local models,
+    so the automatic download never happens.
+    """
+    artefacts = local_artifacts_path()
+    if artefacts is None:
+        return None      # nothing pinned: docling fetches what it needs
+    folder = Path(artefacts) / FORMULA_MODEL.replace("/", "--")
+    if folder.is_dir():
+        return None
+    return (f"the formula model is not in {artefacts}. Fetch it with\n"
+            f"    docling-tools models download-hf-repo {FORMULA_MODEL}\n"
+            "or unset MDCX_ARTIFACTS to let docling download what it needs.")
+
+
+def _get_docling_converter(ocr: bool, formulas: bool | None = None):
     """Crea (y cachea) un DocumentConverter. Cachear importa: construirlo carga modelos."""
-    key = f"ocr={ocr}"
+    if formulas is None:
+        formulas = formulas_wanted()
+    # The key carries every option that changes what the converter produces.
+    # One that did not would hand back a converter built for another question.
+    key = f"ocr={ocr},formulas={formulas}"
     if key in _CONVERTERS:
         return _CONVERTERS[key]
 
@@ -279,6 +330,10 @@ def _get_docling_converter(ocr: bool):
     popts = PdfPipelineOptions()
     popts.do_ocr = ocr
     popts.do_table_structure = True
+    # Transcribes the formulas it finds into LaTeX, leaving the rest of the
+    # text as it is. Docling carries the model; what this adds is the decision
+    # and the cost of it.
+    popts.do_formula_enrichment = formulas
     accel = _accelerator_options()
     if accel is not None:
         popts.accelerator_options = accel

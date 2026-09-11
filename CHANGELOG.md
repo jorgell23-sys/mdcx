@@ -12,6 +12,36 @@ log.
 
 ## [Unreleased]
 
+## [1.31.0] — 2026-09-11
+
+### Added
+
+- `mdcx-convert --formulas` transcribes formulas to LaTeX. The text layer of a
+  PDF does not carry the structure of a formula -- the bar of a fraction is a
+  drawn stroke, a superscript is loose text on another line -- so a faithful
+  extraction renders a quotient as one line. Measured by a consumer over 92
+  arXiv papers against their LaTeX source: a formula written by a person matches
+  the converted text in 0 to 7.6% of cases. For works with no LaTeX source there
+  is nothing else to recover it from.
+
+  Recognition rather than extraction, so it is asked for and never assumed. It
+  needs the structured engine, and a model fetched once with `docling-tools
+  models download-hf-repo docling-project/CodeFormulaV2`; where the model is
+  absent the run refuses at the start rather than failing on the first page that
+  holds a formula, and asking for it together with `--no-docling` says so
+  instead of silently transcribing nothing.
+
+  Measured on one twenty-page paper here: 17.7 s and no formula without it,
+  348.7 s and 56 formulas with it.
+
+- The transcribed formulas are appended to the reading that verified, under
+  their own heading, rather than replacing it. On that paper the structured
+  engine transcribed the formulas and lost 11% of the words, while native
+  extraction covered the text and carried no formula: choosing between them
+  gives up one of the two, and choosing the structured reading quietly would
+  lose text, which is what the verification exists to prevent. The record
+  reports how many were transcribed as `formulas`.
+
 ## [1.30.0] — 2026-09-11
 
 ### Fixed
@@ -413,7 +443,8 @@ log.
 First public release: conversion with measured fidelity, the encrypted `.mdcx`
 container, lexical and dense retrieval, and the MCP server.
 
-[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.30.0...HEAD
+[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.31.0...HEAD
+[1.31.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.31.0
 [1.30.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.30.0
 [1.29.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.29.0
 [1.28.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.28.0
