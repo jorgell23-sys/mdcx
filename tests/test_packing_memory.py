@@ -153,13 +153,30 @@ def test_the_language_is_still_detected(tmp_path):
     assert written["language"] == "en"
 
 
-def test_reading_is_still_timed(tmp_path):
+def test_reading_is_charged_to_reading(tmp_path, monkeypatch):
     """Reading is no longer a stage that ends before the next begins, so timing
     it by wrapping the call would report nought and charge the time to
-    inserting -- worse than not reporting it."""
-    folder = _corpus(tmp_path, documents=20)
+    inserting -- worse than not reporting it.
 
+    Measured against a reader that is deliberately slow rather than against the
+    clock: on a fast machine a small corpus is read in less than the millisecond
+    the breakdown rounds to, and the test would be measuring the machine.
+    """
+    import time
+
+    from mdcx import search as B
+
+    folder = _corpus(tmp_path, documents=6)
+    real = B.iter_documents
+
+    def slowly(root):
+        for document in real(root):
+            time.sleep(0.02)
+            yield document
+
+    monkeypatch.setattr(B, "iter_documents", slowly)
     written = archive.pack(folder, tmp_path / "c.mdcx", "k")
 
     phases = written["seconds_index_by_phase"]
-    assert phases["read"] > 0.0, "reading is reported as free"
+    assert phases["read"] >= 6 * 0.02 * 0.8, (
+        "the time spent reading was charged somewhere else")
