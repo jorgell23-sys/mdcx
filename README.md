@@ -475,9 +475,11 @@ Compression and encryption are properties of the whole file, so they cost the sa
 whether one document was added or the corpus rebuilt. `pack` reports
 `seconds_seal` so a caller writing frequently can decide how often to write.
 
-The database is written out as it is built and then compressed, encrypted and
-hashed in one pass over it, in blocks. The peak memory of writing a package is
-therefore set by the block rather than by the size of the corpus.
+The database is built in the file it will be written to, and the documents are
+read into it one at a time; it is then compressed, encrypted and hashed in one
+pass, in blocks. The peak memory of writing a package is therefore set by the
+block rather than by the size of the corpus — measured over a corpus and one
+four times larger, the peak rose by two per cent.
 
 ## Resident conversion
 
@@ -681,8 +683,13 @@ that reads one checks first, so an older package continues to answer.
 - A package is decrypted into memory in full. A corpus larger than available
   memory is held as several packages queried as one, and the server opens each
   only when a query reaches it; `info` reports which are open and what they
-  hold. Writing a package does not have this bound: it is built and sealed in
-  blocks.
+  hold. Writing a package does not have this bound: it is built in the target
+  file and sealed in blocks.
+- Serving several packages, the lexical scores are computed against the
+  packages taken together, so they can be ordered against one another. A caller
+  using `archive.query` directly on several packages should pass the same
+  `corpus` to all of them — `corpus_statistics_over` gathers it — or the scores
+  are on as many scales as there are packages.
 - Calibration thresholds are measured per corpus. A package built before that
   measurement existed is judged by fixed thresholds.
 

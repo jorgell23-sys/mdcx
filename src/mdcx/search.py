@@ -206,8 +206,24 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", t)
 
 def load_documents(output_root: Path) -> list[dict]:
-    """Read the Markdown files of an output folder together with their provenance."""
-    docs = []
+    """Read the Markdown files of an output folder together with their provenance.
+
+    The whole folder at once. `iter_documents` is the same reading one document
+    at a time, which is what packing uses: each document is held twice here --
+    its text and its normalised form -- so a list of them is two copies of the
+    corpus before anything has been written.
+    """
+    return list(iter_documents(output_root))
+
+
+def iter_documents(output_root: Path):
+    """The same documents, yielded one at a time and not kept.
+
+    A corpus of 4.17 GiB is 8.3 GiB the moment it is a list, and that is before
+    the database it is being read into. Measured by a consumer on a twelfth of
+    their corpus: 16.3 GB of resident memory, which extrapolates past the
+    machine.
+    """
     for p in sorted(output_root.rglob("*.md")):
         rel = p.relative_to(output_root)
         parts = rel.parts
@@ -229,7 +245,7 @@ def load_documents(output_root: Path) -> list[dict]:
             continue
         body = text.split("---", 2)[-1] if text.startswith("---") else text
         front = text.split("---", 2)[1] if text.startswith("---") else ""
-        docs.append({
+        yield {
             "path": p,
             "front_matter": front,
             "rel": rel.as_posix(),
@@ -239,8 +255,7 @@ def load_documents(output_root: Path) -> list[dict]:
             "folder": rel.parent.as_posix(),
             "text": body,
             "norm": _normalize(body),
-        })
-    return docs
+        }
 
 def load_records(path: Path) -> list[dict]:
     """Read documents from a JSONL file, one record per line.

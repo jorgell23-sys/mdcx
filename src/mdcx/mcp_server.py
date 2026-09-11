@@ -576,7 +576,7 @@ def search_packages(query: str, limit: int = 5,
 
     packages = _packages_worth_asking(configured, query)
 
-    def labelled(package) -> list[dict]:
+    def labelled(package, corpus=None) -> list[dict]:
         """Results carry the package they came from, since several are served.
 
         A list rather than a generator: the note about the preference is only
@@ -587,7 +587,7 @@ def search_packages(query: str, limit: int = 5,
         one: dict = {}
         found = archive.query(package["connection"], query, limit=limit,
                               only=only, mode=_mode_for(package, query),
-                              prefer=prefer, notes=one)
+                              prefer=prefer, notes=one, corpus=corpus)
         collected.append(one)
         return [dict(item, package=package["name"]) for item in found]
 
@@ -596,19 +596,35 @@ def search_packages(query: str, limit: int = 5,
         _merge_notes(collected, notes)
         return answer
 
-    from .semantic import fuse
+    # Scored against the packages taken together, not each against its own.
+    #
+    # BM25 weighs a term by how rare it is in the corpus the score is computed
+    # over, so the same passage scores differently in two packages and the
+    # numbers cannot be ordered together. Merging by reciprocal rank does not
+    # rescue it either: the keys carry the package name, so no item appears in
+    # two lists, every list contributes 1/(k+1) to its own first place, and the
+    # order of the reply becomes the order the packages happen to be listed in.
+    #
+    # Measured by a consumer serving 66 packages: the first four results came
+    # from the first four packages configured -- textbooks that declared the
+    # query's terms unknown -- while seven packages that knew every term, the
+    # ones actually holding the subject, appeared nowhere.
+    from . import archive as _archive
 
-    by_key: dict = {}
-    item_lists: list[list] = []
+    terms = _archive.terms_of(query)
+    corpus = _archive.corpus_statistics_over(
+        [p["connection"] for p in packages], terms) if terms else None
+
+    everything: list[dict] = []
     for package in packages:
-        items = []
-        for item in labelled(package):
-            key = (package["name"], item["document"], item["passage"][:120])
-            by_key[key] = item
-            items.append(key)
-        item_lists.append(items)
+        everything.extend(labelled(package, corpus=corpus))
     _merge_notes(collected, notes)
-    return [by_key[c] for c in fuse(item_lists)[:limit]]
+
+    # One scale, so the score is the order. Ties keep the order the packages
+    # were read in, which is arbitrary and is now only a tiebreak rather than
+    # the ranking itself.
+    everything.sort(key=lambda item: -float(item.get("score") or 0.0))
+    return everything[:limit]
 
 
 def create_server():

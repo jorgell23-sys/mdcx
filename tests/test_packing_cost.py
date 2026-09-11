@@ -102,16 +102,25 @@ def test_nothing_holds_the_whole_corpus_any_more():
     assert "_seal(" in body
 
 
-def test_the_database_is_written_out_rather_than_serialised():
-    """`serialize()` returns the whole database as one object beside the one
-    already in memory. Copying it out page by page is the same bytes without
-    the second copy."""
+def test_the_database_is_never_a_second_copy_of_itself():
+    """Three steps, each one copy fewer.
+
+    It was serialised into one object beside the one already in memory; then
+    copied out page by page, which removed that object; and now it is built in
+    the file it is going to be written to, which removes the in-memory database
+    as well -- the one a Python memory profile never saw, because it is C.
+
+    That last step also retired the copy, and had to: left in place, `backup`
+    became a backup of the file onto itself, which does not fail. It waits.
+    """
     source = (Path(__file__).resolve().parents[1]
               / "src" / "mdcx" / "archive.py").read_text(encoding="utf-8")
     body = source.split("def _build_database(", 1)[1].split("\ndef ", 1)[0]
 
-    assert "connection.backup(spill)" in body
+    assert "sqlite3.connect(into)" in body, "the database is not built in the file"
     assert "connection.serialize()" not in body
+    assert "connection.backup(" not in body
+    assert 'sqlite3.connect(":memory:")' not in body
 
 
 # --- The price of verifying, said ----------------------------------------------

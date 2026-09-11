@@ -12,6 +12,46 @@ log.
 
 ## [Unreleased]
 
+## [1.30.0] — 2026-09-11
+
+### Fixed
+
+- **An answer assembled from several packages was ordered by the order the
+  packages were configured in.** Reported by a consumer serving 66 packages: a
+  query whose material was in the harvest gave its first four places to
+  textbooks that declared the query's terms unknown, while seven packages that
+  knew every term appeared nowhere.
+
+  Their diagnosis was that BM25 scores from different packages are on different
+  scales. That is true, and is fixed below, but it was not what produced the
+  ordering: the merge was by reciprocal rank, which uses position and discards
+  the score, and the keys carry the package name so no item appears in two
+  lists. Every list contributed 1/(k+1) to its own first place, they all tied,
+  and a stable sort left the order the packages were read in.
+
+  Lexical scores are now computed against the packages taken together.
+  `corpus_statistics_over` gathers the passage count, the passage length
+  weighted by how much each package holds, and the document frequency of each
+  term; `query` takes them as `corpus` and weighs against them. `terms_of`
+  is published, since the statistics have to be gathered before any package is
+  asked.
+
+- **Packing no longer holds the corpus.** 1.25.0 removed the copies made after
+  the database existed; three things that grew with the corpus remained. The
+  database itself was built in `:memory:` -- the corpus again with its index on
+  top, and invisible to a Python memory profile because it is C. Every document
+  was read into a list first, and each holds its text and its normalised form,
+  so the list was two copies of the corpus before a row was written. And two
+  accumulators held one entry per passage.
+
+  The database is now built in the file it is written to, documents are read one
+  at a time, and the accumulators are a running sum and a batch. Measured over a
+  corpus and one four times larger: the peak rose two per cent.
+
+  Reported by a consumer who measured 16.3 GB on a twelfth of their corpus,
+  extrapolating past their machine -- which left them unable to build the single
+  package that would have removed the defect above.
+
 ## [1.29.0] — 2026-09-09
 
 ### Fixed
@@ -373,7 +413,8 @@ log.
 First public release: conversion with measured fidelity, the encrypted `.mdcx`
 container, lexical and dense retrieval, and the MCP server.
 
-[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.29.0...HEAD
+[Unreleased]: https://github.com/jorgell23-sys/mdcx/compare/v1.30.0...HEAD
+[1.30.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.30.0
 [1.29.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.29.0
 [1.28.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.28.0
 [1.27.0]: https://github.com/jorgell23-sys/mdcx/releases/tag/v1.27.0

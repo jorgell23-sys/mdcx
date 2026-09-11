@@ -149,6 +149,11 @@ def _decrypt(body: bytes, derived_key: bytes, nonce: bytes) -> bytes:
 # machine ran out, with no error, no warning and no parameter to ask for less.
 SEAL_BLOCK_BYTES = 8 * 1024 * 1024
 
+# How many token counts to write at once. Large enough that the round trips do
+# not dominate, small enough that the pending list is not a function of the
+# corpus.
+_TOKENS_BATCH = 20_000
+
 
 # What may compress a body, and what the header then says it was compressed
 # with. The header has always carried the name; until now it could only ever
@@ -428,12 +433,38 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
         finally:
             spent[name] = round(spent.get(name, 0.0) + clock() - started, 3)
 
-    with phase("read"):
-        docs = (B.load_records(folder) if folder.is_file()
-                else B.load_documents(folder))
-    connection = sqlite3.connect(":memory:")
+    def timed(source):
+        """The same documents, with the time spent producing them recorded.
+
+        Reading is no longer a stage that finishes before the next one starts,
+        so it can no longer be timed by wrapping a call. Without this the
+        breakdown would report reading at nought and quietly charge it to
+        inserting, which is worse than not reporting it.
+        """
+        while True:
+            started = clock()
+            try:
+                document = next(source)
+            except StopIteration:
+                spent["read"] = round(spent.get("read", 0.0) + clock() - started, 3)
+                return
+            spent["read"] = round(spent.get("read", 0.0) + clock() - started, 3)
+            yield document
+
+    docs = timed(iter(B.load_records(folder) if folder.is_file()
+                      else B.iter_documents(folder)))
+    # Built in the file rather than in memory.
+    #
+    # An in-memory database is the corpus again, with its index on top, and it
+    # is invisible to a Python memory profile because it is C -- which is why
+    # the first measurements of this looked better than the machine did.
+    # Nothing reads it between building and writing, so building it where it is
+    # going to be written removes the copy rather than moving it.
+    into.unlink(missing_ok=True)
+    connection = sqlite3.connect(into)
     connection.executescript("""
         PRAGMA journal_mode = OFF;
+        PRAGMA synchronous = OFF;
         CREATE TABLE document (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
@@ -535,18 +566,43 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
     """)
 
     supplied = dates or {}
-    # Set aside before anything is numbered, so document ids stay contiguous and
-    # the counts describe the corpus rather than the folder.
-    attachments = [d for d in docs if _is_attachment(d)]
-    docs = [d for d in docs if not _is_attachment(d)]
-    for i, d in enumerate(attachments, 1):
-        connection.execute("INSERT INTO attachment VALUES (?,?,?,?,?)",
-                           (i, d["name"], d["pseudopath"], d["folder"], d["text"]))
 
+    # Read and inserted one document at a time, and not kept.
+    #
+    # Every document held here carries its text and its normalised form, so a
+    # list of the corpus is two copies of it before the database has been
+    # written at all. Measured by a consumer on a twelfth of their corpus:
+    # 16.3 GB resident, which extrapolates to some 196 GB on a machine with 96.
+    # They could not build the one package that would have removed their other
+    # defect, which is the shape of the cost.
+    #
+    # What outlives a document is four things, and all four are small: the two
+    # counters, the dates, and enough text from the first few to tell what
+    # language the corpus is in. Attachments and documents are numbered by
+    # separate counters, since they are separate tables -- setting them aside
+    # first was only ever a way of keeping the document ids contiguous.
+    n_documents = 0
+    n_attachments = 0
     n_passages = 0
+    dated: list[str] = []
+    sample_parts: list[str] = []
     _t_passages = clock()
-    for i, d in enumerate(docs, 1):
+
+    for d in docs:
+        if _is_attachment(d):
+            n_attachments += 1
+            connection.execute(
+                "INSERT INTO attachment VALUES (?,?,?,?,?)",
+                (n_attachments, d["name"], d["pseudopath"], d["folder"],
+                 d["text"]))
+            continue
+        n_documents += 1
+        i = n_documents
         d["dated"], d["dated_from"] = _date_of(d, supplied, use_mtime)
+        if d.get("dated"):
+            dated.append(d["dated"])
+        if len(sample_parts) < 40:
+            sample_parts.append(d["text"][:4000])
         text = d["text"]
         archive = ""
         status = ""
@@ -588,19 +644,38 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
     spent["passages"] = round(clock() - _t_passages, 3)
 
     df_count: _Counter = _Counter()
-    lengths: list[int] = []
+    # The sum and the count, not one entry per passage: the mean is all that is
+    # wanted, and a list of twenty-five million integers is a list of
+    # twenty-five million integers. The token counts are written in batches for
+    # the same reason -- they were accumulated whole before a single row was
+    # updated.
+    total_length = 0
+    counted_passages = 0
     with phase("terms"):
-        counted: list[tuple[int, int]] = []
-        for identifier, text in connection.execute(
-                "SELECT id, text FROM passage"):
-            tk = _B.tokenize_text(_B._normalize(text))
-            lengths.append(len(tk))
-            counted.append((len(tk), identifier))
-            for t in set(tk):
-                if indexable_term(t):
-                    df_count[t] += 1
-        connection.executemany("UPDATE passage SET tokens = ? WHERE id = ?",
-                               counted)
+        # Read a page at a time and written between pages, never while a cursor
+        # is open on the table being written. Updating a table during a scan of
+        # it leaves SQLite free to show the scan rows it has already returned,
+        # and the loop stops being one pass over the corpus -- which is what it
+        # did: eight seconds became a quarter of an hour with no error.
+        last = 0
+        while True:
+            page = connection.execute(
+                "SELECT id, text FROM passage WHERE id > ? ORDER BY id "
+                "LIMIT ?", (last, _TOKENS_BATCH)).fetchall()
+            if not page:
+                break
+            batch: list[tuple[int, int]] = []
+            for identifier, text in page:
+                tk = _B.tokenize_text(_B._normalize(text))
+                total_length += len(tk)
+                counted_passages += 1
+                batch.append((len(tk), identifier))
+                for t in set(tk):
+                    if indexable_term(t):
+                        df_count[t] += 1
+            connection.executemany(
+                "UPDATE passage SET tokens = ? WHERE id = ?", batch)
+            last = page[-1][0]
     connection.executemany("INSERT INTO df VALUES (?,?)", df_count.items())
 
     # Built from `df` and not from the passages, so the sieve and the search
@@ -625,13 +700,13 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
 
     with phase("shapes"):
         summary_shape = shapekey.build(connection) if shapes else {}
-    avg_length = sum(lengths) / len(lengths) if lengths else 60.0
+    avg_length = (total_length / counted_passages) if counted_passages else 60.0
 
     # The language of the corpus is recorded so that a client, a model, or the
     # query itself can tell when a question is written in another one. Retrieval
     # is lexical: a term absent from the index cannot match, and without this the
     # result is an empty answer indistinguishable from "the corpus lacks it".
-    sample = " ".join(d["text"][:4000] for d in docs[:40])
+    sample = " ".join(sample_parts)
     language, confidence = B.detect_language(sample)
 
     summary = {
@@ -641,7 +716,7 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
         "quotes": quotes,
         **({"passage_edges": edges} if edges else {}),
         **summary_expressions,
-        "documents": len(docs),
+        "documents": n_documents,
         "language": language,
         "language_confidence": round(confidence, 3),
         "passages": n_passages,
@@ -651,8 +726,8 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
         "indexed_terms": len(df_count),
         **summary_shape,
     }
-    if attachments:
-        summary["attachments"] = len(attachments)
+    if n_attachments:
+        summary["attachments"] = n_attachments
     # Which document contributed most, and what share of the corpus that is. A
     # document holding 40 per cent of the passages is something whoever packed
     # it would want to see without going looking for it, and until now it took
@@ -666,13 +741,13 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
             summary["largest_document"] = {
                 "name": largest[0], "passages": largest[1],
                 "share": round(largest[1] / n_passages, 4)}
-    fechados = sorted(d["dated"] for d in docs if d.get("dated"))
+    fechados = sorted(dated)
     if fechados:
         summary["dated_range"] = [fechados[0], fechados[-1]]
     # Reported whether or not any were found: "0 of 8 dated" is the signal
     # that the dates were lost on the way in, which is the defect this exists
     # to make visible.
-    summary["dated_documents"] = [len(fechados), len(docs)]
+    summary["dated_documents"] = [len(fechados), n_documents]
     manifest = folder / "_manifest.json"
     if manifest.exists():
         try:
@@ -689,15 +764,12 @@ def _build_database(folder: Path, into: Path, semantic: bool = False,
                     (k, json.dumps(v) if not isinstance(v, str) else v))
     connection.commit()
 
-    # Copied out page by page rather than serialised in one object. The
-    # database is built in memory because that is where the indexing is fast;
-    # what does not have to happen is a second whole copy of it beside the
-    # first.
+    # Nothing to copy out: the database is the file. It used to be built in
+    # memory and copied here page by page -- one copy fewer than serialising
+    # it, and one more than necessary. Left as it was, that copy became a
+    # backup of the file onto itself, which does not fail: it waits.
     summary["index_seconds"] = spent
-    spill = sqlite3.connect(into)
-    spill.executescript("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;")
-    connection.backup(spill)
-    spill.close()
+    connection.commit()
     connection.close()
     return into.stat().st_size, summary
 
@@ -2066,9 +2138,59 @@ DOC_TOP_PASSAGES = 8
 
 CANDIDATES = 1200
 
+def terms_of(query_text: str) -> list[str]:
+    """The terms a query will be weighed by, without running it.
+
+    Published because a caller serving several packages has to gather the
+    statistics for exactly these terms before any package is asked, and
+    reproducing the rule outside would be a second definition of it.
+    """
+    from . import search as B
+
+    return B.searchable_terms(B._normalize(query_text))
+
+
+def corpus_statistics_over(connections, terms) -> tuple[int, float, dict]:
+    """The corpus figures of several packages taken together.
+
+    What a caller serving more than one package needs, and could not compute:
+    BM25 weighs a term by how rare it is, and rarity is a property of the
+    corpus the score was computed over. Two packages therefore score the same
+    passage differently, and the two numbers have no common meaning.
+
+    Serving several packages is exactly where that matters, because the answer
+    is assembled from all of them. Returns the passage count, the mean passage
+    length weighted by how many passages each package holds -- an unweighted
+    average would let a package of eleven documents count as much as one of
+    five thousand -- and the document frequency of each term summed across
+    them.
+    """
+    total = 0
+    weighted = 0.0
+    frequencies: dict[str, int] = {}
+    for connection in connections:
+        passages, mean = _corpus_scale(connection)
+        total += passages
+        weighted += mean * passages
+        for term, count in _frequencies_for(connection, terms).items():
+            frequencies[term] = frequencies.get(term, 0) + count
+    return (max(total, 1),
+            (weighted / total) if total else 60.0,
+            frequencies)
+
+
 def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
-              only: str | None = None, notes: dict | None = None) -> list[dict]:
-    """Resolve a query by word, ranking by document rather than by isolated passage."""
+              only: str | None = None, notes: dict | None = None,
+              corpus: tuple | None = None) -> list[dict]:
+    """Resolve a query by word, ranking by document rather than by isolated passage.
+
+    `corpus` is `(passages, mean_length, frequencies)` to weigh the terms
+    against, instead of this package's own. BM25 weighs a term by how rare it is
+    in the corpus it is computed over, so two packages give the same passage
+    different scores and the numbers cannot be ordered together. A caller
+    serving several packages passes the same figures to all of them, and the
+    scores become comparable -- see `corpus_statistics_over`.
+    """
     from . import search as B
 
     phrase = query_text.strip().split(".")[0][:160].strip()
@@ -2137,8 +2259,11 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
             # another spelling, which they were not.
             notes["read_as"] = {t: list(c) for t, c in widened.items()}
 
-    n_passages, avg_length = _corpus_scale(connection)
-    df = _frequencies_for(connection, distinct_terms)
+    if corpus is not None:
+        n_passages, avg_length, df = corpus
+    else:
+        n_passages, avg_length = _corpus_scale(connection)
+        df = _frequencies_for(connection, distinct_terms)
 
     # What each candidate holds of the question, from the index that already
     # recorded it. Half of a lexical query was spent reading the candidate
@@ -2223,7 +2348,8 @@ def lexical_query(connection: sqlite3.Connection, query_text: str, limit: int = 
 
 def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
           only: str | None = None, mode: str = "auto",
-          prefer: str | None = None, notes: dict | None = None) -> list[dict]:
+          prefer: str | None = None, notes: dict | None = None,
+          corpus: tuple | None = None) -> list[dict]:
     """Resolve a query, by word and by meaning where the package allows it.
 
     The two engines answer different questions. The lexical one finds documents
@@ -2282,7 +2408,7 @@ def query(connection: sqlite3.Connection, query_text: str, limit: int = 8,
     # outside, a preference that could not be applied looks exactly like one
     # that applied and moved nothing.
     lexical = [] if mode == "semantic" else lexical_query(
-        connection, query_text, limit * 3, only, notes=notes)
+        connection, query_text, limit * 3, only, notes=notes, corpus=corpus)
     if mode == "lexical":
         note(False, "the query ran on words alone, and the preference orders "
                     "the fusion of both engines")
